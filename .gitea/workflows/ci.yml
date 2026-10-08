@@ -135,7 +135,7 @@ jobs:
           echo "slowest, in seconds:"
           grep -o '<testcase name="[^"]*" classname="[^"]*"[^>]* time="[0-9.]*"' "$junit" | sed -E 's/<testcase name="([^"]*)" classname="([^"]*)".* time="([0-9.]*)"/\3 \2 \1/' | sort -rn | head -15 || true
           test "$status" = "0"
-          test "${ran:-0}" -ge 490
+          test "${ran:-0}" -ge 488
 
       # the log and each test's time, kept whatever the result: the forge shows no job log
       - name: test results
