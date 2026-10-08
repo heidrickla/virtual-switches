@@ -1,0 +1,24 @@
+# The example stack cabled to an example core over Po40: the stack from its design, the core from a
+# running configuration with the core's change design typed on top. Run with:
+#   vswitch lab tests/example-lab.toml [--shell core]
+
+[[switch]]
+name = "stack"
+files = ["example-design.toml"]
+
+[[switch]]
+name = "core"
+files = ["example-9400-running-config.txt", "example-core-design.toml"]
+stack = "1=C9400-LC-48S,2=C9400-LC-24XS,3=C9400-SUP-1XL,4=C9400-SUP-1XL,5=C9400-LC-48U"
+release = "17.5"
+
+# Po40: SFP-10G-SR multimode at both ends
+[[cable]]
+a = "stack:Twe1/0/24"
+b = "core:Te2/0/3"
+optic = "SFP-10G-SR"
+
+[[cable]]
+a = "stack:Twe2/0/24"
+b = "core:Te2/0/4"
+optic = "SFP-10G-SR"

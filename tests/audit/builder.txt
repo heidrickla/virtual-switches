@@ -1,0 +1,228 @@
+# The hardware builder: its keys, each field's list and its steps, a module that does not fit, Enter
+# with a problem, a family that does not stack, a stack past its limit, a number taken twice, the
+# releases, a 9400's chassis and slots, the keys a list takes, sizes with the builder and a list
+# open, Esc, a 2960 capture's hardware confirmed, and a listed switch's hardware.
+spawn 80x24
+fullscreen
+key n
+wait New switch
+type lab1
+key Enter
+wait Hardware for lab1
+dump start
+key ?
+wait any key closes
+dump keys
+key Enter
+gone any key closes
+dump enter-closes-the-keys-and-keeps-nothing
+# the module: Left and Right step through those the model takes; the list holds every module
+key Tab
+wait choose module
+key Right
+wait C9300X-NM-4C
+dump module-right
+key Left 2
+settle 300
+dump module-left-2
+key Space
+wait Network module for member 1
+dump module-list
+type 9200 2q
+wait 1 of 19
+dump module-list-filtered
+key Enter
+gone Network module for
+wait is a Catalyst 9200 module
+dump module-that-does-not-fit
+key Enter
+wait Nothing is kept while a problem is marked
+dump enter-with-a-problem
+# the model: Left and Right step within its family; the list holds every model
+key BackTab
+wait choose model
+key Right
+wait taken out
+dump model-right
+key Left 2
+wait C9300X-48TX
+dump model-left-2
+key Space
+wait Model for member 1
+dump model-list
+key PageDown
+settle 300
+dump model-list-pagedown
+key End
+settle 300
+dump model-list-end
+# keys in a list: Right and Left move as Down and Up, ? lists the keys over it, * is no key
+key Right
+settle 300
+dump right-in-a-list
+key ?
+wait Tab goes on to the next field
+dump question-mark-in-a-list
+key Esc
+gone Tab goes on to the next field
+key *
+settle 300
+dump star-in-a-list
+key Ctrl-u
+type ie3300
+wait 1 of 103
+dump model-list-ie3300
+key Enter
+wait Release now
+dump a-family-that-changes-the-release
+key +
+wait does not stack
+dump plus-on-a-switch-that-does-not-stack
+# a 9300 stack past its limit
+key Space
+wait Model for member 1
+type c9300-48p
+wait 1 of 103
+key Enter
+gone Model for member 1
+key + 7
+wait Member 8: C9300-48P
+dump eight-members
+key +
+wait at most 8 members
+dump plus-past-the-limit
+# a number another member holds, then stepped to a free one
+key Up 3
+wait Member 5: C9300-48P
+key BackTab
+wait choose number
+key Space
+wait Number for member 5
+dump number-list
+type 1
+key Enter
+gone Number for member 5
+wait numbered twice
+dump a-number-taken-twice
+key Right
+gone numbered twice
+dump number-right
+key - 7
+wait Stack   C9300-48P
+key -
+wait The last member stays
+dump minus-on-the-last-member
+# the releases: ] and [, the release list, and [ at the first
+key ]
+settle 300
+dump release-next
+key [ 2
+settle 300
+dump release-previous-2
+key Tab 3
+wait choose release
+key Space
+wait IOS XE release
+dump release-list
+# Tab leaves a list for the next field, choosing nothing
+key Tab
+gone IOS XE release
+dump tab-leaves-a-list
+key BackTab
+wait choose release
+key Space
+wait IOS XE release
+key Ctrl-u
+type 16.5
+wait 1 of
+key Enter
+gone IOS XE release
+dump release-16.5
+key [
+settle 300
+dump release-previous-of-the-first
+# a 9400: a supervisor, the chassis list, a second supervisor, a slot no chassis has free
+key Tab 2
+wait choose model
+key Space
+wait Model for member 1
+type c9400-sup-1xl
+wait C9400-SUP-1XL
+key Enter
+gone Model for member 1
+dump a-supervisor
+key Tab
+wait choose chassis
+key Space
+wait Catalyst 9400 chassis
+dump chassis-list
+type 9407
+key Enter
+gone Catalyst 9400 chassis
+dump in-a-c9407r
+key +
+settle 300
+dump a-second-supervisor
+key +
+wait No free slot
+dump no-slot-for-a-third
+key BackTab
+wait choose model
+key Space
+wait Model for slot
+type c9400-lc-48p
+key Enter
+gone Model for slot
+dump a-supervisor-made-a-line-card
+# sizes, with the builder and with a list open
+resize 60x20
+settle
+dump builder-60x20
+resize 200x60
+settle
+dump builder-200x60
+key Space
+wait Model for slot
+dump model-list-200x60
+resize 60x20
+settle
+dump model-list-60x20
+key Esc
+gone Model for slot
+resize 80x24
+settle
+key Esc
+gone Hardware for
+dump esc-keeps-nothing
+list
+# a configuration naming no hardware: the builder shows what its interfaces fit, then keeps it
+key a
+wait Load a switch
+type tests/example-2960-running-config.txt
+key Enter
+wait Hardware for access-2960
+dump a-2960-capture
+key Enter
+prompt access-2960>
+dump its-console
+line exit
+fullscreen
+# a listed switch's hardware: a model with built-in uplinks takes no module
+key h
+wait Hardware for access-2960
+dump hardware-of-a-listed-switch
+key Tab
+wait choose module
+key Right
+settle 300
+dump right-on-built-in-uplinks
+key Space
+wait Network module for member 1
+dump module-list-of-a-2960
+key Esc
+gone Network module for
+key Enter
+gone Hardware for
+dump enter-keeps-the-same-hardware
+key q
+exit

@@ -1,0 +1,46 @@
+# MDF core (core-b) side of phase 2 of the MDF switch change (book items 29 and 36): the core's
+# trunk to the MDF SN2410M pair's Mpo2 allows what Mpo2 allows after phases 1 and 2, every VLAN
+# except 451-452, 456 and 459. From the core's running configuration (core-b_running-config.txt beside this file). Generate with:
+#   vswitch generate core-b.toml --out core-b.cfg --change core-b_change.txt --running core-b_running-config.txt --target core-b_target-config.txt
+
+hostname = "core-b"
+# A C9407R laid out as core-a: a 48-port 1G SFP card in slot 1, the C9400-LC-24XS in slot 2, two
+# C9400-SUP-1XL in slots 3 and 4, a 48-port copper card in slot 5 (C9400-LC-48U stands in).
+stack = ["1=C9400-LC-48S", "2=C9400-LC-24XS", "3=C9400-SUP-1XL", "4=C9400-SUP-1XL", "5=C9400-LC-48U"]
+provision = false
+# The core's VLAN database (show vlan brief, 2026-10-05); both cores hold the same one by VTP.
+existing_vlans = "1,59,65-68,109,410-412,450,453,460,461,480,520,525,530,535,540,545,550,555,650-665,667-669,900,901,922,923"
+notes = [
+  "core-b (C9407R, IOS-XE 17.5): phase 2 of the MDF switch change, the core side. Apply in the same change window as phase 2 on the SN2410M pair (Mpo2 loses 451-452).",
+  "Port-channel11 (Te2/0/1-4, LACP) is the core end of Mpo2 (4 x 10G, Eth1/7-8 on each SN2410M); it allows every VLAN today. IOS applies the allowed list to the members.",
+  "The core runs no LLDP (no lldp run); the LACP partner on Po11 names the SN2410M pair (check before the change).",
+  "VLANs 451, 452, 456 and 459 are not in the cores' VLAN database (show vlan brief, 2026-10-05), so the change moves no traffic. It keeps them off this trunk if the VTP domain plant ever has them.",
+  "Each line checked against the Catalyst 9400 IOS-XE 17.5 command reference or the core's own running configuration, and typed into the virtual switch (vswitch).",
+  "Paste in configuration mode. The hostname line restates the core's name.",
+]
+
+[[port_channel]]
+id = 11
+existing = true
+connects = "HP-SN2410M pair Mpo2 (Eth1/7-8 on each); members Te2/0/1-4"
+allowed = "except 451-452,456,459"
+
+[change]
+title = "core-b: phase 2 of the MDF switch change, the core side: Po11 to Mpo2 drops 451-452, 456 and 459 (IOS-XE 17.5)"
+steps = [
+  "Same change window as phase 2 on HP-SN2410M-SW-A and SW-B (switch-configs/mdf).",
+  "copy running-config bootflash:pre-mdf-phase2.cfg   (Enter at the filename prompt)",
+]
+before = [
+  "show etherchannel 11 summary   (Po11(SU); Te2/0/1-4 (P))",
+  "show lacp 11 neighbor   (Dev ID 0200.0000.015d on Te2/0/1-4, the SN2410M pair's MLAG system MAC)",
+  "show interfaces trunk   (Po11: allowed 1-4094)",
+]
+after = [
+  "show interfaces trunk   (Po11: allowed 1-450,453-455,457,458,460-4094)",
+  "show etherchannel 11 summary   (unchanged: Po11(SU); Te2/0/1-4 (P))",
+]
+rollback = [
+  "interface Port-channel11",
+  " switchport trunk allowed vlan all",
+]

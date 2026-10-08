@@ -1,0 +1,838 @@
+{
+  "about": "Commands whose syntax line in the 9300 17.15 command reference does not parse as written, or that the book does not list but its examples use. Each entry replaces or adds the command's syntax lines; evidence names what shows the corrected form.",
+  "commands": [
+    {
+      "name": "interface",
+      "modes": [
+        "config"
+      ],
+      "lines": [
+        "interface <interface-id>",
+        "no interface <interface-id>"
+      ],
+      "args": {
+        "interface-id": {
+          "kind": "Interface"
+        }
+      },
+      "evidence": "interface_and_hardware_commands.html: the documented line runs 'Loopback <interface-number> Null <interface-number> Port-channel ...' together without '|'; 79 distinct example lines type 'interface <name>' at (config) and continue at (config-if)"
+    },
+    {
+      "name": "interface range",
+      "modes": [
+        "config"
+      ],
+      "lines": [
+        "interface range <interface-range>",
+        "no interface range <interface-range>"
+      ],
+      "args": {
+        "interface-range": {
+          "kind": "InterfaceRange"
+        }
+      },
+      "evidence": "interface_and_hardware_commands.html: same missing '|' as interface; 4 distinct example lines continue at (config-if-range)"
+    },
+    {
+      "name": "interface (VLAN)",
+      "remove": true,
+      "corrects": ["interface {<type switch>|<slot>|<port.><subinterface>}", "no interface {<type switch>|<slot>|<port.><subinterface>}"],
+      "evidence": "vlan_commands.html: the documented line 'interface {<type switch>|<slot>|<port.><subinterface>}' names no interface type and accepts any word; 'interface Vlan<id>' is the interface command's"
+    },
+    {
+      "name": "configure terminal",
+      "modes": [
+        "privileged"
+      ],
+      "lines": [
+        "configure terminal"
+      ],
+      "args": {},
+      "enters": "config",
+      "evidence": "not in the 9300 book; 423 example lines type it at the privileged prompt"
+    },
+    {
+      "name": "enable",
+      "modes": [
+        "exec",
+        "privileged"
+      ],
+      "lines": [
+        "enable [<privilege-level>]"
+      ],
+      "args": {
+        "privilege-level": {
+          "kind": "Number",
+          "min": 0,
+          "max": 15
+        }
+      },
+      "enters": "privileged",
+      "evidence": "not in the 9300 book; 395 example lines type it at the user EXEC prompt"
+    },
+    {
+      "name": "disable",
+      "modes": [
+        "privileged"
+      ],
+      "lines": [
+        "disable"
+      ],
+      "args": {},
+      "enters": "exec",
+      "evidence": "not in the 9300 book; IOS returns to user EXEC"
+    },
+    {
+      "name": "end",
+      "modes": [
+        "config",
+        "*config"
+      ],
+      "lines": [
+        "end"
+      ],
+      "args": {},
+      "enters": "privileged",
+      "evidence": "the book lists 'end' for few modes; 179 example lines type it in configuration modes"
+    },
+    {
+      "name": "exit",
+      "modes": [
+        "exec",
+        "privileged",
+        "config",
+        "*config"
+      ],
+      "lines": [
+        "exit"
+      ],
+      "args": {},
+      "enters": "parent",
+      "evidence": "the book lists 'exit' for config and privileged; 100 example lines type it in configuration submodes"
+    },
+    {
+      "name": "do",
+      "modes": [
+        "config",
+        "*config"
+      ],
+      "lines": [
+        "do <exec-command>"
+      ],
+      "args": {
+        "exec-command": {
+          "kind": "Text"
+        }
+      },
+      "evidence": "not in the 9300 book; runs a privileged EXEC command from configuration mode"
+    },
+    {
+      "name": "show running config interface",
+      "remove": true,
+      "corrects": [
+        "show running config interface <interface-id>"
+      ],
+      "evidence": "a configuration guide's typo for show running-config interface; with it vswitch answered 'show running config' with % Incomplete command, which a captured C9200L at 17.15.2 refuses under the 'o' of 'config'"
+    },
+    {
+      "name": "show running-configuration fastethernet gigabitethernet",
+      "remove": true,
+      "corrects": [
+        "show running-configuration fastethernet gigabitethernet <slot>port-channel <port-channel number>"
+      ],
+      "evidence": "a configuration guide's run-together line (EtherChannel chapter), no IOS command; it made 'show running' ambiguous with show running-config"
+    },
+    {
+      "name": "show running-config",
+      "modes": [
+        "privileged"
+      ],
+      "lines": [
+        "show running-config [aaa [accounting | attribute | authentication | authorization | diameter | group | ldap | miscellaneous | radius-server | server | tacacs-server | user-name | username] | all | bridge-domain {<id> | parameterized vlan} | brief | class-map [<name>] [linenum] | cts [interface | policy-server | rbm-rbac | server | sxp] | deprecated | eap {method | profiles} | full | identity {policy | profile} | ip dhcp pool [<name>] | ipv6 dhcp pool [<name>] | linenum [brief | full | partition] | map-class [atm | dialer | frame-relay] [<name>] | mdns-sd [gateway | location-group | service-definition | service-list | service-peer | service-policy] | partition {access-list | class-map | common | global-cdp | interface | ip-as-path | ip-community | ip-prefix-list | ip-static-routes | line | policy-map | route-map | router | snmp | tacacs} | policy-map [<name>] [linenum] | switch <number> | view [full] | vlan [<vlan-id>] | vrf [<vrf-name>]]"
+      ],
+      "args": {
+        "id": {
+          "kind": "Number",
+          "min": 1,
+          "max": 16000
+        },
+        "name": {
+          "kind": "Word"
+        },
+        "number": {
+          "kind": "Number",
+          "min": 1,
+          "max": 16
+        },
+        "vlan-id": {
+          "kind": "Number",
+          "min": 1,
+          "max": 4094
+        },
+        "vrf-name": {
+          "kind": "Word"
+        }
+      },
+      "evidence": "system_management_commands.html: the documented 'show running-config <[options]>' takes any word, so vswitch printed the configuration for 'show running config', which a captured C9200L at 17.15.2 refuses under the 'o' of 'config'; the options are the Syntax Description row's, interface and flow left to their own commands"
+    },
+    {
+      "name": "show inventory",
+      "modes": [
+        "exec",
+        "privileged"
+      ],
+      "lines": [
+        "show inventory [fru | oid | raw] [<entity>]"
+      ],
+      "args": {"entity": {"kind": "Text"}},
+      "evidence": "system_management_commands.html: the documented line makes {fru | oid | raw} required; its example types 'show inventory' alone. At both prompts: a captured C9200L at 17.6.4 answers it at '>'. The entity is an argument, the rest of the line: the book's example types 'show inventory \"c93xx Stack\"', and the general reference's show inventory names '<entity>' a Cisco entity's name, a quoted string where it holds spaces"
+    },
+    {
+      "name": "show inventory",
+      "platform": "Catalyst 2960x",
+      "modes": [
+        "exec",
+        "privileged"
+      ],
+      "lines": [
+        "show inventory [fru | oid | raw] [<entity>]"
+      ],
+      "args": {"entity": {"kind": "Text"}},
+      "evidence": "the 2960-X books document no show inventory; captured 2960-Xs at 15.2(7)E0a answer it at '>' and at '#'. The entity is the rest of the line, as the IOS XE books' show inventory takes it"
+    },
+    {
+      "name": "ip route-cache",
+      "platform": "Catalyst 2960x",
+      "modes": [
+        "config-if"
+      ],
+      "lines": [
+        "ip route-cache [cef | same-interface]",
+        "no ip route-cache [cef | same-interface]"
+      ],
+      "args": {},
+      "evidence": "the 2960-X books document no ip route-cache; captured 2960-Xs at 15.2(7)E0a print ' no ip route-cache' under their VLAN interfaces"
+    },
+    {
+      "name": "show version",
+      "platform": "Catalyst 2960x",
+      "modes": [
+        "exec",
+        "privileged"
+      ],
+      "lines": [
+        "show version"
+      ],
+      "args": {},
+      "evidence": "the 2960-X books document no show version; captured 2960-Xs at 15.2(7)E0a answer it at '>' and '#'"
+    },
+    {
+      "name": "address-family",
+      "platform": "Catalyst 9200",
+      "modes": [
+        "config-vrf"
+      ],
+      "lines": [
+        "address-family {ipv4 | ipv6} [unicast | multicast]",
+        "no address-family {ipv4 | ipv6} [unicast | multicast]"
+      ],
+      "args": {},
+      "enters": "config-vrf-af",
+      "evidence": "the 9200 books from 16.11 print 'address-family <ipv4> | <ipv6>' without braces, so neither family parses or enters its submode (16.9 and 16.10 omit the command); captured C9200Ls at 17.6.4 and 17.15.2 print ' address-family ipv4', ' exit-address-family', ' address-family ipv6', ' exit-address-family' under vrf definition Mgmt-vrf. Scoped to the 9200: the 9300 and 9400 books document the full command, with its router modes"
+    },
+    {
+      "name": "exit-address-family",
+      "modes": [
+        "config-vrf-af"
+      ],
+      "evidence": "leaves the VRF address family the corrected 9200 address-family enters (captured C9200Ls at 17.6.4 and 17.15.2)"
+    },
+    {
+      "name": "spanning-tree vlan",
+      "args": {
+        "vlan-id": {
+          "kind": "VlanList"
+        }
+      },
+      "evidence": "layer_2_3_commands.html names the argument <vlan-id>; 7 guide example lines type a range at (config), e.g. 'spanning-tree vlan 20-24 root primary diameter 4'"
+    },
+    {
+      "name": "line vty",
+      "modes": [
+        "config"
+      ],
+      "lines": [
+        "line vty <first-line> [<last-line>]"
+      ],
+      "args": {
+        "first-line": {
+          "kind": "Number",
+          "min": 0,
+          "max": 98
+        },
+        "last-line": {
+          "kind": "Number",
+          "min": 0,
+          "max": 98
+        }
+      },
+      "enters": "config-line",
+      "evidence": "not in the 9300 command reference; security guide step 'line vty 0 98'; 21 guide example lines at (config): 'line vty 0 4', 'line vty 0 98', 'line vty 10'"
+    },
+    {
+      "name": "control-plane",
+      "enters": "config-cp",
+      "evidence": "the command reference documents service-policy input in control-plane configuration (config-cp); the cores' running configurations (Catalyst 9400, 17.5, captured 2026-10-05) print 'service-policy input system-cpp-policy' indented under 'control-plane'"
+    },
+    {
+      "name": "enable (uplink)",
+      "platform": "Catalyst 9400",
+      "modes": [
+        "config-if"
+      ],
+      "lines": [
+        "enable",
+        "no enable"
+      ],
+      "evidence": "Catalyst 9400 Series Supervisor Module Installation Note, Examples for Uplink Port Configuration: 'interface fortygigabitethernet3/0/9' then 'enable' turns on QSFP port 9 and turns off ports 1 through 4, 'no enable' the reverse; on a Supervisor 2, 'interface hundredgigabitethernet3/0/5' then 'enable'"
+    },
+    {
+      "name": "transport input",
+      "modes": [
+        "config-line"
+      ],
+      "lines": [
+        "transport input {all | none | ssh [telnet] | telnet [ssh]}",
+        "no transport input"
+      ],
+      "evidence": "not in the 9300 command reference; 7 guide example lines at (config-line): 'transport input all', 'transport input ssh', 'transport input telnet'. Real switches hold 'none' and both protocols together: captured 9400s at 17.5 ' transport input none' under line vty 5 15, a lab WS-C2960G-8TC-L (15.0(2)SE) ' transport input telnet ssh' under its vty lines"
+    },
+    {
+      "name": "login",
+      "modes": [
+        "config-line"
+      ],
+      "lines": [
+        "login [local | authentication <list-name>]",
+        "no login"
+      ],
+      "evidence": "not in the 9300 command reference; 9 guide example lines at (config-line): 'login', 'login authentication default', 'login authentication admins'; 'login local' under 'line vty' in captures of every IOS XE family (the 9400 cores, the 9300s and 9200s, data/live)"
+    },
+    {
+      "name": "ntp server",
+      "modes": [
+        "config"
+      ],
+      "lines": [
+        "ntp server [vrf <vrf-name>] {<ip-address> | <ipv6-address> | [ip | ipv6] <hostname>} [normal-sync] [version <version>] [key <key-id>] [source <interface-id>] [prefer] [maxpoll <maxpoll>] [minpoll <minpoll>] [burst] [iburst]",
+        "no ntp server [vrf <vrf-name>] {<ip-address> | <ipv6-address> | [ip | ipv6] <hostname>}"
+      ],
+      "classic_lines": [
+        "ntp server {<ip-address> | <ipv6-address> | [ip | ipv6] <hostname>} [normal-sync] [version <version>] [key <key-id>] [source <interface-id>] [prefer] [maxpoll <maxpoll>] [minpoll <minpoll>] [burst] [iburst]",
+        "no ntp server {<ip-address> | <ipv6-address> | [ip | ipv6] <hostname>}"
+      ],
+      "args": {
+        "ip-address": {
+          "kind": "Ipv4"
+        },
+        "ipv6-address": {
+          "kind": "Ipv6"
+        },
+        "version": {
+          "kind": "Number",
+          "min": 1,
+          "max": 4
+        },
+        "key-id": {
+          "kind": "Number",
+          "min": 0,
+          "max": 4294967295
+        },
+        "interface-id": {
+          "kind": "Interface"
+        },
+        "maxpoll": {
+          "kind": "Number",
+          "min": 4,
+          "max": 17
+        },
+        "minpoll": {
+          "kind": "Number",
+          "min": 4,
+          "max": 17
+        }
+      },
+      "evidence": "not in the 9300 command reference; bsm-cr-book.html (Basic System Management) writes '{<ip-address><| ipv6-address> | [ip | ipv6] <hostname>}', read here as the choice it means; the version, poll and key ranges are that entry's; guide example lines 'ntp server vrf A 1.1.1.2 key 1', 'ntp server 172.16.22.44 version 2'. No classic IOS book (12.2(44)SE to 15.2(7)E) shows 'ntp server vrf': classic_lines leave the VRF out"
+    },
+    {
+      "name": "ip name-server",
+      "modes": [
+        "config"
+      ],
+      "lines": [
+        "ip name-server [vrf <vrf-name>] {<server-address1> | <ipv6-server-address1>} [{<server-address2> | <ipv6-server-address2>} [{<server-address3> | <ipv6-server-address3>} [{<server-address4> | <ipv6-server-address4>} [{<server-address5> | <ipv6-server-address5>} [{<server-address6> | <ipv6-server-address6>}]]]]]",
+        "no ip name-server [vrf <vrf-name>] {<server-address1> | <ipv6-server-address1>} [{<server-address2> | <ipv6-server-address2>} [{<server-address3> | <ipv6-server-address3>} [{<server-address4> | <ipv6-server-address4>} [{<server-address5> | <ipv6-server-address5>} [{<server-address6> | <ipv6-server-address6>}]]]]]"
+      ],
+      "args": {
+        "server-address1": {"kind": "Ipv4"},
+        "server-address2": {"kind": "Ipv4"},
+        "server-address3": {"kind": "Ipv4"},
+        "server-address4": {"kind": "Ipv4"},
+        "server-address5": {"kind": "Ipv4"},
+        "server-address6": {"kind": "Ipv4"},
+        "ipv6-server-address1": {"kind": "Ipv6"},
+        "ipv6-server-address2": {"kind": "Ipv6"},
+        "ipv6-server-address3": {"kind": "Ipv6"},
+        "ipv6-server-address4": {"kind": "Ipv6"},
+        "ipv6-server-address5": {"kind": "Ipv6"},
+        "ipv6-server-address6": {"kind": "Ipv6"}
+      },
+      "evidence": "ipaddr-cr-book.html writes 'ip name-server [vrf <vrf-name>] <server-address1> <[server-address2...server-address6]>', up to six servers, each 'IPv4 or IPv6 addresses of a name server'; the 9300 IP addressing guide step lists server-address1 to server-address6; the 2960-X 15.2(6)E and 15.2(7)E books write 'ip name-server <ip-server-address> <ipv6-server-address> <vrf>' and type 'ip name-server 3FFE:C00::250:8BFF:FEE8:F800 2001:0DB8::3'"
+    },
+    {
+      "name": "description",
+      "modes": [
+        "config-if",
+        "config-flow-exporter",
+        "config-flow-monitor",
+        "config-flow-record",
+        "config-if-vrrp",
+        "config-ikev2-keyring-peer",
+        "config-ikev2-profile",
+        "config-mon-erspan-dst",
+        "config-mon-erspan-src",
+        "config-network-group",
+        "config-cmap",
+        "config-pmap",
+        "config-router-stmp",
+        "config-sampler",
+        "config-service-group",
+        "config-service-template",
+        "config-template"
+      ],
+      "lines": [
+        "description <description>",
+        "no description [<description>]"
+      ],
+      "args": {
+        "description": {
+          "kind": "Text"
+        }
+      },
+      "evidence": "Cisco IOS Interface and Hardware Component Command Reference, description (interface configuration): 'description string', 'no description'. The 9300 17.15 book writes 'no description <description>'; its own 'description (ERSPAN)' entry writes 'no description'. In a class map: the 9200 17.15 guide's 'Device(config-cmap)# description' example, and the system class maps of every IOS XE capture (data/live) each with a description of several words"
+    },
+    {
+      "name": "switchport trunk",
+      "modes": [
+        "config-if"
+      ],
+      "lines": [
+        "switchport trunk pruning vlan {all | none | add <vlan-list> | remove <vlan-list> | except <vlan-list> | <vlan-list>}",
+        "switchport trunk native vlan {tag | <vlan-id>}",
+        "switchport trunk encapsulation {isl | dot1q [ethertype <value>] | negotiate}",
+        "no switchport trunk {allowed vlan | native vlan [tag] | pruning vlan | encapsulation}"
+      ],
+      "args": {
+        "vlan-list": {
+          "kind": "VlanList"
+        },
+        "vlan-id": {
+          "kind": "Number",
+          "min": 1,
+          "max": 4094
+        },
+        "value": {
+          "kind": "Word"
+        }
+      },
+      "evidence": "vlan_commands.html switchport trunk, Usage Guidelines: 'The vlan-list format is all | none | [add | remove | except] vlan-atom [,vlan-atom...]' (also the 9400 17.5 book); the allowed list is its own entry below. Lines from layer_2_3_commands.html kept for native vlan tag and encapsulation."
+    },
+    {
+      "name": "switchport trunk allowed vlan",
+      "modes": [
+        "config-if"
+      ],
+      "lines": [
+        "switchport trunk allowed vlan {all | none | add <vlan-list> | remove <vlan-list> | except <vlan-list> | <vlan-list>}"
+      ],
+      "args": {
+        "vlan-list": {
+          "kind": "VlanList"
+        }
+      },
+      "evidence": "vlan_commands.html switchport trunk, Usage Guidelines: 'The vlan-list format is all | none | [add | remove | except] vlan-atom [,vlan-atom...]'. The two cores' IOS-XE 17.5 running configurations print 'switchport trunk allowed vlan none'. configuring_layer2_protocol_tunneling.html wrote '{ <word> | add | all | except | none | remove} <vlan-list>', which accepts any word and wants a list after all and none."
+    },
+    {
+      "name": "key-hash",
+      "modes": [
+        "conf-ssh-pubkey-user"
+      ],
+      "lines": [],
+      "evidence": "security_commands.html (ip ssh pubkey-chain): 'Device(conf-ssh-pubkey)# username test' then 'Device(conf-ssh-pubkey-user)# key-hash ssh-rsa key1'; the book gives key-hash no mode of its own"
+    },
+    {
+      "name": "ip ssh pubkey-chain",
+      "lines": [],
+      "enters": "conf-ssh-pubkey",
+      "evidence": "security_commands.html: 'Device(config)# ip ssh pubkey-chain' then 'Device(conf-ssh-pubkey)#'; the book's four examples are one line, below the two the mode inference wants"
+    },
+    {
+      "name": "username (ssh pubkey-chain)",
+      "modes": ["conf-ssh-pubkey"],
+      "lines": ["username <user-name>", "no username <user-name>"],
+      "args": {
+        "user-name": {
+          "kind": "Word"
+        }
+      },
+      "evidence": "security_commands.html (ip ssh pubkey-chain): 'Device(conf-ssh-pubkey)# username test' then 'Device(conf-ssh-pubkey-user)# key-hash ssh-rsa key1'; the configuration guide's 'host1(conf-ssh-pubkey)# username user1' then 'host1(conf-ssh-pubkey-user)# key-string'. The global username takes no submode"
+    },
+    {
+      "name": "username",
+      "drop_modes": ["conf-ssh-pubkey"],
+      "lines": [],
+      "evidence": "the guide's 'host1(conf-ssh-pubkey)# username user1' set the global username in the pubkey chain, where username (ssh pubkey-chain) takes it"
+    },
+    {
+      "name": "key-string (ssh pubkey-chain)",
+      "modes": ["conf-ssh-pubkey-user", "conf-ssh-pubkey-server"],
+      "lines": ["key-string"],
+      "enters": "conf-ssh-pubkey-data",
+      "evidence": "the 9300 configuration guide: 'host1(conf-ssh-pubkey-user)# key-string', the key's lines at 'host1(conf-ssh-pubkey-data)#', then 'end'; the key-chain key-string takes a string where this one takes none"
+    },
+    {
+      "name": "key-string",
+      "drop_modes": ["conf-ssh-pubkey-user", "conf-ssh-pubkey-server"],
+      "lines": [],
+      "evidence": "the guide's 'host1(conf-ssh-pubkey-user)# key-string' set the key-chain key-string in the pubkey chain, where key-string (ssh pubkey-chain) takes it"
+    },
+    {
+      "name": "key data (ssh pubkey-chain)",
+      "modes": ["conf-ssh-pubkey-data"],
+      "lines": ["<key-text>"],
+      "args": {"key-text": {"kind": "Text"}},
+      "evidence": "key-string (ssh pubkey-chain) enters (conf-ssh-pubkey-data), where IOS reads the public key's text a line at a time until 'exit' or 'end' (9300 configuration guide: 'host1(conf-ssh-pubkey-user)# key-string', then 'host1(conf-ssh-pubkey-data)# exit'); no command names those lines"
+    },
+    {
+      "name": "channel-group",
+      "platform": "Catalyst 2960x",
+      "modes": ["config-if"],
+      "lines": [
+        "channel-group <channel-group-number> mode {active | auto [non-silent] | desirable [non-silent] | on | passive}",
+        "no channel-group"
+      ],
+      "args": {
+        "channel-group-number": {
+          "kind": "Number",
+          "min": 1,
+          "max": 24
+        }
+      },
+      "evidence": "the 2960-X 15.2(2)E command reference documents 'channel-group <channel-group-number> mode { active | auto [ non-silent ] | desirable [ non-silent ] | on | passive }'; the 15.2(4)E to 15.2(7)E references print a stray 'auto' before the number, and a guide line's '{...} | { active | passive}' reads as a choice of the whole command. A WS-C2960X-24PS-L's running configuration (2026-10-06) holds 'channel-group 1 mode active'"
+    },
+    {
+      "name": "policy-map",
+      "platform": "Catalyst 2960x",
+      "modes": ["config"],
+      "drop_modes": ["config-cmap"],
+      "lines": [],
+      "evidence": "the 2960-X books document no policy-map; two guide steps typed after a class map with no exit show it at (config-cmap)#, eleven example blocks at (config)#"
+    },
+    {
+      "name": "policy-map",
+      "platform": "Catalyst 2960",
+      "drop_modes": ["config-cmap"],
+      "lines": [],
+      "evidence": "the 2960 command reference gives Global configuration; guide steps typed after a class map with no exit show it at (config-cmap)#, which kept a session in the class map (a captured 2960's policy map, 15.2(6)E1)"
+    },
+    {
+      "name": "line",
+      "platform": "Catalyst 2960",
+      "enters": "config-line",
+      "lines": [],
+      "evidence": "the 2960 15.2(2)E guide's 'line [console | vty] <line-number>' enters line configuration; its examples show it once (line vty 10), short of the two an entry needs; every 2960 capture writes 'line con 0' with its password under it (data/live)"
+    },
+    {
+      "name": "show ip interface",
+      "platform": "Catalyst 2960",
+      "modes": ["exec", "privileged"],
+      "lines": ["show ip interface [<interface-id>] [brief]"],
+      "args": {"interface-id": {"kind": "Interface"}},
+      "evidence": "the 2960 books document no show ip interface; the lab WS-C2960G-8TC-L (15.0(2)SE11) answers 'show ip interface brief' with its table"
+    },
+    {
+      "name": "show lldp",
+      "platform": "Catalyst IE3300",
+      "modes": ["privileged"],
+      "lines": ["show lldp [entry {* | <entry-name>} [detail] | errors | interface [<interface-id>] | neighbors [<interface-id>] [detail] | traffic]"],
+      "args": {"interface-id": {"kind": "Interface"}},
+      "evidence": "the IE3x00 guides and the 9300 17.6 reference give 'show lldp' alone; all six IE-3300s (17.6.4, data/live) answer 'show lldp neighbors' with its table and the 9200s' show techs 'show lldp neighbors detail' with '% LLDP is not enabled', a parse"
+    },
+    {
+      "name": "password",
+      "modes": ["config-line"],
+      "lines": ["password [<encryption-type>] <password>", "no password"],
+      "args": {"encryption-type": {"kind": "Number", "min": 0, "max": 7}, "password": {"kind": "Text"}},
+      "evidence": "the line's password takes its encryption type before it: the 9300 17.15 guide's 'password 7 secret567' and the 2960-X 15.2(7)E guide's 'password 7 sMudgkin' at (config-line); every capture's line blocks hold 'password 7 <removed>' (data/live). The 9300 book's 'password {<unencrypted-password> | <encryption-type encrypted-password>}' and the 2960-X book's 'password <password>' type neither. The password runs to the end of the line: the general reference's password (line configuration) says it 'can contain any alphanumeric characters, including spaces'"
+    },
+    {
+      "name": "boot-start-marker",
+      "modes": ["config"],
+      "lines": ["boot-start-marker", "no boot-start-marker"],
+      "evidence": "Cisco IOS Configuration Fundamentals Command Reference, boot-start-marker, with no syntax line read from it; IOS writes it before the boot lines of every captured running configuration (data/live)"
+    },
+    {
+      "name": "boot-end-marker",
+      "modes": ["config"],
+      "lines": ["boot-end-marker", "no boot-end-marker"],
+      "evidence": "Cisco IOS Configuration Fundamentals Command Reference, boot-end-marker, with no syntax line read from it; IOS writes it after the boot lines of every captured running configuration (data/live)"
+    },
+    {
+      "name": "username (privilege and secret)",
+      "modes": ["config"],
+      "lines": [
+        "username <name> [privilege <level>] {password [<encryption-type>] <password> | secret [<encryption-type>] <secret> | nopassword}",
+        "username <name> [privilege <level>] algorithm-type {md5 | scrypt | sha256} secret <secret>"
+      ],
+      "classic_lines": [
+        "username <name> [privilege <level>] {password [<password-type>] <password> | secret [<secret-type>] <secret> | nopassword}"
+      ],
+      "args": {
+        "level": {"kind": "Number", "min": 0, "max": 15},
+        "encryption-type": {"kind": "Number", "min": 0, "max": 9},
+        "password-type": {"kind": "Number", "min": 0, "max": 7},
+        "secret-type": {"kind": "Number", "min": 0, "max": 5},
+        "password": {"kind": "Text"},
+        "secret": {"kind": "Text"}
+      },
+      "evidence": "the 9300 17.15 book gives [privilege <level>], [password ...] and [secret ...] as options of one username command, one to a line; its guide types them together: 'username your_user_name privilege 1 password 7 secret567', 'username superuser privilege 2 password 0 superpassword', 'username user1 algorithm-type scrypt secret cisco'; every captured switch holds 'username <name> password 7 <removed>' (data/live). Added beside the book's own username lines. The password runs to the end of the line: the book's Syntax Description says it 'can contain embedded spaces, and must be the last option specified'. No classic IOS book (12.2(44)SE to 15.2(7)E) shows algorithm-type; classic captures hold 'password 7' and 'secret 5' (data/live), which classic_lines take"
+    },
+    {
+      "name": "logging host",
+      "modes": ["config"],
+      "lines": ["logging host <ip-address> [vrf <vrf-name>]", "no logging host <ip-address> [vrf <vrf-name>]"],
+      "args": {"ip-address": {"kind": "Ipv4"}},
+      "evidence": "the 9300 17.15 guide's 'logging host <ip-address> vrf <vrf-name>' ('logging host 10.10.1.0 vrf vpn1') makes the VRF required; 46 captured switches log to a host with none ('logging host <address>')"
+    },
+    {
+      "name": "certificate",
+      "modes": [
+        "config-cert-chain"
+      ],
+      "corrects": [
+        "certificate <certificate-serial-number>",
+        "no certificate <certificate-serial-number>"
+      ],
+      "lines": [
+        "certificate [ca | self-signed] <certificate-serial-number>",
+        "no certificate [ca | self-signed] <certificate-serial-number>"
+      ],
+      "evidence": "the general security reference documents only `certificate <certificate-serial-number>`; every capture's `crypto pki certificate chain` holds `certificate self-signed 01` or `certificate ca 01` (a C9200L at 17.12, the captured 9400s at 17.5, a 2960 at 12.2(44)SE)"
+    },
+    {
+      "name": "crypto pki trustpoint",
+      "modes": [
+        "config"
+      ],
+      "corrects": [
+        "crypto pki trustpoint <name> redundancy",
+        "no crypto pki trustpoint <name>"
+      ],
+      "lines": [
+        "crypto pki trustpoint <name> [redundancy]",
+        "no crypto pki trustpoint <name>"
+      ],
+      "enters": "ca-trustpoint",
+      "evidence": "the security reference's syntax row makes `redundancy` required, while its own five examples type `crypto pki trustpoint mytp` and show `(ca-trustpoint)#` after it; every capture holds `crypto pki trustpoint TP-self-signed-<n>` with `enrollment selfsigned` under it (data/live)"
+    },
+    {
+      "name": "accept-lifetime",
+      "modes": ["config-keychain-key"],
+      "lines": [
+        "accept-lifetime [local] <start-time> {<start-month> <start-date> | <start-date> <start-month>} <start-year> {infinite | <end-time> {<end-month> <end-date> | <end-date> <end-month>} <end-year> | duration <seconds>}",
+        "no accept-lifetime"
+      ],
+      "args": {
+        "start-time": {"kind": "Word"},
+        "start-month": {"kind": "Word"},
+        "start-date": {"kind": "Number", "min": 1, "max": 31},
+        "start-year": {"kind": "Number", "min": 1993, "max": 9999},
+        "end-time": {"kind": "Word"},
+        "end-month": {"kind": "Word"},
+        "end-date": {"kind": "Number", "min": 1, "max": 31},
+        "end-year": {"kind": "Number", "min": 1993, "max": 9999},
+        "seconds": {"kind": "Number", "min": 1, "max": 2147483646}
+      },
+      "evidence": "unicast_routing_commands.html: Syntax Description gives <start-time> as '<hh> : <mm> : <ss> <month> <date> <year>' or '<hh> : <mm> : <ss> <date> <month> <year>' (date 1-31, a four-digit year, none before 1993) and <end-time> the same, four words its line reads as one; its examples type 'accept-lifetime 13:30:00 Jan 25 1996 duration 7200' without the `local` its line requires, which the general reference writes none of; duration 1 to 2147483646 seconds"
+    },
+    {
+      "name": "send-lifetime",
+      "modes": ["config-keychain-key"],
+      "lines": [
+        "send-lifetime [local] <start-time> {<start-month> <start-date> | <start-date> <start-month>} <start-year> {infinite | <end-time> {<end-month> <end-date> | <end-date> <end-month>} <end-year> | duration <seconds>}",
+        "no send-lifetime"
+      ],
+      "args": {
+        "start-time": {"kind": "Word"},
+        "start-month": {"kind": "Word"},
+        "start-date": {"kind": "Number", "min": 1, "max": 31},
+        "start-year": {"kind": "Number", "min": 1993, "max": 9999},
+        "end-time": {"kind": "Word"},
+        "end-month": {"kind": "Word"},
+        "end-date": {"kind": "Number", "min": 1, "max": 31},
+        "end-year": {"kind": "Number", "min": 1993, "max": 9999},
+        "seconds": {"kind": "Number", "min": 1, "max": 2147483646}
+      },
+      "evidence": "unicast_routing_commands.html: as accept-lifetime, its <start-time> and <end-time> are '<hh> : <mm> : <ss>' with the month and date in either order and the year; its examples type 'send-lifetime 14:00:00 Jan 25 1996 duration 3600' without `local`"
+    },
+    {
+      "name": "access-list",
+      "adds": ["no access-list <access-list-number>"],
+      "evidence": "the general security reference's access-list (IP standard) and access-list (IP extended) state 'no access-list <access-list-number>', which deletes the list; the platform books' access-list, from their guides, states no `no` form, so 'no access-list 103' read as an entry left incomplete"
+    },
+    {
+      "name": "ip route",
+      "adds": ["no ip route [vrf <vrf-name>] <prefix> <mask>"],
+      "evidence": "the general IP routing reference's ip route vrf states the next hop optional in its `no` form ('no ip route vrf <vrf-name> <prefix> <mask> <[next-hop-address]> ...'); the ip route entries state it only with one, so 'no ip route <prefix> <mask>' read as incomplete"
+    },
+    {
+      "name": "logging console",
+      "modes": ["config"],
+      "lines": ["logging console [<level>]", "no logging console"],
+      "args": {"level": {"kind": "Word"}},
+      "evidence": "the 2960-X book's logging console (system_management_commands.html) writes 'logging console <level>' and 'no logging console', its Command Default 'the console receives debugging messages and numerically lower levels': the level is the only argument, and without one IOS reads `console` as this keyword, not as `logging <host>`'s host. Its example types 'logging console 3'; captures hold 'no logging console' (data/live)"
+    },
+    {
+      "name": "ip access-list extended",
+      "modes": ["config"],
+      "lines": [],
+      "classic_lines": [
+        "ip access-list extended <access-list-name>",
+        "no ip access-list extended <access-list-name>"
+      ],
+      "args": {"access-list-name": {"kind": "Word"}},
+      "enters": "config-ext-nacl",
+      "evidence": "the classic books document one `ip access-list {standard | extended}` command and their guides type each form into its own submode (`ip access-list extended ...` then `(config-ext-nacl)#`); the lab WS-C2960G-8TC-L (15.0(2)SE11) entered config-ext-nacl from `ip access-list extended <name>`. Taken at classic releases whose books show the line; at IOS XE it sets the mode of the command of this name"
+    },
+    {
+      "name": "ip access-list standard",
+      "modes": ["config"],
+      "lines": [],
+      "classic_lines": [
+        "ip access-list standard <access-list-name>",
+        "no ip access-list standard <access-list-name>"
+      ],
+      "args": {"access-list-name": {"kind": "Word"}},
+      "enters": "config-std-nacl",
+      "evidence": "as `ip access-list extended`: the guides type `ip access-list standard ...` into `(config-std-nacl)#`; the lab WS-C2960G-8TC-L (15.0(2)SE11) and a lab C9300-24T (17.6.4) entered config-std-nacl from `ip access-list standard <name>`"
+    },
+    {
+      "name": "ip access-list resequence",
+      "modes": ["config"],
+      "lines": [],
+      "classic_lines": [
+        "ip access-list resequence <access-list-name> <starting-sequence-number> <increment>"
+      ],
+      "corrects": ["ip access-list resequence <access-list-name> starting-sequence-number <increment>"],
+      "args": {
+        "access-list-name": {"kind": "Word"},
+        "starting-sequence-number": {"kind": "Number", "min": 1, "max": 2147483647},
+        "increment": {"kind": "Number", "min": 1, "max": 2147483647}
+      },
+      "evidence": "the general security reference writes `starting-sequence-number` in roman type, so it reads as a keyword; its Syntax Description names it the argument it is. The lab WS-C2960G-8TC-L (15.0(2)SE11) took `ip access-list resequence <name> 100 5` and renumbered the list from 100 by 5"
+    },
+    {
+      "name": "permit (IP extended)",
+      "modes": ["config-ext-nacl"],
+      "lines": [],
+      "classic_lines": [
+        "permit {<protocol-number> | ahp | eigrp | esp | gre | ip | ipinip | nos | ospf | pcp | pim} {<source> <source-wildcard> | host <source> | any} {<destination> <destination-wildcard> | host <destination> | any} [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "permit tcp {<source> <source-wildcard> | host <source> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] {<destination> <destination-wildcard> | host <destination> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] [established] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "permit udp {<source> <source-wildcard> | host <source> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] {<destination> <destination-wildcard> | host <destination> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "permit icmp {<source> <source-wildcard> | host <source> | any} {<destination> <destination-wildcard> | host <destination> | any} [<icmp-type> [<icmp-code>] | <icmp-message>] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "permit igmp {<source> <source-wildcard> | host <source> | any} {<destination> <destination-wildcard> | host <destination> | any} [<igmp-type>] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]"
+      ],
+      "args": {
+        "protocol-number": {"kind": "Number", "min": 0, "max": 255},
+        "source": {"kind": "Ipv4"},
+        "source-wildcard": {"kind": "Ipv4"},
+        "destination": {"kind": "Ipv4"},
+        "destination-wildcard": {"kind": "Ipv4"},
+        "port": {"kind": "Word"},
+        "dscp": {"kind": "Dscp"},
+        "precedence": {"kind": "Word"},
+        "tos": {"kind": "Word"},
+        "time-range-name": {"kind": "Word"},
+        "icmp-type": {"kind": "Number", "min": 0, "max": 255},
+        "icmp-code": {"kind": "Number", "min": 0, "max": 255},
+        "icmp-message": {"kind": "Word"},
+        "igmp-type": {"kind": "Word"}
+      },
+      "evidence": "an extended access list's entries as the security reference's permit (IP) Syntax Description gives them: a protocol by name or number, each end an address and wildcard, `host <address>` or `any`, ports for TCP and UDP, ICMP and IGMP types. The classic references' syntax lines leave out `host` and `any` and read the protocol as a number only, so no classic release took `permit ip host <address> any`; the lab WS-C2960G-8TC-L (15.0(2)SE11) took it and `15 permit ip host <address> any`. Taken at classic releases whose books show a `permit` line"
+    },
+    {
+      "name": "deny (IP extended)",
+      "modes": ["config-ext-nacl"],
+      "lines": [],
+      "classic_lines": [
+        "deny {<protocol-number> | ahp | eigrp | esp | gre | ip | ipinip | nos | ospf | pcp | pim} {<source> <source-wildcard> | host <source> | any} {<destination> <destination-wildcard> | host <destination> | any} [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "deny tcp {<source> <source-wildcard> | host <source> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] {<destination> <destination-wildcard> | host <destination> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] [established] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "deny udp {<source> <source-wildcard> | host <source> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] {<destination> <destination-wildcard> | host <destination> | any} [{eq | gt | lt | neq} <port> | range <port> <port>] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "deny icmp {<source> <source-wildcard> | host <source> | any} {<destination> <destination-wildcard> | host <destination> | any} [<icmp-type> [<icmp-code>] | <icmp-message>] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]",
+        "deny igmp {<source> <source-wildcard> | host <source> | any} {<destination> <destination-wildcard> | host <destination> | any} [<igmp-type>] [dscp <dscp> | precedence <precedence>] [tos <tos>] [log | log-input] [time-range <time-range-name>] [fragments]"
+      ],
+      "args": {
+        "protocol-number": {"kind": "Number", "min": 0, "max": 255},
+        "source": {"kind": "Ipv4"},
+        "source-wildcard": {"kind": "Ipv4"},
+        "destination": {"kind": "Ipv4"},
+        "destination-wildcard": {"kind": "Ipv4"},
+        "port": {"kind": "Word"},
+        "dscp": {"kind": "Dscp"},
+        "precedence": {"kind": "Word"},
+        "tos": {"kind": "Word"},
+        "time-range-name": {"kind": "Word"},
+        "icmp-type": {"kind": "Number", "min": 0, "max": 255},
+        "icmp-code": {"kind": "Number", "min": 0, "max": 255},
+        "icmp-message": {"kind": "Word"},
+        "igmp-type": {"kind": "Word"}
+      },
+      "evidence": "as `permit (IP extended)`, from the security reference's deny (IP) Syntax Description; a lab C9300-24T (17.6.4) took `deny ip any any` in an extended list. Taken at classic releases whose books show a `deny` line"
+    },
+    {
+      "name": "permit (IP standard)",
+      "modes": ["config-std-nacl"],
+      "lines": [],
+      "classic_lines": [
+        "permit {<source> [<source-wildcard>] | host <source> | any} [log]"
+      ],
+      "args": {
+        "source": {"kind": "Ipv4"},
+        "source-wildcard": {"kind": "Ipv4"}
+      },
+      "evidence": "a standard access list's entries as the security reference's permit (IP) Syntax Description gives them: an address with an optional wildcard, `host <address>` or `any`. No classic release had a command for them in config-std-nacl; the lab WS-C2960G-8TC-L (15.0(2)SE11) took `permit <address>`, `permit <address> 0.0.255.255` and `permit host <address>`"
+    },
+    {
+      "name": "deny (IP standard)",
+      "modes": ["config-std-nacl"],
+      "lines": [],
+      "classic_lines": [
+        "deny {<source> [<source-wildcard>] | host <source> | any} [log]"
+      ],
+      "args": {
+        "source": {"kind": "Ipv4"},
+        "source-wildcard": {"kind": "Ipv4"}
+      },
+      "evidence": "as `permit (IP standard)`; the lab WS-C2960G-8TC-L (15.0(2)SE11) took `deny any`"
+    },
+    {
+      "name": "remark (IP access list)",
+      "modes": ["config-ext-nacl", "config-std-nacl"],
+      "lines": [
+        "remark <remark>"
+      ],
+      "args": {"remark": {"kind": "Text"}},
+      "evidence": "the security reference's remark takes a comment to the end of the line in a standard or extended named list (its Command Modes); the IOS XE books give it for extended lists alone, while eight captured C9200Ls at 17.15 hold `20 remark ...` in standard lists and the lab WS-C2960G-8TC-L (15.0(2)SE11) took `remark a note`. Taken at every release whose books show a `remark` line"
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+# A listed switch renamed, copied, read and exported: each popup's keys and help, a name the list
+# has, a rename by case alone, a long name, a configuration searched and scrolled, and an export over
+# a file that is there.
+file export/readme.txt files the audit exports\n
+run load tests/c9200-design.toml
+run load tests/c9300l-design.toml
+run load tests/example-9400-running-config.txt
+spawn 80x24
+fullscreen
+wait 3, by name
+dump three-listed
+key j
+wait > idf-9200
+# rename: refused for a listed name, then kept
+key r
+wait Rename idf-9200
+dump rename-asks
+key ?
+wait Keys: the name
+key Esc
+gone Keys:
+key Ctrl-u
+type IDF-9300L
+key Enter
+wait already in the list
+dump rename-to-a-listed-name
+key Ctrl-u
+type core1
+key Enter
+wait Renamed idf-9200 to core1.
+dump renamed
+key r
+wait Rename core1
+key Ctrl-u
+type CORE1
+key Enter
+wait Renamed core1 to CORE1.
+dump renamed-by-case
+# the kept configuration: help, search, scrolling
+key v
+wait lines 1-
+dump view
+key ?
+wait Keys: the configuration
+dump view-help
+key Esc
+gone Keys:
+key /
+type VLAN
+settle 300
+dump search-typed
+key Enter
+wait match(es)
+dump search-found
+key n
+settle 300
+dump search-next
+key N
+settle 300
+dump search-previous
+key End
+settle 300
+dump end
+key Home
+settle 300
+key PageDown
+settle 300
+dump pagedown
+key Right 2
+settle 300
+dump right
+key Left 2
+key /
+type no-such-text
+key Enter
+wait Not found
+dump not-found
+key q
+wait > CORE1
+# a copy, and a copy under a long name
+key c
+wait Copy CORE1
+dump copy-asks
+key Enter
+wait Copied CORE1 to CORE1-copy.
+dump copied
+key c
+wait Copy CORE1-copy
+key Ctrl-u
+type a-copy-with-a-name-longer-than-the-list-column-holds
+key Enter
+wait Copied CORE1-copy to
+dump a-long-name
+# export: a path typed, then the same file asked about before it is written over
+key Home
+wait > a-copy-with
+key e
+wait Export a-copy-with
+dump export-opens
+key ?
+wait Keys: the export
+dump export-help
+key Esc
+gone Keys:
+key Ctrl-u
+type {home}/export/long.cfg
+settle 300
+dump export-path-typed
+key Enter
+wait Wrote
+dump exported
+list
+key j
+wait > CORE1
+key e
+wait Export CORE1
+dump export-opens-in-the-folder-exported-to
+key Down
+settle 300
+dump export-down-picks
+key Down
+settle 300
+key Enter
+settle 300
+dump export-enter-takes-the-picked-name
+key Enter
+wait is there
+dump export-asks-before-writing-over
+key n
+gone is there
+dump export-kept-the-file
+key Enter
+wait is there
+key y
+wait Wrote
+dump export-wrote-over
+list
+resize 132x43
+settle
+dump list-132x43
+resize 80x24
+settle
+key q
+exit

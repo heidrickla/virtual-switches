@@ -1,0 +1,772 @@
+//! The running configuration: global lines and the blocks a submode opens (interface, vlan,
+//! line, vrf definition), changed by accepted lines as IOS changes them. A later line replaces an
+//! earlier one of the same command; commands that take several instances (ntp server, username,
+//! ip route, ...) keep one line per instance; `no` removes.
+
+use crate::cli::{Item, Parse};
+use crate::platform::Stack;
+
+/// A configuration line and its replacement key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entry {
+    pub key: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Block {
+    pub header: String,
+    pub lines: Vec<Entry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Device {
+    pub stack: Stack,
+    pub hostname: String,
+    /// the IOS XE release, as the grammar names it (`17.15`, `26.x`); empty before a session sets it
+    pub release: String,
+    pub global: Vec<Entry>,
+    pub blocks: Vec<Block>,
+    /// top-level lines and blocks taken as a real switch held them (`live`), which print where
+    /// that switch printed them: after the top-level line before them in its capture
+    pub held_top: std::collections::BTreeSet<String>,
+    pub held_after: crate::live::After,
+    /// cabled ports with a link, by full name (`lab.rs`)
+    pub links: std::collections::BTreeMap<String, Link>,
+}
+
+/// A port's link: the far end, the transceiver, and how the port runs once both ends have
+/// negotiated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    /// the far end's hostname and port, or the name of a device the lab does not model
+    pub peer: String,
+    pub optic: Option<&'static crate::platform::Optic>,
+    /// the speed a copper link negotiates (Mb/s); the port's own when `None`
+    pub speed: Option<u32>,
+    /// negotiated half duplex
+    pub half: bool,
+    pub trunk: bool,
+    /// bundled in its port-channel
+    pub bundled: bool,
+}
+
+/// Commands whose `no` form IOS keeps in the running configuration, as the cores' running
+/// configurations print it (9400 17.5, 2026-10-05): `no aaa new-model`, `no ip http server`.
+const KEEPS_NO: &[&str] = &[
+    "aaa new-model",
+    "logging console",
+    "ip forward-protocol nd",
+    "ip http server",
+    "ip http secure-server",
+    // classic IOS (c2960x 15.2(7)E capture 8, 15.2(7)E0a); IOS XE spells the first `no ip domain lookup`
+    "ip domain-lookup",
+    "ip domain lookup",
+    "ip igmp snooping",
+    "cdp run",
+];
+
+/// Interface commands on by default whose `no` form IOS keeps under the interface (`no cdp enable`
+/// under c9300 17.6 capture 4's ports at 9300 17.6, ` no lldp transmit`).
+const KEEPS_NO_IN_BLOCK: &[&str] = &[
+    "cdp enable",
+    "lldp transmit",
+    "lldp receive",
+    "keepalive",
+    "ip redirects",
+    "ip proxy-arp",
+    "ip unreachables",
+];
+
+/// Commands on by default whose `no` form IOS keeps: typed bare, they are the default again, which
+/// prints nothing (no capture holds `cdp run` or `ip domain lookup`, 67 hold `no cdp run`).
+fn default_on(k: &str, at_top: bool) -> bool {
+    if at_top {
+        ["cdp run", "ip domain-lookup", "ip domain lookup", "ip igmp snooping"].contains(&k)
+            // `spanning-tree vlan 5`, not `spanning-tree vlan 5 priority 4096`
+            || k.starts_with("spanning-tree vlan #")
+    } else {
+        KEEPS_NO_IN_BLOCK.contains(&k)
+    }
+}
+
+/// Interfaces that route: `no ip address` is kept on them (the cores print it under
+/// GigabitEthernet0/0 and Vlan1), not on a switch port.
+fn routed(header: &str, lines: &[Entry]) -> bool {
+    let name = header.trim_start_matches("interface ");
+    ["Vlan", "Loopback", "Tunnel", "GigabitEthernet0/0"]
+        .iter()
+        .any(|p| name.starts_with(p))
+        // a 2960-X's management port (c2960x 15.2(7)E capture 8 prints `no ip address` under it)
+        || name == "FastEthernet0"
+        || lines.iter().any(|e| e.text == "no switchport")
+}
+
+/// Which arguments of a command kept once per instance name the instance; a VRF's name always does.
+#[derive(Clone, Copy)]
+enum Names {
+    /// the first n (`username admin`, whatever its privilege and secret)
+    First(usize),
+    /// every one
+    All,
+    /// every one but a privilege level (`privilege exec level 15 show` names `exec` and `show`; a
+    /// line's `privilege level 15` names nothing)
+    Level,
+    /// a route's prefix, mask and next hop: the leading ones, a distance left out
+    Route,
+}
+
+/// Commands that keep one line per instance, and the arguments that name one: a line naming the
+/// same instance replaces it, whatever it sets.
+const MULTI: &[(&str, Names)] = &[
+    ("ntp server", Names::First(1)),
+    // c2960x 15.2(7)E capture 9 peers with 192.0.2.121 and 192.0.2.122
+    ("ntp peer", Names::First(1)),
+    // c2960 15.2(6)E capture 1's MST configuration maps instances 1 and 2
+    ("instance", Names::All),
+    // one line per key, server, address, route, name or range, as the command references describe them
+    ("ntp authentication-key", Names::First(1)),
+    ("ntp trusted-key", Names::All),
+    ("ip helper-address", Names::First(1)),
+    ("ip address secondary", Names::First(1)),
+    ("ip host", Names::First(1)),
+    ("ip prefix-list", Names::All),
+    ("ip dhcp excluded-address", Names::All),
+    ("ip domain list", Names::All),
+    ("ip domain-list", Names::All),
+    ("ipv6 route", Names::Route),
+    ("tacacs-server host", Names::First(1)),
+    ("radius-server host", Names::First(1)),
+    // a MAC address in a VLAN
+    ("mac address-table static", Names::First(2)),
+    ("snmp-server view", Names::First(2)),
+    ("boot system", Names::All),
+    ("alias", Names::All),
+    ("username", Names::First(1)),
+    ("ip route", Names::Route),
+    ("ip name-server", Names::All),
+    ("logging host", Names::First(1)),
+    ("snmp-server host", Names::All),
+    ("snmp-server community", Names::First(1)),
+    ("snmp-server user", Names::All),
+    ("snmp-server group", Names::All),
+    ("spanning-tree vlan", Names::First(1)),
+    ("switch", Names::First(1)),
+    ("ip access-list", Names::All),
+    ("access-list", Names::All),
+    // c2960x 15.2(7)E capture 8 prints 21 `snmp-server enable traps` lines and two port-security MACs
+    ("snmp-server enable traps", Names::All),
+    ("switchport port-security mac-address", Names::All),
+    // c9200 17.15 capture 27 prints 13 `privilege exec level 15 <command>` lines
+    ("privilege", Names::Level),
+    // c2960x 15.2(2)E capture 1 holds two certificate chains, TP-self-signed and HTTPS_SS_CERT_KEYPAIR, each with
+    // its trustpoint
+    ("crypto pki certificate chain", Names::All),
+    ("crypto pki trustpoint", Names::All),
+    // a routing process's neighbors and networks (a BGP network by its prefix and mask, an OSPF one
+    // by its address and wildcard)
+    ("neighbor", Names::First(1)),
+    ("network", Names::First(2)),
+];
+
+/// Instances whose keywords after the instance name a setting of it, each kept on its own line:
+/// `spanning-tree vlan 10 priority 4096` beside `spanning-tree vlan 10 forward-time 10`,
+/// `neighbor 10.0.0.1 remote-as 65001` beside `neighbor 10.0.0.1 activate`.
+const SETTINGS: &[&str] = &["spanning-tree vlan", "switch", "neighbor"];
+
+/// The levels a logging destination takes by name (`logging console informational`).
+const LEVELS: &[&str] = &[
+    "alerts",
+    "critical",
+    "debugging",
+    "emergencies",
+    "errors",
+    "informational",
+    "notifications",
+    "warnings",
+];
+
+/// What a line lets in or out by (`transport input ssh`).
+const TRANSPORTS: &[&str] = &["all", "none", "ssh", "telnet", "rlogin"];
+
+/// How `service timestamps` stamps a message.
+const STAMPS: &[&str] = &[
+    "datetime",
+    "localtime",
+    "msec",
+    "show-timezone",
+    "uptime",
+    "year",
+];
+
+/// Commands IOS keeps one line of whatever value it is given: these keywords after the command
+/// choose the value (`switchport mode trunk` replaces `switchport mode access`).
+const CHOICES: &[(&str, &[&str])] = &[
+    (
+        "switchport mode",
+        &[
+            "access",
+            "trunk",
+            "dynamic",
+            "auto",
+            "desirable",
+            "dot1q-tunnel",
+            "private-vlan",
+            "host",
+            "promiscuous",
+        ],
+    ),
+    (
+        "switchport trunk encapsulation",
+        &["dot1q", "isl", "negotiate"],
+    ),
+    (
+        "switchport port-security violation",
+        &["protect", "restrict", "shutdown", "vlan"],
+    ),
+    (
+        "switchport port-security aging type",
+        &["absolute", "inactivity"],
+    ),
+    ("switchport voice vlan", &["dot1p", "none", "untagged"]),
+    ("spanning-tree mode", &["pvst", "rapid-pvst", "mst"]),
+    // an interface's; the global `spanning-tree portfast default` lines name another command
+    (
+        "spanning-tree portfast",
+        &["disable", "edge", "network", "trunk"],
+    ),
+    ("spanning-tree link-type", &["point-to-point", "shared"]),
+    ("spanning-tree guard", &["loop", "none", "root"]),
+    ("spanning-tree bpduguard", &["enable", "disable"]),
+    ("spanning-tree bpdufilter", &["enable", "disable"]),
+    ("spanning-tree pathcost method", &["long", "short"]),
+    ("spanning-tree vlan root", &["primary", "secondary"]),
+    ("vtp mode", &["client", "server", "transparent", "off"]),
+    ("vtp version", &["1", "2", "3"]),
+    ("duplex", &["auto", "full", "half"]),
+    (
+        "speed",
+        &[
+            "10",
+            "100",
+            "1000",
+            "2500",
+            "5000",
+            "10000",
+            "25000",
+            "40000",
+            "100000",
+            "auto",
+            "nonegotiate",
+        ],
+    ),
+    (
+        "channel-group mode",
+        &["active", "passive", "on", "auto", "desirable", "non-silent"],
+    ),
+    (
+        "port-channel load-balance",
+        &[
+            "dst-ip",
+            "dst-mac",
+            "dst-mixed-ip-port",
+            "dst-port",
+            "src-dst-ip",
+            "src-dst-mac",
+            "src-dst-mixed-ip-port",
+            "src-dst-port",
+            "src-ip",
+            "src-mac",
+            "src-mixed-ip-port",
+            "src-port",
+        ],
+    ),
+    ("udld port", &["aggressive", "disable"]),
+    ("udld", &["aggressive", "enable"]),
+    ("lacp rate", &["fast", "normal"]),
+    ("power inline", &["auto", "never", "static", "max"]),
+    ("mls qos trust", &["cos", "dscp", "ip-precedence"]),
+    ("ip ssh version", &["1", "2"]),
+    ("ip http authentication", &["aaa", "enable", "local"]),
+    (
+        "vlan internal allocation policy",
+        &["ascending", "descending"],
+    ),
+    ("diagnostic bootup level", &["minimal", "complete"]),
+    ("power redundancy-mode", &["combined", "redundant"]),
+    (
+        "authentication port-control",
+        &["auto", "force-authorized", "force-unauthorized"],
+    ),
+    (
+        "authentication host-mode",
+        &["multi-auth", "multi-domain", "multi-host", "single-host"],
+    ),
+    ("authentication order", &["dot1x", "mab", "webauth"]),
+    ("authentication priority", &["dot1x", "mab", "webauth"]),
+    (
+        "access-session port-control",
+        &["auto", "force-authorized", "force-unauthorized"],
+    ),
+    (
+        "access-session host-mode",
+        &["multi-auth", "multi-domain", "multi-host", "single-host"],
+    ),
+    ("dot1x pae", &["authenticator", "supplicant", "both"]),
+    ("transport input", TRANSPORTS),
+    ("transport output", TRANSPORTS),
+    ("transport preferred", TRANSPORTS),
+    // a line's login: local, or a named list
+    ("login", &["local", "authentication"]),
+    ("logging console", LEVELS),
+    ("logging monitor", LEVELS),
+    ("logging trap", LEVELS),
+    ("logging buffered", LEVELS),
+    ("logging origin-id", &["hostname", "ip", "ipv6", "string"]),
+    ("service timestamps debug", STAMPS),
+    ("service timestamps log", STAMPS),
+    ("flowcontrol receive", &["desired", "off", "on"]),
+    ("flowcontrol send", &["desired", "off", "on"]),
+    ("ip arp inspection validate", &["dst-mac", "ip", "src-mac"]),
+    ("file prompt", &["alert", "noisy", "quiet"]),
+];
+
+/// A line's keywords, as the grammar spells them and without its `no`.
+fn keywords(p: &Parse) -> Vec<String> {
+    p.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Kw { kw, .. } if !kw.eq_ignore_ascii_case("no") => Some(kw.to_lowercase()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The command a line's keywords name, the value they choose left out (`CHOICES`).
+fn command(words: &[String]) -> String {
+    for (stem, values) in CHOICES {
+        let n = stem.split(' ').count();
+        if words.len() > n
+            && words[..n].join(" ") == *stem
+            && words[n..].iter().all(|w| values.contains(&w.as_str()))
+        {
+            return stem.to_string();
+        }
+    }
+    words.join(" ")
+}
+
+/// The words of the arguments that name an instance (`MULTI`), lowercase: of a free-text argument,
+/// its first words (some books read `snmp-server community`'s string to the end of the line).
+fn instance(p: &Parse, names: Names) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut counted = 0;
+    let mut after: Option<&str> = None;
+    // a route's leading arguments end at the first keyword after them
+    let mut route_done = false;
+    for i in &p.items {
+        match i {
+            Item::Kw { kw, .. } => {
+                route_done = counted > 0;
+                after = Some(kw.as_str());
+            }
+            Item::Arg { value, .. } => {
+                let previous = after.take();
+                for word in value.split_whitespace().map(str::to_lowercase) {
+                    if previous.is_some_and(|k| k.eq_ignore_ascii_case("vrf")) {
+                        out.push(word);
+                        continue;
+                    }
+                    let names_it = match names {
+                        Names::First(n) => counted < n,
+                        Names::All => true,
+                        Names::Level => !previous.is_some_and(|k| k.eq_ignore_ascii_case("level")),
+                        Names::Route => !route_done && !word.chars().all(|c| c.is_ascii_digit()),
+                    };
+                    counted += 1;
+                    if names_it {
+                        out.push(word);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The replacement key of a line: the command its keywords name, without the value they choose
+/// (`switchport mode trunk` replaces `switchport mode access`); for a command kept once per
+/// instance, ` #` and the arguments that name the instance (`username admin`, whatever it sets;
+/// `ntp server vrf Mgmt-vrf 192.0.2.121` and `... 192.0.2.122` are two). A command whose every
+/// argument names its instance is named by its keywords as well (`access-list 103 permit tcp ...`
+/// beside `... permit udp ...`).
+pub fn key(p: &Parse) -> String {
+    let words = keywords(p);
+    let joined = words.join(" ");
+    let multi = MULTI
+        .iter()
+        .find(|(m, _)| joined == *m || joined.starts_with(&format!("{m} ")));
+    let Some((m, names)) = multi else {
+        return command(&words);
+    };
+    let named = instance(p, *names);
+    // a value the secret sweep took out tells no instance from another (two `snmp-server
+    // community <removed>` lines): the whole line names it, and only a line typed again is the same
+    if matches!(names, Names::All) || named.iter().any(|n| n == crate::sweep::REMOVED) {
+        return format!("{joined} #{}", instance(p, Names::All).join(" "));
+    }
+    let head = if SETTINGS.contains(m) {
+        command(&words)
+    } else {
+        m.to_string()
+    };
+    format!("{head} #{}", named.join(" "))
+}
+
+/// Whether a `no` line keyed `k` removes the entry keyed `e`: the same command, and the same
+/// instance; every instance where the `no` names none (`no ntp server`), or names its first words
+/// (`no ip prefix-list LAN`, whatever its entries); every setting of the instance where it names no
+/// setting (`no neighbor 10.0.0.1`). A `no` naming less than a whole command (`whole` false:
+/// `no spanning-tree bpduguard`) also removes the commands it begins.
+fn negates(k: &str, e: &str, whole: bool) -> bool {
+    if k == e {
+        return true;
+    }
+    match (k.split_once(" #"), e.split_once(" #")) {
+        (Some((kc, ki)), Some((ec, ei))) => {
+            let longer = ec == kc || ec.starts_with(&format!("{kc} "));
+            let begins = ki.is_empty() || ki == ei || ei.starts_with(&format!("{ki} "));
+            longer && begins
+        }
+        (None, _) => !whole && e.starts_with(&format!("{k} ")),
+        _ => false,
+    }
+}
+
+fn first_arg(p: &Parse) -> Option<String> {
+    p.items.iter().find_map(|i| match i {
+        Item::Arg { value, .. } => Some(value.clone()),
+        _ => None,
+    })
+}
+
+impl Device {
+    pub fn new(stack: Stack) -> Self {
+        Device {
+            stack,
+            hostname: "Switch".into(),
+            release: String::new(),
+            global: vec![],
+            blocks: vec![],
+            held_top: Default::default(),
+            held_after: Default::default(),
+            links: Default::default(),
+        }
+    }
+
+    /// An interface's configuration lines.
+    pub fn config_of(&self, name: &str) -> Vec<&str> {
+        let header = format!("interface {name}");
+        self.blocks
+            .iter()
+            .find(|b| b.header == header)
+            .map(|b| b.lines.iter().map(|e| e.text.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether the running configuration holds the VLANs and the VTP lines: in VTP transparent (or
+    /// off) mode. A VTP server or client, the default, keeps them in the VLAN database (vlan.dat)
+    /// instead ("In VTP Versions 1 and 2, the VTP mode must be transparent for VTP and VLAN information
+    /// to be saved in the running configuration file", 9300 command reference).
+    pub fn vlans_in_running_config(&self) -> bool {
+        self.global
+            .iter()
+            .any(|e| e.text == "vtp mode transparent" || e.text == "vtp mode off")
+    }
+
+    /// The block opened by `header`, created when new.
+    pub fn block(&mut self, header: &str) -> usize {
+        if let Some(i) = self.blocks.iter().position(|b| b.header == header) {
+            return i;
+        }
+        self.blocks.push(Block {
+            header: header.to_string(),
+            lines: vec![],
+        });
+        self.blocks.len() - 1
+    }
+
+    pub fn remove_block(&mut self, header: &str) {
+        self.blocks.retain(|b| b.header != header);
+    }
+
+    /// Applies an accepted configuration line, globally or inside block `at`. A port-channel's
+    /// switchport lines reach its members, as IOS applies them (the cores' members mirror their
+    /// port-channel; `target.rs` follows the same rule). A line a real switch of this platform and
+    /// release printed (`printed`) keeps its `no` form as that switch keeps it (`no service dhcp`,
+    /// ` no ip igmp snooping tcn flood`). `whole`: a `no` line names a whole command, which the
+    /// books take without it (`negates`).
+    pub fn apply_as(&mut self, p: &Parse, at: Option<usize>, printed: bool, whole: bool) {
+        self.apply_one(p, at, printed, whole);
+        let Some(b) = at else { return };
+        let Some(n) = self.blocks[b].header.strip_prefix("interface Port-channel") else {
+            return;
+        };
+        if !key(p).starts_with("switchport") {
+            return;
+        }
+        let member = format!("channel-group {n} mode ");
+        let members: Vec<usize> = (0..self.blocks.len())
+            .filter(|&i| {
+                self.blocks[i]
+                    .lines
+                    .iter()
+                    .any(|e| e.text.starts_with(&member))
+            })
+            .collect();
+        for m in members {
+            self.apply_one(p, Some(m), false, whole);
+        }
+    }
+
+    fn apply_one(&mut self, p: &Parse, at: Option<usize>, printed: bool, whole: bool) {
+        let k = key(p);
+        if at.is_none() && k == "hostname" {
+            if p.negated {
+                self.hostname = "Switch".into();
+            } else if let Some(h) = first_arg(p) {
+                self.hostname = h;
+            }
+        }
+        let keeps_no = printed
+            || match at {
+                // `no spanning-tree vlan 1` (c2960x 15.2(7)E capture 8) is kept per VLAN
+                None => KEEPS_NO.contains(&k.as_str()) || k.starts_with("spanning-tree vlan #"),
+                // `no vtp` on a port (c9400 17.5 capture 2 prints it); `no switchport` on a routed port (the 9300
+                // configuration guide's `show running-config interface GigabitEthernet1/0/9`)
+                Some(b) => {
+                    k == "vtp"
+                        || k == "switchport"
+                        || KEEPS_NO_IN_BLOCK.contains(&k.as_str())
+                        || (k == "ip address" || k == "ip route-cache")
+                            && routed(&self.blocks[b].header, &self.blocks[b].lines)
+                }
+            };
+        let lines = match at {
+            Some(b) => &mut self.blocks[b].lines,
+            None => &mut self.global,
+        };
+        if at.is_some() && k == "switchport" {
+            if p.negated {
+                // a routed port: its switch port lines go
+                lines.retain(|e| !e.key.starts_with("switchport "));
+            } else {
+                // a switch port again, the default, which prints nothing: its address goes
+                lines.retain(|e| {
+                    e.key != k
+                        && e.key != "ip route-cache"
+                        && e.key != "ip address"
+                        && !e.key.starts_with("ip address ")
+                });
+                return;
+            }
+        }
+        // a default turned back on prints nothing, unless a real switch printed it so; an argument
+        // sets something else (`keepalive 10`), but an instance's names the default's instance
+        let bare = k.contains(" #") || !p.items.iter().any(|i| matches!(i, Item::Arg { .. }));
+        if !p.negated && !printed && bare && default_on(&k, at.is_none()) {
+            lines.retain(|e| e.key != k);
+            return;
+        }
+        let text = p.canonical();
+        // IOS stores an allowed-VLAN list resolved: `except`, `add` and `remove` change the list
+        // there is, and every VLAN allowed prints no line
+        if let Some(spec) = text
+            .strip_prefix("switchport trunk allowed vlan ")
+            .filter(|_| !p.negated)
+        {
+            let k = "switchport trunk allowed vlan".to_string();
+            let at = lines.iter().position(|e| e.key == k);
+            let current = at.map(|i| lines[i].text[k.len() + 1..].to_string());
+            let set = crate::target::allowed_after(current.as_deref(), spec);
+            match (at, crate::target::allowed_line(&set)) {
+                (Some(i), Some(t)) => lines[i].text = t,
+                (Some(i), None) => {
+                    lines.remove(i);
+                }
+                (None, Some(t)) => put(lines, Entry { key: k, text: t }),
+                (None, None) => {}
+            }
+            return;
+        }
+        apply_to(lines, p, k, keeps_no, whole);
+    }
+}
+
+/// What the key of the line that closes a section (`exit-address-family`) adds to its header's.
+const CLOSES: &str = " #exit";
+
+/// The key of the line that closes the section whose header is keyed `section`.
+pub fn closing(section: &str) -> String {
+    format!("{section}{CLOSES}")
+}
+
+/// Adds an entry to a block's lines ahead of its sections: a router's own lines print before its
+/// address families, whenever typed.
+fn put(lines: &mut Vec<Entry>, e: Entry) {
+    let first = lines
+        .iter()
+        .filter_map(|x| x.key.strip_suffix(CLOSES))
+        .filter_map(|s| lines.iter().position(|h| h.key == s))
+        .min();
+    match first {
+        Some(i) => lines.insert(i, e),
+        None => lines.push(e),
+    }
+}
+
+/// Applies a line keyed `k` to a block's or a section's lines: it replaces the entry of the same key,
+/// or is added; a `no` removes what it negates (`negates`), or where IOS keeps the `no` form
+/// (`keeps_no`) stands in that entry's place.
+pub fn apply_to(lines: &mut Vec<Entry>, p: &Parse, k: String, keeps_no: bool, whole: bool) {
+    if p.negated && !keeps_no {
+        lines.retain(|e| !negates(&k, &e.key, whole));
+        return;
+    }
+    let text = p.canonical();
+    match lines.iter_mut().find(|e| e.key == k) {
+        Some(e) => e.text = text,
+        None => put(lines, Entry { key: k, text }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(items: &[(&str, bool)], negated: bool) -> Parse {
+        Parse {
+            command: 0,
+            line: 0,
+            negated,
+            items: items
+                .iter()
+                .enumerate()
+                .map(|(t, (s, kw))| {
+                    if *kw {
+                        Item::Kw {
+                            kw: s.to_string(),
+                            tok: t,
+                            exact: true,
+                        }
+                    } else {
+                        Item::Arg {
+                            name: "a".into(),
+                            value: s.to_string(),
+                            tok: t,
+                            typed: true,
+                        }
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn texts(v: &[Entry]) -> Vec<&str> {
+        v.iter().map(|e| e.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_routed_port_keeps_no_switchport_until_it_is_a_switch_port_again() {
+        let mut d = Device::new(Stack::single("C9300X-24Y", None));
+        let b = d.block("interface TwentyFiveGigE1/0/1");
+        d.apply_as(&p(&[("switchport", true)], true), Some(b), false, true);
+        assert_eq!(texts(&d.blocks[b].lines), vec!["no switchport"]);
+        d.apply_as(&p(&[("switchport", true)], false), Some(b), false, true);
+        assert!(d.blocks[b].lines.is_empty());
+    }
+
+    #[test]
+    fn a_later_line_replaces_the_same_command_and_instances_are_kept() {
+        let mut d = Device::new(Stack::single("C9300X-24Y", None));
+        let b = d.block("interface TwentyFiveGigE1/0/1");
+        d.apply_as(
+            &p(
+                &[
+                    ("switchport", true),
+                    ("access", true),
+                    ("vlan", true),
+                    ("10", false),
+                ],
+                false,
+            ),
+            Some(b),
+            false,
+            true,
+        );
+        d.apply_as(
+            &p(
+                &[
+                    ("switchport", true),
+                    ("access", true),
+                    ("vlan", true),
+                    ("20", false),
+                ],
+                false,
+            ),
+            Some(b),
+            false,
+            true,
+        );
+        assert_eq!(texts(&d.blocks[b].lines), vec!["switchport access vlan 20"]);
+        d.apply_as(
+            &p(
+                &[("ntp", true), ("server", true), ("192.0.2.121", false)],
+                false,
+            ),
+            None,
+            false,
+            true,
+        );
+        d.apply_as(
+            &p(
+                &[("ntp", true), ("server", true), ("192.0.2.122", false)],
+                false,
+            ),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(
+            texts(&d.global),
+            vec!["ntp server 192.0.2.121", "ntp server 192.0.2.122"]
+        );
+        d.apply_as(
+            &p(
+                &[("ntp", true), ("server", true), ("192.0.2.121", false)],
+                true,
+            ),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(texts(&d.global), vec!["ntp server 192.0.2.122"]);
+        d.apply_as(
+            &p(&[("hostname", true), ("dc1-stack-sw01", false)], false),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(d.hostname, "dc1-stack-sw01");
+        d.apply_as(
+            &p(
+                &[("switchport", true), ("access", true), ("vlan", true)],
+                true,
+            ),
+            Some(b),
+            false,
+            true,
+        );
+        assert!(d.blocks[b].lines.is_empty());
+    }
+}

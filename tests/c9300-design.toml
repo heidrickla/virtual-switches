@@ -1,0 +1,32 @@
+# A Catalyst 9300 and 9300X mixed stack for tests: a C9300X-24Y with C9300X-NM-2C and a C9300-48T with
+# C9300-NM-8X, a 10G uplink on the 9300's module, and access ports.
+
+hostname = "idf-9300"
+stack = ["C9300X-24Y+C9300X-NM-2C", "C9300-48T+C9300-NM-8X"]
+vtp_mode = "transparent"
+spanning_tree = { mode = "rapid-pvst", priority = 61440, vlans = "1-4094" }
+domain = "lab.example"
+management = { address = "10.0.0.30", mask = "255.255.255.0", gateway = "10.0.0.1" }
+ssh_only = true
+native_vlan = 999
+
+vlan = [
+  { id = 10, name = "Users" },
+  { id = 999, name = "Native" },
+]
+
+[[port_channel]]
+id = 1
+description = "uplink to the core"
+allowed = "10,999"
+lacp_fast = true
+members = [
+  { port = "Te2/1/1", description = "core Te1/0/1" },
+  { port = "Te2/1/2", description = "core Te2/0/1" },
+]
+
+[[access]]
+port = "Gi2/0/48"
+vlan = 10
+description = "desk 48"
+edge = true

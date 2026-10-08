@@ -1,0 +1,297 @@
+# The console's keys: ?, Tab, history, the IOS editing keys (Ctrl-A, -E, -B, -F, -D, -K, -U, -W, -Y,
+# -T, -L, -R, -V; Esc B, F, D, C, L, U, Y and their Alt forms), Ctrl-C and Ctrl-Z, IOS's messages and
+# lines typed faster than they are drawn, comments in configuration mode, saving and its question,
+# --More-- and terminal length, lines wider than the terminal, and logout.
+spawn 80x24 shell
+prompt Switch>
+key ?
+prompt Switch>
+dump help-at-an-empty-prompt
+type sh
+key ?
+wait Switch>sh?
+prompt Switch>sh
+dump help-after-sh
+key Ctrl-u
+type show ?
+wait --More--
+dump help-show-space
+key q
+wait Switch>show
+key Ctrl-u
+prompt Switch>
+type sh
+key Tab
+type ver
+key Tab
+wait Switch>show version
+dump tab-sh-ver
+key Enter
+wait output model
+dump show-version
+type zz
+key Tab
+settle
+dump tab-with-nothing-to-complete
+key Ctrl-u
+prompt Switch>
+typed Switch# enable
+type conf
+key Tab
+settle
+dump tab-conf
+type t
+key Tab
+wait Switch#configure terminal
+dump tab-conf-t
+key Enter
+prompt Switch(config)#
+type int
+key Tab
+type twe1/0/1
+key Tab
+wait Switch(config)#interface TwentyFiveGigE1/0/1
+dump tab-interface
+key Enter
+prompt Switch(config-if)#
+typed Switch(config-if)# description first line typed here
+key Up
+prompt Switch(config-if)#description first line typed here
+dump history-up
+key Up 2
+wait Switch(config-if)#configure terminal
+dump history-up-3
+key Down 4
+prompt Switch(config-if)#
+dump history-down-past-the-end
+# the IOS editing keys on one line
+type one two three four
+key Ctrl-w
+wait #one two three
+settle
+dump ctrl-w
+key Ctrl-y
+wait #one two three four
+dump ctrl-y
+key Esc
+key b
+key Esc
+key b
+settle
+dump esc-b-twice
+key Esc
+key f
+settle
+key Esc
+key d
+settle
+dump esc-f-esc-d
+key Ctrl-a
+key Esc
+key c
+key Esc
+key u
+settle
+dump esc-c-esc-u
+key Ctrl-a
+key Esc
+key l
+settle
+dump esc-l
+key Ctrl-f
+key Ctrl-t
+settle
+dump ctrl-t
+key Alt-f
+key Alt-b
+key Alt-d
+settle
+dump alt-f-alt-b-alt-d
+key Ctrl-e
+key Ctrl-u
+type abc
+key Ctrl-u
+key Ctrl-y
+key Esc
+key y
+settle
+dump ctrl-y-esc-y
+key Ctrl-a
+key Esc
+key f
+key Ctrl-k
+settle
+dump esc-f-ctrl-k
+key Ctrl-b
+key Ctrl-d
+key Ctrl-f
+settle
+dump ctrl-b-ctrl-d-ctrl-f
+key Home
+key Right
+key Delete
+key End
+key Left
+key Backspace
+settle
+dump home-right-delete-end-left-backspace
+key Ctrl-l
+settle
+dump ctrl-l
+key Ctrl-r
+settle
+dump ctrl-r
+key Ctrl-e
+key Ctrl-u
+prompt Switch(config-if)#
+# Ctrl-V enters ? and Tab as themselves
+type description what
+key Ctrl-v
+key ?
+wait #description what?
+dump ctrl-v-question-mark
+key Enter
+prompt Switch(config-if)#
+type description a
+key Ctrl-v
+key Tab
+type b
+settle
+dump ctrl-v-tab
+key Ctrl-e
+key Ctrl-u
+prompt Switch(config-if)#
+# a key after Esc that is no Esc command
+type description esc
+key Esc
+key Enter
+settle
+dump esc-then-enter
+key Ctrl-e
+key Ctrl-u
+prompt Switch(config-if)#
+key Ctrl-c
+prompt Switch#
+dump ctrl-c-in-configuration
+typed Switch(config)# configure terminal
+typed Switch(config)# !
+typed Switch(config)#  !
+typed Switch(config)# version 17.15
+typed Switch(config)#  description after a comment
+dump comments-and-version
+key Ctrl-z
+prompt Switch#
+dump ctrl-z
+# errors, typed at a person's pace, then typed faster than the line is drawn
+typed Switch# show interfaces twe1/0/1 status
+typed Switch# frobnicate
+typed Switch# sh i
+typed Switch# show ip
+dump errors
+command Switch# frobnicate
+command Switch# sh i
+command Switch# show ip
+dump errors-typed-fast
+key Ctrl-d
+key Ctrl-t
+key Ctrl-w
+settle
+dump keys-on-an-empty-line
+# saving, its question answered, then the question cancelled
+type copy running-config startup-config
+settle 300
+key Enter
+wait Destination filename
+dump copy-asks
+key Enter
+wait [OK]
+dump copy-done
+type copy running-config startup-config
+settle 300
+key Enter
+wait Destination filename
+key Ctrl-c
+settle
+dump ctrl-c-at-the-copy-question
+key Ctrl-z
+settle
+dump ctrl-z-at-an-exec-prompt
+type show startup-config
+settle 300
+key Enter
+wait --More--
+dump show-startup-config
+key q
+prompt Switch#
+# --More--: ? names the keys, Return a line, Space a page, any other key stops
+type show running-config
+settle 300
+key Enter
+wait --More--
+dump more
+key ?
+wait Press RETURN
+dump more-help
+key Enter
+settle
+dump more-return
+key Space
+settle
+dump more-space
+key x
+prompt Switch#
+dump more-other-key-stops
+typed Switch# terminal length 0
+type show running-config
+settle 300
+key Enter
+prompt Switch#
+dump terminal-length-0
+typed Switch> disable
+# lines wider than the terminal, before and after a resize
+type configure terminal ; interface TwentyFiveGigE1/0/1 ; description a line longer than the terminal is wide
+wait terminal is wide
+dump a-long-line
+key Home
+wait Switch>configure terminal ;
+dump a-long-line-home
+key End
+key Ctrl-u
+prompt Switch>
+settle 300
+resize 60x20
+type interface range TwentyFiveGigE1/0/1 - 24 , TwentyFiveGigE2/0/1 - 24
+wait TwentyFiveGigE2/0/1 - 24
+settle
+dump a-long-line-after-a-resize
+key Ctrl-u
+prompt Switch>
+# help on a narrow terminal goes on under its own column; paging is off since terminal length 0
+type show ?
+wait tech-support
+settle
+dump help-at-60-columns
+key Ctrl-u
+prompt Switch>
+resize 80x24
+type logout
+settle 300
+key Enter
+exit
+dump after-logout
+# a 9200 at 17.15, whose book has a configureterminal keyword beside configure
+spawn 80x24 shell --stack C9200-24T --release 17.15
+prompt Switch>
+typed Switch# enable
+type conf
+key Tab
+settle
+dump c9200-conf-tab
+key ?
+settle
+dump c9200-conf-question-mark
+key Ctrl-u
+type logout
+settle 300
+key Enter
+exit

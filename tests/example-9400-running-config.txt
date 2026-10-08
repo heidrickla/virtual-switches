@@ -1,0 +1,475 @@
+Building configuration...
+
+Current configuration : 30000 bytes
+!
+version 17.5
+service timestamps debug datetime msec
+service timestamps log datetime msec
+service call-home
+platform punt-keepalive disable-kernel-core
+!
+hostname core-9400
+!
+vrf definition Mgmt-vrf
+ !
+ address-family ipv4
+ exit-address-family
+ !
+ address-family ipv6
+ exit-address-family
+!
+aaa new-model
+!
+aaa session-id common
+!
+ip domain name example.com
+!
+vtp domain example
+vtp mode server
+!
+redundancy
+ mode sso
+!
+spanning-tree mode rapid-pvst
+spanning-tree extend system-id
+!
+vlan 10
+ name AREA_10
+!
+vlan 20
+ name AREA_20
+!
+vlan 30
+ name AREA_30
+!
+vlan 40
+ name AREA_40
+!
+vlan 50
+ name AREA_50
+!
+interface GigabitEthernet1/0/1
+ shutdown
+!
+interface GigabitEthernet1/0/2
+ shutdown
+!
+interface GigabitEthernet1/0/3
+ shutdown
+!
+interface GigabitEthernet1/0/4
+ shutdown
+!
+interface GigabitEthernet1/0/5
+ shutdown
+!
+interface GigabitEthernet1/0/6
+ shutdown
+!
+interface GigabitEthernet1/0/7
+ shutdown
+!
+interface GigabitEthernet1/0/8
+ shutdown
+!
+interface GigabitEthernet1/0/9
+ shutdown
+!
+interface GigabitEthernet1/0/10
+ shutdown
+!
+interface GigabitEthernet1/0/11
+ shutdown
+!
+interface GigabitEthernet1/0/12
+ shutdown
+!
+interface GigabitEthernet1/0/13
+ shutdown
+!
+interface GigabitEthernet1/0/14
+ shutdown
+!
+interface GigabitEthernet1/0/15
+ shutdown
+!
+interface GigabitEthernet1/0/16
+ shutdown
+!
+interface GigabitEthernet1/0/17
+ shutdown
+!
+interface GigabitEthernet1/0/18
+ shutdown
+!
+interface GigabitEthernet1/0/19
+ shutdown
+!
+interface GigabitEthernet1/0/20
+ shutdown
+!
+interface GigabitEthernet1/0/21
+ shutdown
+!
+interface GigabitEthernet1/0/22
+ shutdown
+!
+interface GigabitEthernet1/0/23
+ shutdown
+!
+interface GigabitEthernet1/0/24
+ shutdown
+!
+interface GigabitEthernet1/0/25
+ shutdown
+!
+interface GigabitEthernet1/0/26
+ shutdown
+!
+interface GigabitEthernet1/0/27
+ shutdown
+!
+interface GigabitEthernet1/0/28
+ shutdown
+!
+interface GigabitEthernet1/0/29
+ shutdown
+!
+interface GigabitEthernet1/0/30
+ shutdown
+!
+interface GigabitEthernet1/0/31
+ shutdown
+!
+interface GigabitEthernet1/0/32
+ shutdown
+!
+interface GigabitEthernet1/0/33
+ shutdown
+!
+interface GigabitEthernet1/0/34
+ shutdown
+!
+interface GigabitEthernet1/0/35
+ shutdown
+!
+interface GigabitEthernet1/0/36
+ shutdown
+!
+interface GigabitEthernet1/0/37
+ shutdown
+!
+interface GigabitEthernet1/0/38
+ shutdown
+!
+interface GigabitEthernet1/0/39
+ shutdown
+!
+interface GigabitEthernet1/0/40
+ shutdown
+!
+interface GigabitEthernet1/0/41
+ shutdown
+!
+interface GigabitEthernet1/0/42
+ shutdown
+!
+interface GigabitEthernet1/0/43
+ shutdown
+!
+interface GigabitEthernet1/0/44
+ shutdown
+!
+interface GigabitEthernet1/0/45
+ shutdown
+!
+interface GigabitEthernet1/0/46
+ shutdown
+!
+interface GigabitEthernet1/0/47
+ shutdown
+!
+interface GigabitEthernet1/0/48
+ shutdown
+!
+interface TenGigabitEthernet2/0/1
+ shutdown
+!
+interface TenGigabitEthernet2/0/2
+ shutdown
+!
+interface TenGigabitEthernet2/0/3
+ shutdown
+!
+interface TenGigabitEthernet2/0/4
+ shutdown
+!
+interface TenGigabitEthernet2/0/5
+ shutdown
+!
+interface TenGigabitEthernet2/0/6
+ shutdown
+!
+interface TenGigabitEthernet2/0/7
+ shutdown
+!
+interface TenGigabitEthernet2/0/8
+ shutdown
+!
+interface TenGigabitEthernet2/0/9
+ shutdown
+!
+interface TenGigabitEthernet2/0/10
+ shutdown
+!
+interface TenGigabitEthernet2/0/11
+ shutdown
+!
+interface TenGigabitEthernet2/0/12
+ shutdown
+!
+interface TenGigabitEthernet2/0/13
+ shutdown
+!
+interface TenGigabitEthernet2/0/14
+ shutdown
+!
+interface TenGigabitEthernet2/0/15
+ shutdown
+!
+interface TenGigabitEthernet2/0/16
+ shutdown
+!
+interface TenGigabitEthernet2/0/17
+ shutdown
+!
+interface TenGigabitEthernet2/0/18
+ shutdown
+!
+interface TenGigabitEthernet2/0/19
+ shutdown
+!
+interface TenGigabitEthernet2/0/20
+ shutdown
+!
+interface TenGigabitEthernet2/0/21
+ shutdown
+!
+interface TenGigabitEthernet2/0/22
+ shutdown
+!
+interface TenGigabitEthernet2/0/23
+ shutdown
+!
+interface TenGigabitEthernet2/0/24
+ shutdown
+!
+interface GigabitEthernet5/0/1
+ shutdown
+!
+interface GigabitEthernet5/0/2
+ shutdown
+!
+interface GigabitEthernet5/0/3
+ shutdown
+!
+interface GigabitEthernet5/0/4
+ shutdown
+!
+interface GigabitEthernet5/0/5
+ shutdown
+!
+interface GigabitEthernet5/0/6
+ shutdown
+!
+interface GigabitEthernet5/0/7
+ shutdown
+!
+interface GigabitEthernet5/0/8
+ shutdown
+!
+interface GigabitEthernet5/0/9
+ shutdown
+!
+interface GigabitEthernet5/0/10
+ shutdown
+!
+interface GigabitEthernet5/0/11
+ shutdown
+!
+interface GigabitEthernet5/0/12
+ shutdown
+!
+interface GigabitEthernet5/0/13
+ shutdown
+!
+interface GigabitEthernet5/0/14
+ shutdown
+!
+interface GigabitEthernet5/0/15
+ shutdown
+!
+interface GigabitEthernet5/0/16
+ shutdown
+!
+interface GigabitEthernet5/0/17
+ shutdown
+!
+interface GigabitEthernet5/0/18
+ shutdown
+!
+interface GigabitEthernet5/0/19
+ shutdown
+!
+interface GigabitEthernet5/0/20
+ shutdown
+!
+interface GigabitEthernet5/0/21
+ shutdown
+!
+interface GigabitEthernet5/0/22
+ shutdown
+!
+interface GigabitEthernet5/0/23
+ shutdown
+!
+interface GigabitEthernet5/0/24
+ shutdown
+!
+interface GigabitEthernet5/0/25
+ shutdown
+!
+interface GigabitEthernet5/0/26
+ shutdown
+!
+interface GigabitEthernet5/0/27
+ shutdown
+!
+interface GigabitEthernet5/0/28
+ shutdown
+!
+interface GigabitEthernet5/0/29
+ shutdown
+!
+interface GigabitEthernet5/0/30
+ shutdown
+!
+interface GigabitEthernet5/0/31
+ shutdown
+!
+interface GigabitEthernet5/0/32
+ shutdown
+!
+interface GigabitEthernet5/0/33
+ shutdown
+!
+interface GigabitEthernet5/0/34
+ shutdown
+!
+interface GigabitEthernet5/0/35
+ shutdown
+!
+interface GigabitEthernet5/0/36
+ shutdown
+!
+interface GigabitEthernet5/0/37
+ shutdown
+!
+interface GigabitEthernet5/0/38
+ shutdown
+!
+interface GigabitEthernet5/0/39
+ shutdown
+!
+interface GigabitEthernet5/0/40
+ shutdown
+!
+interface GigabitEthernet5/0/41
+ shutdown
+!
+interface GigabitEthernet5/0/42
+ shutdown
+!
+interface GigabitEthernet5/0/43
+ shutdown
+!
+interface GigabitEthernet5/0/44
+ shutdown
+!
+interface GigabitEthernet5/0/45
+ shutdown
+!
+interface GigabitEthernet5/0/46
+ shutdown
+!
+interface GigabitEthernet5/0/47
+ shutdown
+!
+interface GigabitEthernet5/0/48
+ shutdown
+!
+interface TenGigabitEthernet3/0/1
+!
+interface TenGigabitEthernet3/0/2
+!
+interface TenGigabitEthernet3/0/3
+!
+interface TenGigabitEthernet3/0/4
+!
+interface TenGigabitEthernet3/0/5
+!
+interface TenGigabitEthernet3/0/6
+!
+interface TenGigabitEthernet3/0/7
+!
+interface TenGigabitEthernet3/0/8
+!
+interface FortyGigabitEthernet3/0/9
+!
+interface FortyGigabitEthernet3/0/10
+!
+interface TenGigabitEthernet4/0/1
+!
+interface TenGigabitEthernet4/0/2
+!
+interface TenGigabitEthernet4/0/3
+!
+interface TenGigabitEthernet4/0/4
+!
+interface TenGigabitEthernet4/0/5
+!
+interface TenGigabitEthernet4/0/6
+!
+interface TenGigabitEthernet4/0/7
+!
+interface TenGigabitEthernet4/0/8
+!
+interface FortyGigabitEthernet4/0/9
+!
+interface FortyGigabitEthernet4/0/10
+!
+interface GigabitEthernet0/0
+ vrf forwarding Mgmt-vrf
+ ip address 203.0.113.20 255.255.255.0
+ negotiation auto
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+interface Vlan10
+ ip address 192.0.2.1 255.255.255.0
+!
+ip route vrf Mgmt-vrf 0.0.0.0 0.0.0.0 203.0.113.1
+!
+control-plane
+ service-policy input system-cpp-policy
+!
+line con 0
+ stopbits 1
+line vty 0 4
+ transport input ssh
+line vty 5 15
+ transport input none
+!
+end

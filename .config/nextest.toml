@@ -1,0 +1,19 @@
+# A test that hangs (a guard a mutation reverted, a terminal test waiting for a screen that never
+# comes) is stopped instead of holding the machine or the forge's shared runner.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# The forge runs every test and reports each failure, names each test past 15 s at the end, and keeps
+# each test's time (target/nextest/ci/junit.xml); a hung test still stops at 300 s.
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "15s", terminate-after = 20 }
+final-status-level = "slow"
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# The corpus's own checks rebuild it from the captures, which a debug build takes minutes over.
+[[profile.default.overrides]]
+filter = 'test(/^corpus::tests::/)'
+slow-timeout = { period = "120s", terminate-after = 10 }

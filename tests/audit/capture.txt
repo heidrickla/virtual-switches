@@ -1,0 +1,61 @@
+# An 834-line 2960 configuration: loading it and confirming its hardware, long show output paged at --More--
+# and whole, resizing at the prompt, a few lines pasted, and the whole capture pasted into
+# configuration mode. Each mark times what precedes it from the mark before.
+spawn 80x24
+fullscreen
+key a
+wait Load a switch
+type tests/example-2960-running-config.txt
+key Enter
+wait Hardware for access-2960
+dump builder
+mark enter-in-the-builder
+key Enter
+prompt access-2960>
+mark opened
+dump opened
+typed access-2960# enable
+type show running-config
+settle 300
+mark enter
+key Enter
+wait --More--
+mark show-running-config-first-page
+dump show-running-config-paged
+key q
+prompt access-2960#
+typed access-2960# terminal length 0
+type show running-config
+settle 300
+mark enter
+key Enter
+prompt access-2960#
+mark show-running-config-whole
+dump show-running-config-whole
+typed access-2960# show interfaces status
+dump show-interfaces-status
+resize 132x43
+settle
+dump resized-132x43
+resize 60x20
+settle
+dump resized-60x20
+typed access-2960# show vlan brief
+dump show-vlan-brief-after-the-resize
+resize 80x24
+settle
+typed access-2960(config)# configure terminal
+# a few lines pasted: each is entered and answered
+paste-text interface FastEthernet0/1\n description pasted here\n frobnicate\n
+prompt access-2960(config-if)#
+settle
+dump a-few-lines-pasted
+typed access-2960(config)# exit
+since
+mark paste
+paste tests/example-2960-running-config.txt
+line show vlan brief
+written VLAN Name
+mark paste-834-lines-and-show-vlan-brief
+settle
+dump after-the-paste

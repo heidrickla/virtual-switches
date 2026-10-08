@@ -1,0 +1,63 @@
+# The list, its help, the browser, the name popup and the builder at 60x20 and 200x60, resizing with
+# the builder open, a terminal smaller than the list needs, and the sweep with and without files.
+spawn 60x20
+fullscreen
+dump list-60x20
+key ?
+wait Keys: the switch list
+dump help-60x20
+key PageDown
+settle 300
+dump help-60x20-pagedown
+key Esc
+gone Keys:
+key a
+wait Load a switch
+type tests/example-design.toml
+wait example-design.toml
+dump browser-60x20
+key Esc
+gone Load a switch
+key n
+wait New switch
+dump name-popup-60x20
+key Esc
+gone New switch
+resize 200x60
+settle
+key a
+wait Load a switch
+type tests/example-9400-running-config.txt
+wait running-config.txt
+dump browser-200x60
+key Enter
+wait Hardware for core-9400
+dump builder-200x60
+resize 60x20
+settle
+dump builder-resized-to-60x20
+resize 80x24
+settle
+key Esc
+gone Hardware for
+# smaller than the list needs: it says so, and no key acts unseen
+resize 50x12
+wait The switch list needs 60x15
+dump too-small
+key n
+settle 300
+resize 80x24
+wait Switches
+dump back-to-80x24-after-n
+key s
+wait Sweep folder
+dump sweep-empty
+file sweep/core.cfg hostname x\nusername admin secret 9 $9$abcdefghijklmnopqrstuvwxyz\nsnmp-server community public RO\n
+key s
+wait Swept
+dump sweep-one-file
+resize 200x60
+settle
+dump sweep-one-file-200x60
+key q
+exit

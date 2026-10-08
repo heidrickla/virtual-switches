@@ -1,0 +1,72 @@
+enable
+configure terminal
+hostname dc1-stack-sw01
+aaa new-model
+aaa authentication login default local
+aaa authorization exec default local
+switch 1 provision c9300x-24y
+switch 2 provision c9300x-24y
+system mtu 9198
+port-channel load-balance src-dst-mixed-ip-port
+spanning-tree mode rapid-pvst
+spanning-tree vlan 1-4094 priority 61440
+ip domain name corp.example.com
+ip name-server vrf Mgmt-vrf 192.0.2.11 192.0.2.12 192.0.2.213
+ip ssh version 2
+no ip http server
+no ip http secure-server
+ntp server vrf Mgmt-vrf 192.0.2.121
+ntp server vrf Mgmt-vrf 192.0.2.122
+logging host 198.51.100.14 vrf Mgmt-vrf
+ip route vrf Mgmt-vrf 0.0.0.0 0.0.0.0 203.0.113.1
+vlan 450
+ name Management
+vlan 459
+ name PVE_Ceph_Public
+vlan 456
+ name PVE_Migration
+vlan 499
+ name Native_Unused
+interface GigabitEthernet0/0
+ vrf forwarding Mgmt-vrf
+ ip address 203.0.113.150 255.255.255.0
+ no shutdown
+interface Port-channel11
+ description pve-h1-proxhost bond0
+ switchport trunk native vlan 499
+ switchport trunk allowed vlan 459
+ switchport mode trunk
+ switchport nonegotiate
+ mtu 9198
+ spanning-tree portfast trunk
+ spanning-tree bpduguard enable
+interface TwentyFiveGigE1/0/1
+ description pve-h1-proxhost card A port 1
+ switchport trunk native vlan 499
+ switchport trunk allowed vlan 459
+ switchport mode trunk
+ switchport nonegotiate
+ lacp rate fast
+ channel-group 11 mode active
+ no shutdown
+interface TwentyFiveGigE2/0/1
+ description pve-h1-proxhost card B port 1
+ switchport trunk native vlan 499
+ switchport trunk allowed vlan 459
+ switchport mode trunk
+ switchport nonegotiate
+ lacp rate fast
+ channel-group 11 mode active
+ no shutdown
+interface Port-channel40
+ description core trunk to core-a
+ switchport trunk native vlan 499
+ switchport trunk allowed vlan except 451-453,456,459
+ switchport mode trunk
+interface range TwentyFiveGigE1/0/11 - 12 , TwentyFiveGigE1/0/14 - 23
+ shutdown
+line vty 0 15
+ transport input ssh
+end
+write memory
+show running-config

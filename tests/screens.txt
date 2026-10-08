@@ -1,0 +1,96 @@
+# The README's screenshots, docs/screens/<name>.png: the switch list, the hardware builder with a
+# field's list open, a switch's console, and a kept configuration searched. The switches are demo
+# designs written into the run's own switch list; idf1 is built in the builder.
+file designs/core1.toml hostname = "core1"\nstack = ["1=C9400-LC-48U", "2=C9400-LC-24XS", "3=C9400-SUP-1XL", "4=C9400-SUP-1XL", "5=C9400-LC-48P"]\nrelease = "17.12"\nvtp_mode = "transparent"\nspanning_tree = { mode = "rapid-pvst", priority = 4096 }\ndomain = "lab.example"\nmanagement = { address = "10.0.0.2", mask = "255.255.255.0", gateway = "10.0.0.1" }\nssh_only = true\nnative_vlan = 999\nvlan = [\n  { id = 10, name = "Users" },\n  { id = 20, name = "Phones" },\n  { id = 30, name = "Cameras" },\n  { id = 999, name = "Native" },\n]\n\n[[port_channel]]\nid = 11\ndescription = "idf1"\nallowed = "10,20,30,999"\nlacp_fast = true\nmembers = [\n  { port = "Te2/0/1", description = "idf1 Te1/1/1" },\n  { port = "Te2/0/2", description = "idf1 Te1/1/2" },\n]\n\n[[port_channel]]\nid = 12\ndescription = "idf2"\nallowed = "10,20,999"\nlacp_fast = true\nmembers = [\n  { port = "Te2/0/3", description = "idf2 Te1/1/1" },\n  { port = "Te2/0/4", description = "idf2 Te2/1/1" },\n]\n\n[[access]]\nport = "Gi1/0/1"\nvlan = 30\ndescription = "camera lobby"\nedge = true\n
+file designs/dist1.toml hostname = "dist1"\nstack = ["C9300X-24Y+C9300X-NM-4C", "C9300X-24Y+C9300X-NM-4C"]\n
+file designs/idf2.toml hostname = "idf2"\nstack = ["C9200L-48P-4X", "C9200L-48P-4X"]\nrelease = "17.9"\n
+file designs/lab2960x.toml hostname = "lab2960x"\nstack = ["WS-C2960X-48FPD-L", "WS-C2960X-48FPD-L"]\nrelease = "15.2(7)E"\n
+file designs/ie1.toml hostname = "ie1"\nstack = ["IE-3300-8T2S"]\nrelease = "17.6"\n
+run load {home}/designs/core1.toml
+run load {home}/designs/dist1.toml
+run load {home}/designs/idf2.toml
+run load {home}/designs/lab2960x.toml
+run load {home}/designs/ie1.toml
+spawn 100x30
+fullscreen
+wait 5, by name
+# a new switch: its hostname, then its hardware, the module list open on a module that does not fit
+key n
+wait New switch
+type idf1
+key Enter
+wait Hardware for idf1
+key Space
+wait Model for member 1
+type 9300-48p
+wait 1 of
+key Enter
+gone Model for member 1
+key Tab
+wait choose module
+key Space
+wait Network module for member 1
+key Down 11
+wait C9300X-NM-4C:
+shot builder
+type nm-8x
+wait 1 of 19
+key Enter
+gone Network module for
+# its console: ? help, a line refused at the caret, a section of the running configuration
+key Enter
+prompt idf1>
+typed idf1# enable
+typed idf1(config)# configure terminal
+type spanning-tree mode ?
+wait rapid-pvst
+settle
+typed idf1(config)# rapid-pvst
+typed idf1(config-vlan)# vlan 10
+typed idf1(config-vlan)# name Users
+typed idf1(config-if-range)# interface range gi1/0/1 - 24
+typed idf1(config-if-range)# switchport mode access
+typed idf1(config-if-range)# switchport acess vlan 10
+typed idf1(config-if-range)# switchport access vlan 10
+typed idf1# end
+typed idf1# show running-config | section interface GigabitEthernet1/0/1$
+shot console
+typed idf1# write memory
+line exit
+fullscreen
+# two more opened and one saved, so the list has dates; then the list with idf1 picked
+key Home
+wait > core1
+key Enter
+prompt core1>
+line exit
+fullscreen
+key End
+wait > lab2960x
+key Enter
+prompt lab2960x>
+typed lab2960x# enable
+typed lab2960x# write memory
+line exit
+fullscreen
+key Home
+wait > core1
+key Down 2
+wait > idf1
+shot list
+# core1's kept configuration searched, the sixth match in view
+key Home
+wait > core1
+key v
+wait lines 1-
+key /
+type vlan
+key Enter
+wait 18 match(es)
+key n 5
+wait lines 22-45
+shot configuration
+key q
+gone lines 22-45
+key q
+exit

@@ -1,0 +1,150 @@
+name: checks
+
+# The forge's shared runner (capacity 1, Linux labels only, 4 CPUs a job) runs this when code or data
+# change on main, by hand, and weekly. The weekly run checks advisories alone: they move while
+# Cargo.lock does not, and nothing else does.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "data/**"
+      - "tests/**"
+      # a test holds the extractor's platform names to the grammars'
+      - "tools/extract-releases.js"
+      # a test holds the list's keys to the README's table
+      - "README.md"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".config/**"
+      - ".gitea/workflows/**"
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    # a hung run would hold the runner every forge repository shares: Gitea 1.24 holds a job to its
+    # steps' limits, other runners to this one
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: never
+      # each build here is the first: incremental state is written and never read
+      CARGO_INCREMENTAL: "0"
+    # bash runs each step with -e and pipefail, so a failed download or test fails its step
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        timeout-minutes: 5
+        with:
+          # the attribution check reads every ref
+          fetch-depth: 0
+
+      # the checks fail before anything is built: they are the cheap ones; each counts what it read
+      # first, so an empty listing cannot pass
+      - name: line endings
+        timeout-minutes: 2
+        run: |
+          listed=$(git ls-files | wc -l)
+          crlf=$(git ls-files --eol | grep -c 'i/crlf' || true)
+          echo "files listed: $listed; stored with CRLF: $crlf"
+          test "$listed" -ge 100
+          test "$crlf" = "0"
+
+      # no co-author or generated-with trailer on any ref, and no ref filter-branch left behind; a
+      # checkout outside the repository would pass vacuously, so the commits are counted first, and
+      # the matcher must find a trailer written to test it
+      - name: attribution
+        if: github.event_name != 'schedule'
+        timeout-minutes: 2
+        run: |
+          trailers() { grep -ci -e 'co-authored-by' -e 'generated with claude' -e 'noreply@anthropic' || true; }
+          test "$(printf 'x\n\nCo-%s-By: x <noreply@%s.com>\n' Authored anthropic | trailers)" -ge 1
+          git rev-parse --is-inside-work-tree
+          commits=$(git rev-list --all --count)
+          echo "commits read: $commits"
+          test "$commits" -ge 1
+          n=$(git log --all --format='%B%an%ae' | trailers)
+          stale=$(git for-each-ref --format='%(refname)' | grep -e '^refs/original/' -e 'backup' || true)
+          echo "trailers: $n; stale refs: ${stale:-none}"
+          test "$n" = "0" && test -z "$stale"
+
+      - name: toolchain (pinned)
+        timeout-minutes: 10
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf --max-time 120 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1 --component clippy,rustfmt
+          "$HOME/.cargo/bin/rustc" --version | grep -F ' 1.98.1 '
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # release binaries checked against the digests their releases publish, not a build on every run
+      - name: cargo-deny and cargo-nextest (pinned)
+        timeout-minutes: 5
+        run: |
+          fetch() {
+            curl -sSfL --max-time 120 -o "$1" "$2"
+            echo "$3  $1" | sha256sum -c -
+          }
+          v=0.20.2
+          d=cargo-deny-$v-x86_64-unknown-linux-musl
+          fetch "$d.tar.gz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/$d.tar.gz" 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+          mkdir deny && tar -xzf "$d.tar.gz" -C deny
+          install -m 755 "$(find deny -type f -name cargo-deny)" "$HOME/.cargo/bin/"
+          cargo deny --version
+          n=cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz
+          fetch "$n" "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/$n" b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa
+          mkdir nextest && tar -xzf "$n" -C nextest
+          install -m 755 "$(find nextest -type f -name cargo-nextest)" "$HOME/.cargo/bin/"
+          cargo nextest --version
+
+      - name: dependencies
+        timeout-minutes: 10
+        run: cargo deny check
+
+      - name: format
+        if: github.event_name != 'schedule'
+        timeout-minutes: 5
+        run: cargo fmt --check
+
+      - name: lint
+        if: github.event_name != 'schedule'
+        timeout-minutes: 20
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # every test, built at opt-level 1 (`ci-test` in Cargo.toml), each failure reported; then the
+      # count of tests run, which a floor holds, and the slowest
+      - name: test
+        if: github.event_name != 'schedule'
+        timeout-minutes: 40
+        run: |
+          set +e
+          cargo nextest run --locked --cargo-profile ci-test --profile ci 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          set -e
+          junit=target/nextest/ci/junit.xml
+          ran=$(grep -c '<testcase ' "$junit" 2>/dev/null || true)
+          echo "tests run: ${ran:-0}"
+          echo "slowest, in seconds:"
+          grep -o '<testcase name="[^"]*" classname="[^"]*"[^>]* time="[0-9.]*"' "$junit" | sed -E 's/<testcase name="([^"]*)" classname="([^"]*)".* time="([0-9.]*)"/\3 \2 \1/' | sort -rn | head -15 || true
+          test "$status" = "0"
+          test "${ran:-0}" -ge 490
+
+      # the log and each test's time, kept whatever the result: the forge shows no job log
+      - name: test results
+        if: always() && github.event_name != 'schedule'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3.2.1
+        with:
+          name: test-results
+          path: |
+            test.log
+            target/nextest/ci/junit.xml
+          retention-days: 14

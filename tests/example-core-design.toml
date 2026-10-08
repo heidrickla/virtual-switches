@@ -1,0 +1,128 @@
+# cluster core (core-a) changes for the Proxmox stack dc1-stack-sw01: the core trunk (book
+# item 39) and the 8 VLAN 450 access ports for the BMCs and the stack's management ports (items 37,
+# 40). Ports, slots and VLANs from the core's running configuration (core-a_running-config.txt beside this file). Generate with:
+#   vswitch generate core-a.toml --out core-a.cfg --change core-a_change.txt --running core-a_running-config.txt --target core-a_target-config.txt
+
+hostname = "core-a"
+# A C9407R (show interfaces status, 2026-10-05): a 48-port 1G SFP card in slot 1, the C9400-LC-24XS
+# in slot 2, two C9400-SUP-1XL in slots 3 and 4 (redundancy mode sso), a 48-port copper card in slot
+# 5 (C9400-LC-48U stands in; the model is not in the output). With two supervisors, ports 5-8 and 10
+# on each are inactive, so the trunk's 10G ports are on the LC-24XS. No port on the slot 1 card is
+# used: it is having issues.
+stack = ["1=C9400-LC-48S", "2=C9400-LC-24XS", "3=C9400-SUP-1XL", "4=C9400-SUP-1XL", "5=C9400-LC-48U"]
+provision = false
+native_vlan = 499
+# The core's VLAN database (show vlan brief, 2026-10-05); both cores hold the same one by VTP.
+existing_vlans = "1,59,65-68,109,410-412,450,453,460,461,480,520,525,530,535,540,545,550,555,650-665,667-669,900,901,922,923"
+notes = [
+  "core-a (C9407R, IOS-XE 17.5): core trunk Po40 to the Proxmox stack dc1-stack-sw01 and 8 VLAN 450 access ports.",
+  "Ports (show interfaces status, 2026-10-05): Te2/0/3-4 notconnect with no transceiver (they take the quoted SFP-10G-SR); Gi5/0/19-26 disabled and unused.",
+  "VLAN 499 is not in the VLAN database (show vlan brief, 2026-10-05). Both cores are VTP servers in domain plant, version 1, revision 263: 'vlan 499' here reaches core-b and the domain's other switches.",
+  "Each line checked against the Catalyst 9400 IOS-XE 17.5 command reference or the core's own running configuration, and typed into the virtual switch (vswitch).",
+  "Paste in configuration mode. The hostname line restates the core's name.",
+]
+
+vlan = [
+  { id = 499, verify = "VLAN 499 is new: the trunk's native VLAN, no SVI (reserve in IPAM); VTP names it VLAN0499" },
+]
+
+# Te2/0/3-4 follow pve-node01 and pve-node04 on Te2/0/1-2. SFP-10G-SR, multimode (item 19).
+[[port_channel]]
+id = 40
+description = "dc1-stack-sw01 Po40"
+allowed = "except 451-453,456,459"
+members = [
+  { port = "Te2/0/3", description = "dc1-stack-sw01 Twe1/0/24" },
+  { port = "Te2/0/4", description = "dc1-stack-sw01 Twe2/0/24" },
+]
+
+# BMCs (.151-.155, .157) and the stack's management ports (Gi0/0 of both members, .150), after the
+# VLAN 450 management ports Gi5/0/11-14, with portfast and BPDU guard as those have.
+[[access]]
+port = "Gi5/0/19"
+vlan = 450
+description = "ilo-pve-h1-proxhost"
+edge = true
+
+[[access]]
+port = "Gi5/0/20"
+vlan = 450
+description = "ilo-pve-h2-proxhost"
+edge = true
+
+[[access]]
+port = "Gi5/0/21"
+vlan = 450
+description = "ilo-pve-h3-proxhost"
+edge = true
+
+[[access]]
+port = "Gi5/0/22"
+vlan = 450
+description = "ilo-pve-h4-proxhost"
+edge = true
+
+[[access]]
+port = "Gi5/0/23"
+vlan = 450
+description = "ilo-pve-h5-proxhost"
+edge = true
+
+[[access]]
+port = "Gi5/0/24"
+vlan = 450
+description = "ilo-pve-pbs"
+edge = true
+
+[[access]]
+port = "Gi5/0/25"
+vlan = 450
+description = "dc1-stack-sw01 member 1 Gi0/0"
+edge = true
+
+[[access]]
+port = "Gi5/0/26"
+vlan = 450
+description = "dc1-stack-sw01 member 2 Gi0/0"
+edge = true
+
+[change]
+title = "core-a: core trunk Po40 to the Proxmox stack dc1-stack-sw01 and 8 VLAN 450 access ports (IOS-XE 17.5)"
+steps = [
+  "SFP-10G-SR in Te2/0/3 and Te2/0/4; multimode LC-LC to the stack's Twe1/0/24 and Twe2/0/24.",
+  "On the stack, show vtp status shows VTP Operating Mode Transparent before Po40 is cabled.",
+  "copy running-config bootflash:pre-cluster-po40.cfg   (Enter at the filename prompt)",
+]
+before = [
+  "show vtp status   (VTP Operating Mode Server, domain plant; note the Configuration Revision)",
+  "show vlan brief   (no VLAN 499)",
+  "show interfaces status   (Te2/0/3-4 notconnect; Gi5/0/19-26 disabled)",
+]
+after = [
+  "show vlan brief   (499 VLAN0499 active)",
+  "show vtp status   (Configuration Revision one higher; core-b shows the same revision and VLAN 499)",
+  "show interfaces trunk   (Po40: native 499, allowed 1-450,454,455,457,458,460-4094)",
+  "show etherchannel 40 summary   (once the stack is up: Po40(SU), Te2/0/3(P), Te2/0/4(P))",
+  "show spanning-tree root   (root bridge unchanged: core-b)",
+  "show interfaces status   (Gi5/0/19-26 on VLAN 450; connected once cabled)",
+]
+rollback_note = "VLAN 499 leaves the VTP domain; the pre-change configuration is bootflash:pre-cluster-po40.cfg"
+rollback = [
+  "interface range TenGigabitEthernet2/0/3 - 4",
+  " no description",
+  " no switchport trunk native vlan",
+  " no switchport mode",
+  " no switchport nonegotiate",
+  " no channel-group",
+  " switchport trunk allowed vlan none",
+  "interface range GigabitEthernet5/0/19 - 26",
+  " no description",
+  " no switchport access vlan",
+  " no switchport mode",
+  " no spanning-tree portfast",
+  " no spanning-tree bpduguard",
+  " shutdown",
+  "exit",
+  "no interface Port-channel40",
+  "no vlan 499",
+]

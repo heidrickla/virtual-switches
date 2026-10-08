@@ -1,0 +1,219 @@
+# Proxmox top-of-rack stack, from the build book (Switch port map item 43, Switch stack
+# settings item 40, Bond and LACP settings item 42, Networks, VLAN Mapping). VLAN names follow the
+# MDF SN2410M switches. Generate with:
+#   vswitch generate dc1-stack-sw01.toml --out dc1-stack-sw01.cfg --change dc1-stack-sw01_change.txt --target dc1-stack-sw01_target-config.txt
+
+hostname = "dc1-stack-sw01"
+stack = ["C9300X-24Y+C9300X-NM-4C", "C9300X-24Y+C9300X-NM-4C"]
+system_mtu = 9198
+port_channel_load_balance = "src-dst-mixed-ip-port"
+spanning_tree = { mode = "rapid-pvst", priority = 61440, vlans = "1-4094" }
+domain = "corp.example.com"
+name_servers = ["192.0.2.11", "192.0.2.12", "192.0.2.213"]
+ntp_servers = ["192.0.2.121", "192.0.2.122"]
+syslog_hosts = ["198.51.100.14"]
+management = { address = "203.0.113.150", mask = "255.255.255.0", gateway = "203.0.113.1" }
+ssh_only = true
+native_vlan = 499
+# VTP transparent, written before the VLANs: the cores are VTP servers in domain plant (show vtp
+# status, 2026-10-05). A new switch is a VTP server, would learn plant over Po40, and would then take
+# the core's VLAN database, which has no 451, 452, 456 or 459.
+vtp_mode = "transparent"
+notes = [
+  "VTP transparent before the VLANs: the cores are VTP servers in domain plant. Before connecting Po40, show vtp status shows VTP Operating Mode Transparent.",
+]
+
+vlan = [
+  { id = 65, name = "Area65" },
+  { id = 66, name = "Area66" },
+  { id = 67, name = "Area67" },
+  { id = 68, name = "Area68" },
+  { id = 410, name = "Area410" },
+  { id = 411, name = "Area411" },
+  { id = 412, name = "Area412" },
+  { id = 450, name = "Management" },
+  { id = 451, name = "iSCSI-A" },
+  { id = 452, name = "iSCSI-B" },
+  { id = 456, name = "PVE_Migration" },
+  { id = 459, name = "PVE_Ceph_Public" },
+  { id = 460, name = "Secure_Trusted" },
+  { id = 499 },
+  { id = 520, name = "Area520" },
+  { id = 530, name = "Area530" },
+  { id = 535, name = "Area535" },
+  { id = 540, name = "Area540" },
+  { id = 545, name = "Area545" },
+  { id = 550, name = "Area550" },
+  { id = 555, name = "Area555" },
+  { id = 900, name = "Area900" },
+  { id = 901, name = "Area901" },
+]
+
+# bond0 (Ceph, VLAN 459): card A port 1 on member 1, card B port 1 on member 2
+[[port_channel]]
+id = 11
+description = "pve-h1-proxhost bond0"
+allowed = "459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/1", description = "pve-h1-proxhost card A port 1" },
+  { port = "Twe2/0/1", description = "pve-h1-proxhost card B port 1" },
+]
+
+[[port_channel]]
+id = 12
+description = "pve-h2-proxhost bond0"
+allowed = "459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/3", description = "pve-h2-proxhost card A port 1" },
+  { port = "Twe2/0/3", description = "pve-h2-proxhost card B port 1" },
+]
+
+[[port_channel]]
+id = 13
+description = "pve-h3-proxhost bond0"
+allowed = "459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/5", description = "pve-h3-proxhost card A port 1" },
+  { port = "Twe2/0/5", description = "pve-h3-proxhost card B port 1" },
+]
+
+[[port_channel]]
+id = 14
+description = "pve-h4-proxhost bond0"
+allowed = "459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/7", description = "pve-h4-proxhost card A port 1" },
+  { port = "Twe2/0/7", description = "pve-h4-proxhost card B port 1" },
+]
+
+[[port_channel]]
+id = 15
+description = "pve-h5-proxhost bond0"
+allowed = "459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/9", description = "pve-h5-proxhost card A port 1" },
+  { port = "Twe2/0/9", description = "pve-h5-proxhost card B port 1" },
+]
+
+# bond1 (vmbr0: VM VLANs, management 450, migration 456): card A port 2 / card B port 2
+[[port_channel]]
+id = 21
+description = "pve-h1-proxhost bond1"
+allowed = "except 451-453,459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/2", description = "pve-h1-proxhost card A port 2" },
+  { port = "Twe2/0/2", description = "pve-h1-proxhost card B port 2" },
+]
+
+[[port_channel]]
+id = 22
+description = "pve-h2-proxhost bond1"
+allowed = "except 451-453,459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/4", description = "pve-h2-proxhost card A port 2" },
+  { port = "Twe2/0/4", description = "pve-h2-proxhost card B port 2" },
+]
+
+[[port_channel]]
+id = 23
+description = "pve-h3-proxhost bond1"
+allowed = "except 451-453,459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/6", description = "pve-h3-proxhost card A port 2" },
+  { port = "Twe2/0/6", description = "pve-h3-proxhost card B port 2" },
+]
+
+[[port_channel]]
+id = 24
+description = "pve-h4-proxhost bond1"
+allowed = "except 451-453,459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/8", description = "pve-h4-proxhost card A port 2" },
+  { port = "Twe2/0/8", description = "pve-h4-proxhost card B port 2" },
+]
+
+[[port_channel]]
+id = 25
+description = "pve-h5-proxhost bond1"
+allowed = "except 451-453,459"
+edge = true
+lacp_fast = true
+members = [
+  { port = "Twe1/0/10", description = "pve-h5-proxhost card A port 2" },
+  { port = "Twe2/0/10", description = "pve-h5-proxhost card B port 2" },
+]
+
+# Proxmox Backup Server
+[[port_channel]]
+id = 30
+description = "pve-pbs"
+allowed = "450,456"
+edge = true
+members = [
+  { port = "Twe1/0/13", description = "pve-pbs" },
+  { port = "Twe2/0/13", description = "pve-pbs" },
+]
+
+# core trunk to core-a Po40 (Te2/0/3-4 on its C9400-LC-24XS), 10G optics (SFP-10G-SR) in the SFP28 ports
+[[port_channel]]
+id = 40
+description = "core trunk to core-a Po40"
+allowed = "except 451-453,456,459"
+members = [
+  { port = "Twe1/0/24", description = "core-a Te2/0/3" },
+  { port = "Twe2/0/24", description = "core-a Te2/0/4" },
+]
+
+# 100G inter-site link to the MDF SN2410M pair (MLAG Mpo3), QSFP-100G-LR4-S
+[[port_channel]]
+id = 100
+description = "MDF SN2410M pair Mpo3"
+allowed = "451,452,456,459"
+members = [
+  { port = "Hu1/1/1", description = "HP-SN2410M-SW-A Eth1/49" },
+  { port = "Hu2/1/1", description = "HP-SN2410M-SW-B Eth1/49" },
+]
+
+[change]
+title = "dc1-stack-sw01: initial configuration of the Proxmox top-of-rack stack (2 x C9300X-24Y with C9300X-NM-4C, IOS-XE 17.15)"
+steps = [
+  "New switches: there is no running configuration to start from.",
+  "Both members on IOS-XE 17.15.2 or later in install mode, stacked with both StackWise cables (full ring) and StackPower.",
+  "Twe1/0/24 and Twe2/0/24 (Po40 to core-a) and Hu1/1/1 and Hu2/1/1 (Po100 to MDF) stay unplugged until the checks after pass.",
+]
+before = [
+  "show version   (17.15.2 or later, INSTALL mode)",
+  "show switch   (members 1 and 2 Ready)",
+]
+after = [
+  "show vtp status   (VTP Operating Mode Transparent)",
+  "show vlan brief   (65-68, 410-412, 450-452, 456, 459, 460, 499, 520, 530, 535, 540, 545, 550, 555, 900, 901)",
+  "show etherchannel summary   (Po11-15, Po21-25, Po30, Po40, Po100; each SU once its far end is up)",
+  "show interfaces trunk   (Po40: native 499, allowed 1-450,454,455,457,458,460-4094; Po100: allowed 451,452,456,459)",
+  "show spanning-tree root   (once Po40 is up: the root port is Po40 for the cores' VLANs)",
+]
+rollback_note = "isolates the stack from the core and MDF; the host links stay up"
+rollback = [
+  "interface Port-channel40",
+  " shutdown",
+  "interface Port-channel100",
+  " shutdown",
+]

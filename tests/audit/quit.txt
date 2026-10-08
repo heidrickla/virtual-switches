@@ -1,0 +1,98 @@
+# Every way out, under the probe shell, which prints the console or tty mode before and after: q, Esc
+# and Ctrl-C from the list; Alt-q, which is no list command; Ctrl-C closing the browser, the builder's
+# list, the builder and the help before it quits; Ctrl-C while a switch opens and at its prompt; exit
+# from the shell; the shell refusing unknown hardware and an unknown release; an unknown command; a
+# damaged switch list.
+probe 80x24
+fullscreen
+key q
+wait probe:
+dump q-from-the-list
+probe 80x24
+fullscreen
+key Esc
+wait probe:
+dump esc-from-the-list
+probe 80x24
+fullscreen
+key Ctrl-c
+wait probe:
+dump ctrl-c-from-the-list
+probe 80x24
+fullscreen
+key Alt-q
+settle
+dump alt-q-is-no-list-command
+key q
+wait probe:
+probe 80x24
+fullscreen
+key a
+wait Load a switch
+type tests/c9200-design.toml
+key Ctrl-c
+gone Load a switch
+dump ctrl-c-closes-the-browser
+key Ctrl-c
+wait probe:
+dump ctrl-c-then-quits
+probe 80x24
+fullscreen
+key n
+wait New switch
+type x
+key Enter
+wait Hardware for x
+key Space
+wait Model for member 1
+key Ctrl-c
+gone Model for member 1
+dump ctrl-c-closes-the-builder-s-list
+key Ctrl-c
+gone Hardware for
+dump ctrl-c-closes-the-builder
+key ?
+wait Keys: the switch list
+key Ctrl-c
+gone Keys:
+dump ctrl-c-closes-the-help
+key Ctrl-c
+wait probe:
+dump ctrl-c-quits-at-last
+probe 80x24
+fullscreen
+key a
+wait Load a switch
+type tests/example-9400-running-config.txt
+key Enter
+wait Hardware for core-9400
+key Enter
+gone Hardware for
+key Ctrl-c
+prompt core-9400>
+dump ctrl-c-while-a-switch-opens
+key Ctrl-c
+prompt core-9400>
+line exit
+fullscreen
+key q
+wait probe:
+dump exit-then-q
+probe 80x24 shell
+prompt Switch>
+line exit
+wait probe:
+dump shell-exit
+probe 80x24 shell --stack C9999-48Z
+wait probe:
+dump shell-unknown-hardware
+probe 80x24 shell --release 99.1
+wait probe:
+dump shell-unknown-release
+probe 80x24 bogus
+wait probe:
+dump an-unknown-command
+file switches.json {not json
+probe 80x24
+wait probe:
+dump a-damaged-list

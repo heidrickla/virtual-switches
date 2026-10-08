@@ -1,0 +1,834 @@
+Building configuration...
+
+Current configuration : 21000 bytes
+!
+! Last configuration change at 12:00:00 UTC Mon Jan 5 2026
+!
+version 15.2
+no service pad
+service timestamps debug datetime msec
+service timestamps log datetime msec
+service password-encryption
+!
+hostname access-2960
+!
+boot-start-marker
+boot-end-marker
+!
+logging buffered 64000
+!
+aaa new-model
+!
+aaa authentication login default local
+aaa authorization exec default local
+!
+aaa session-id common
+system mtu routing 1500
+!
+no ip domain-lookup
+ip domain-name example.com
+vtp mode transparent
+!
+spanning-tree mode rapid-pvst
+spanning-tree extend system-id
+!
+vlan internal allocation policy ascending
+!
+vlan 100
+ name AREA_100
+!
+vlan 101
+ name AREA_101
+!
+vlan 102
+ name AREA_102
+!
+vlan 103
+ name AREA_103
+!
+vlan 104
+ name AREA_104
+!
+vlan 105
+ name AREA_105
+!
+vlan 106
+ name AREA_106
+!
+vlan 107
+ name AREA_107
+!
+vlan 108
+ name AREA_108
+!
+vlan 109
+ name AREA_109
+!
+vlan 110
+ name AREA_110
+!
+vlan 111
+ name AREA_111
+!
+vlan 112
+ name AREA_112
+!
+vlan 113
+ name AREA_113
+!
+vlan 114
+ name AREA_114
+!
+vlan 115
+ name AREA_115
+!
+vlan 116
+ name AREA_116
+!
+vlan 117
+ name AREA_117
+!
+vlan 118
+ name AREA_118
+!
+vlan 119
+ name AREA_119
+!
+vlan 120
+ name AREA_120
+!
+vlan 121
+ name AREA_121
+!
+vlan 122
+ name AREA_122
+!
+vlan 123
+ name AREA_123
+!
+vlan 124
+ name AREA_124
+!
+vlan 125
+ name AREA_125
+!
+vlan 126
+ name AREA_126
+!
+vlan 127
+ name AREA_127
+!
+vlan 128
+ name AREA_128
+!
+vlan 129
+ name AREA_129
+!
+vlan 130
+ name AREA_130
+!
+vlan 131
+ name AREA_131
+!
+vlan 132
+ name AREA_132
+!
+vlan 133
+ name AREA_133
+!
+vlan 134
+ name AREA_134
+!
+vlan 135
+ name AREA_135
+!
+vlan 136
+ name AREA_136
+!
+vlan 137
+ name AREA_137
+!
+vlan 138
+ name AREA_138
+!
+vlan 139
+ name AREA_139
+!
+vlan 140
+ name AREA_140
+!
+vlan 141
+ name AREA_141
+!
+vlan 142
+ name AREA_142
+!
+vlan 143
+ name AREA_143
+!
+vlan 144
+ name AREA_144
+!
+vlan 145
+ name AREA_145
+!
+vlan 146
+ name AREA_146
+!
+vlan 147
+ name AREA_147
+!
+vlan 148
+ name AREA_148
+!
+vlan 149
+ name AREA_149
+!
+vlan 150
+ name AREA_150
+!
+vlan 151
+ name AREA_151
+!
+vlan 152
+ name AREA_152
+!
+vlan 153
+ name AREA_153
+!
+vlan 154
+ name AREA_154
+!
+vlan 155
+ name AREA_155
+!
+vlan 156
+ name AREA_156
+!
+vlan 157
+ name AREA_157
+!
+vlan 158
+ name AREA_158
+!
+vlan 159
+ name AREA_159
+!
+vlan 160
+ name AREA_160
+!
+vlan 161
+ name AREA_161
+!
+vlan 162
+ name AREA_162
+!
+vlan 163
+ name AREA_163
+!
+vlan 164
+ name AREA_164
+!
+vlan 165
+ name AREA_165
+!
+vlan 166
+ name AREA_166
+!
+vlan 167
+ name AREA_167
+!
+vlan 168
+ name AREA_168
+!
+vlan 169
+ name AREA_169
+!
+vlan 170
+ name AREA_170
+!
+vlan 171
+ name AREA_171
+!
+vlan 172
+ name AREA_172
+!
+vlan 173
+ name AREA_173
+!
+vlan 174
+ name AREA_174
+!
+vlan 175
+ name AREA_175
+!
+vlan 176
+ name AREA_176
+!
+vlan 177
+ name AREA_177
+!
+vlan 178
+ name AREA_178
+!
+vlan 179
+ name AREA_179
+!
+vlan 180
+ name AREA_180
+!
+vlan 181
+ name AREA_181
+!
+vlan 182
+ name AREA_182
+!
+vlan 183
+ name AREA_183
+!
+vlan 184
+ name AREA_184
+!
+vlan 185
+ name AREA_185
+!
+vlan 186
+ name AREA_186
+!
+vlan 187
+ name AREA_187
+!
+vlan 188
+ name AREA_188
+!
+vlan 189
+ name AREA_189
+!
+vlan 190
+ name AREA_190
+!
+vlan 191
+ name AREA_191
+!
+vlan 192
+ name AREA_192
+!
+vlan 193
+ name AREA_193
+!
+vlan 194
+ name AREA_194
+!
+vlan 195
+ name AREA_195
+!
+vlan 196
+ name AREA_196
+!
+vlan 197
+ name AREA_197
+!
+vlan 198
+ name AREA_198
+!
+vlan 199
+ name AREA_199
+!
+vlan 200
+ name AREA_200
+!
+vlan 201
+ name AREA_201
+!
+vlan 202
+ name AREA_202
+!
+vlan 203
+ name AREA_203
+!
+vlan 204
+ name AREA_204
+!
+vlan 205
+ name AREA_205
+!
+vlan 206
+ name AREA_206
+!
+vlan 207
+ name AREA_207
+!
+vlan 208
+ name AREA_208
+!
+vlan 209
+ name AREA_209
+!
+vlan 210
+ name AREA_210
+!
+vlan 211
+ name AREA_211
+!
+vlan 212
+ name AREA_212
+!
+vlan 213
+ name AREA_213
+!
+vlan 214
+ name AREA_214
+!
+vlan 215
+ name AREA_215
+!
+vlan 216
+ name AREA_216
+!
+vlan 217
+ name AREA_217
+!
+vlan 218
+ name AREA_218
+!
+vlan 219
+ name AREA_219
+!
+vlan 220
+ name AREA_220
+!
+vlan 221
+ name AREA_221
+!
+vlan 222
+ name AREA_222
+!
+vlan 223
+ name AREA_223
+!
+vlan 224
+ name AREA_224
+!
+vlan 225
+ name AREA_225
+!
+vlan 226
+ name AREA_226
+!
+vlan 227
+ name AREA_227
+!
+vlan 228
+ name AREA_228
+!
+vlan 229
+ name AREA_229
+!
+vlan 230
+ name AREA_230
+!
+vlan 231
+ name AREA_231
+!
+vlan 232
+ name AREA_232
+!
+vlan 233
+ name AREA_233
+!
+vlan 234
+ name AREA_234
+!
+vlan 235
+ name AREA_235
+!
+vlan 236
+ name AREA_236
+!
+vlan 237
+ name AREA_237
+!
+vlan 238
+ name AREA_238
+!
+vlan 239
+ name AREA_239
+!
+vlan 240
+ name AREA_240
+!
+vlan 241
+ name AREA_241
+!
+vlan 242
+ name AREA_242
+!
+vlan 243
+ name AREA_243
+!
+vlan 244
+ name AREA_244
+!
+vlan 245
+ name AREA_245
+!
+vlan 246
+ name AREA_246
+!
+vlan 247
+ name AREA_247
+!
+vlan 248
+ name AREA_248
+!
+vlan 249
+ name AREA_249
+!
+vlan 250
+ name AREA_250
+!
+vlan 251
+ name AREA_251
+!
+vlan 252
+ name AREA_252
+!
+vlan 253
+ name AREA_253
+!
+vlan 254
+ name AREA_254
+!
+vlan 255
+ name AREA_255
+!
+vlan 256
+ name AREA_256
+!
+vlan 257
+ name AREA_257
+!
+vlan 258
+ name AREA_258
+!
+vlan 259
+ name AREA_259
+!
+vlan 260
+ name AREA_260
+!
+vlan 261
+ name AREA_261
+!
+vlan 262
+ name AREA_262
+!
+vlan 263
+ name AREA_263
+!
+vlan 264
+ name AREA_264
+!
+vlan 265
+ name AREA_265
+!
+vlan 266
+ name AREA_266
+!
+vlan 267
+ name AREA_267
+!
+vlan 268
+ name AREA_268
+!
+vlan 269
+ name AREA_269
+!
+vlan 270
+ name AREA_270
+!
+vlan 271
+ name AREA_271
+!
+vlan 272
+ name AREA_272
+!
+vlan 273
+ name AREA_273
+!
+vlan 274
+ name AREA_274
+!
+vlan 275
+ name AREA_275
+!
+vlan 276
+ name AREA_276
+!
+vlan 277
+ name AREA_277
+!
+vlan 278
+ name AREA_278
+!
+vlan 279
+ name AREA_279
+!
+vlan 280
+ name AREA_280
+!
+vlan 281
+ name AREA_281
+!
+vlan 282
+ name AREA_282
+!
+vlan 283
+ name AREA_283
+!
+vlan 284
+ name AREA_284
+!
+vlan 285
+ name AREA_285
+!
+vlan 286
+ name AREA_286
+!
+vlan 287
+ name AREA_287
+!
+vlan 288
+ name AREA_288
+!
+vlan 289
+ name AREA_289
+!
+vlan 290
+ name AREA_290
+!
+vlan 291
+ name AREA_291
+!
+vlan 292
+ name AREA_292
+!
+vlan 293
+ name AREA_293
+!
+vlan 294
+ name AREA_294
+!
+vlan 295
+ name AREA_295
+!
+vlan 296
+ name AREA_296
+!
+vlan 297
+ name AREA_297
+!
+vlan 298
+ name AREA_298
+!
+vlan 299
+ name AREA_299
+!
+interface FastEthernet0/1
+ description access port 1
+ switchport access vlan 101
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/2
+ description access port 2
+ switchport access vlan 102
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/3
+ description access port 3
+ switchport access vlan 103
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/4
+ description access port 4
+ switchport access vlan 104
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/5
+ description access port 5
+ switchport access vlan 105
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/6
+ description access port 6
+ switchport access vlan 106
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/7
+ description access port 7
+ switchport access vlan 107
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/8
+ description access port 8
+ switchport access vlan 108
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/9
+ description access port 9
+ switchport access vlan 109
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/10
+ description access port 10
+ switchport access vlan 110
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/11
+ description access port 11
+ switchport access vlan 111
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/12
+ description access port 12
+ switchport access vlan 112
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/13
+ description access port 13
+ switchport access vlan 113
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/14
+ description access port 14
+ switchport access vlan 114
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/15
+ description access port 15
+ switchport access vlan 115
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/16
+ description access port 16
+ switchport access vlan 116
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/17
+ description access port 17
+ switchport access vlan 117
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/18
+ description access port 18
+ switchport access vlan 118
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/19
+ description access port 19
+ switchport access vlan 119
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/20
+ description access port 20
+ switchport access vlan 120
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/21
+ description access port 21
+ switchport access vlan 121
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/22
+ description access port 22
+ switchport access vlan 122
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/23
+ description access port 23
+ switchport access vlan 123
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface FastEthernet0/24
+ description access port 24
+ switchport access vlan 124
+ switchport mode access
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+!
+interface GigabitEthernet0/1
+ description uplink 1
+ switchport mode trunk
+!
+interface GigabitEthernet0/2
+ description uplink 2
+ switchport mode trunk
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+interface Vlan100
+ ip address 192.0.2.10 255.255.255.0
+!
+ip default-gateway 192.0.2.1
+ip http server
+ip http secure-server
+!
+logging host 198.51.100.14
+!
+snmp-server location rack 1
+!
+line con 0
+line vty 0 4
+ transport input ssh
+line vty 5 15
+ transport input ssh
+!
+end

@@ -1,0 +1,282 @@
+# The switch list: every key on an empty list, its help, the sweep, the name popup's errors, a list of
+# three, moving, the filter, removing and undo, the order, keys arriving together, a new switch named
+# like a kept one (left as it was, replaced, both kept), a hostname saved to a kept name, a path
+# dropped on the list, and the list at 60x20, 132x43 and 200x60.
+spawn 80x24
+fullscreen
+dump empty
+# keys with nothing to act on; a plain key at a time, as three read together are a paste
+key Down
+key Up
+key Home
+key End
+key PageDown
+key PageUp
+key Enter
+key Delete
+settle 300
+key h
+settle 300
+key d
+settle 300
+key r
+settle 300
+key c
+settle 300
+key v
+settle 300
+key e
+settle 300
+key x
+settle 300
+dump empty-after-keys
+key u
+wait No removed switch
+dump u-with-nothing-removed
+key o
+wait Ordered by last opened
+dump o-orders-by-last-opened
+key o
+wait Ordered by name
+key s
+wait Sweep folder
+dump sweep-status
+key ?
+wait Keys: the switch list
+dump help
+key Down
+settle 300
+key PageDown
+settle 300
+dump help-scrolled
+key q
+gone Keys:
+dump q-closes-the-help
+key F1
+wait Keys: the switch list
+key Esc
+gone Keys:
+# the name popup refuses what is not one word
+key n
+wait New switch
+key Enter
+wait one word
+dump name-empty
+type two words
+key Enter
+settle 300
+dump name-two-words
+key ?
+wait Keys: the name
+dump name-help
+key Esc
+gone Keys:
+key Backspace 9
+type idf1
+key Enter
+wait Hardware for idf1
+key Enter
+prompt idf1>
+dump console-of-a-new-switch
+line exit
+fullscreen
+# a design with a VLAN saved by write memory, then a second design
+key a
+wait Load a switch
+type tests/c9200-design.toml
+key Enter
+prompt idf-9200>
+typed idf-9200# enable
+typed idf-9200(config)# configure terminal
+typed idf-9200(config-vlan)# vlan 777
+typed idf-9200(config-vlan)# name kept-by-write
+typed idf-9200# end
+typed idf-9200# write memory
+line exit
+fullscreen
+key a
+wait Load a switch
+type c9300l-design.toml
+key Enter
+prompt idf-9300l>
+line exit
+fullscreen
+wait > idf-9300l
+dump list-of-three
+key j
+wait > idf1
+key j
+settle 300
+dump j-on-the-last
+key Home
+wait > idf-9200
+key k
+settle 300
+key End
+wait > idf1
+# the filter
+key /
+wait Filter
+type 9300
+wait 2 of 3
+dump filter-typed
+key Enter
+wait Esc clears it
+dump filter-kept
+key /
+wait Filter
+key ?
+wait Keys: the filter
+dump filter-help
+key Esc
+gone Keys:
+key Backspace 4
+type nothing-matches
+wait No switch matches
+dump filter-matches-nothing
+key Esc
+wait 3, by name
+dump filter-cleared
+key /
+type 9200
+wait 1 of 3
+key Enter
+wait Esc clears it
+key Esc
+wait 3, by name
+dump esc-clears-a-kept-filter
+# removing asks, any key but y keeps it, u brings it back
+key End
+wait > idf1
+key d
+wait Remove idf1?
+dump remove-asks
+key ?
+wait Keys: removing a switch
+dump remove-help
+key Esc
+gone Keys:
+key n
+gone Remove idf1?
+dump remove-declined
+key d
+wait Remove idf1?
+key y
+wait Removed idf1
+dump removed
+key j
+gone Removed idf1
+dump status-cleared-by-a-key
+key u
+wait idf1 is back in the list
+dump undo
+list
+key o
+wait Ordered by last opened
+dump ordered-by-last-opened
+key o
+wait Ordered by name
+# keys arriving together on the list are a paste: the browser opens with them
+paste-text jjj
+wait Load a switch
+dump keys-read-together
+key Esc
+gone Load a switch
+# a new switch under a listed name: left as it was, then replaced
+key n
+wait New switch
+type idf-9200
+wait replaces it
+dump name-of-a-listed-switch
+key Enter
+wait Hardware for idf-9200
+key Enter
+wait Replace idf-9200?
+dump replace-asks
+key ?
+wait Keys: replacing a switch
+dump replace-help
+key Esc
+gone Keys:
+key x
+wait stays as it was
+dump replace-left
+key n
+wait New switch
+type idf-9200
+key Enter
+wait Hardware for idf-9200
+key Enter
+wait Replace idf-9200?
+key y
+prompt idf-9200>
+typed idf-9200# enable
+typed idf-9200# show running-config | include vlan 777|kept-by-write
+dump the-listed-switch-replaced
+line exit
+fullscreen
+# a file loaded under a listed name, both kept
+key a
+wait Load a switch
+type c9300l-design.toml
+key Enter
+wait Replace idf-9300l?
+dump replace-a-loaded-file
+key k
+wait Keep both
+dump keep-both-asks-a-name
+key Enter
+prompt idf-9300l-copy>
+line exit
+fullscreen
+list
+# a hostname saved by write memory to a listed switch's name
+key Home
+wait > idf-9200
+key Enter
+prompt idf-9200>
+typed idf-9200# enable
+typed idf-9200(config)# configure terminal
+typed idf1(config)# hostname idf1
+typed idf1# end
+typed idf1# write memory
+dump hostname-saved-to-a-listed-name
+line exit
+fullscreen
+dump list-after-the-refused-save
+list
+# a path pasted or dropped on the list is meant to open the browser with it; each wait is on the
+# file's name, which the screen shows whichever field the path lands in
+paste-text "D:\audit-missing\core-sw.cfg"
+wait core-sw.cfg
+dump a-path-dropped-on-the-list
+key Enter
+settle
+dump enter-on-the-dropped-path
+key Esc
+settle
+paste-text "{repo}\tests\c9200-design.toml"
+wait c9200-design.toml
+dump a-design-s-path-dropped-on-the-list
+key Esc
+settle
+paste-text C:\ProgramData\core.cfg
+wait core.cfg
+dump a-programdata-path-dropped-on-the-list
+key Esc
+settle
+dump the-list-after-the-drops
+list
+resize 60x20
+settle
+dump list-60x20
+resize 132x43
+settle
+dump list-132x43
+resize 200x60
+settle
+dump list-200x60
+resize 80x24
+settle
+key q
+exit

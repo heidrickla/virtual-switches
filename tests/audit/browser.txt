@@ -1,0 +1,186 @@
+# The file browser `a` opens: its help, folders first, the Find field narrowing the entries, Tab,
+# Enter on a folder and on a file picked, Backspace, Left and Right with nothing typed, a drive's root
+# and the drives above it, the Find field's editing keys, a typed path loaded as it is, `~`, a pasted
+# path, and the files that are refused (an empty file, notes, README.md) or open the builder with
+# their hardware named (a design naming a model vswitch does not know).
+file empty.cfg
+file notes.txt These are my notes about the lab.\nNothing here is a switch.\n
+file unknown.toml hostname = "lab9"\nstack = ["C9999-48Z"]\n
+file nohost.toml stack = ["C9300-48T"]\n
+file profile/captures/core-sw.cfg hostname core-sw\nswitch 1 provision c9300-48p\ninterface GigabitEthernet1/0/1\n description uplink\nend\n
+spawn 80x24
+fullscreen
+key a
+wait Load a switch
+dump opens-in-the-working-folder
+key ?
+wait Keys: the file browser
+dump help
+key Esc
+gone Keys:
+# Enter with nothing typed opens the entry picked, the first folder
+key Enter
+wait nextest.toml
+dump enter-opens-the-folder-picked
+key Backspace
+wait src
+dump backspace-goes-up-with-the-folder-picked
+key Right
+wait nextest.toml
+key Left
+wait src
+key Down 3
+settle
+dump down-3
+key PageDown
+settle
+dump pagedown
+# typing narrows the folder's entries; Tab completes the one folder and opens it
+type tes
+wait tests
+dump typed-tes
+key Tab
+wait c9300l-design.toml
+dump tab-opens-tests
+type c93
+wait c9300-design.toml
+dump typed-c93
+key Tab
+settle
+dump tab-completes-what-they-share
+key Ctrl-u
+settle
+key Down 3
+settle
+dump picked-a-file
+key Enter
+prompt idf-9300>
+dump enter-loads-the-file-picked
+line exit
+fullscreen
+# the browser opens again in the folder the last file came from
+key a
+wait Load a switch
+dump opens-in-the-folder-last-loaded-from
+# a typed path, as it is, before Enter; then the Find field's keys
+type no/such/file.cfg
+settle
+dump a-path-to-nowhere-typed
+key Enter
+wait Nothing here is named
+dump a-missing-file
+key Home
+key Delete
+key End
+key Backspace
+key Ctrl-w
+settle
+dump home-delete-end-backspace-ctrl-w
+key Ctrl-u
+settle
+dump ctrl-u-clears
+key Backspace
+wait src
+key Esc
+gone Load a switch
+# a drive's root, then the drives above it
+key a
+wait Load a switch
+type /
+settle
+dump a-slash-lists-the-root
+key Enter
+settle
+key Backspace
+settle
+dump above-the-root
+key Esc
+gone Load a switch
+# files that do not load
+key a
+wait Load a switch
+type {repo}/data
+key Enter
+wait grammars
+dump a-folder-typed
+type grammars/c9300-17.15.json.gz
+key Enter
+wait UTF-8
+dump a-binary-file
+key Ctrl-u
+type {repo}/Cargo.toml
+key Enter
+wait unknown field
+dump a-toml-that-is-not-a-design
+key Ctrl-u
+type {home}/nohost.toml
+key Enter
+wait missing field
+dump a-design-without-hostname
+key Esc
+gone Load a switch
+# files that are no configuration are refused in the browser; a design naming hardware vswitch
+# does not know opens the builder with it named
+key a
+wait Load a switch
+type {home}/empty.cfg
+key Enter
+wait no configuration here
+dump an-empty-file
+key Esc
+gone Load a switch
+key a
+wait Load a switch
+dump opens-in-the-list-s-folder
+type {home}/notes.txt
+key Enter
+wait no configuration here
+dump a-text-file
+key Esc
+gone Load a switch
+key a
+wait Load a switch
+type {home}/unknown.toml
+key Enter
+wait vswitch knows no C9999-48Z
+dump a-design-naming-unknown-hardware
+key Esc
+gone Hardware for
+key a
+wait Load a switch
+type {repo}/README.md
+key Enter
+wait no configuration here
+dump readme-as-a-configuration
+key Esc
+gone Load a switch
+# ~ is the home folder; a configuration naming its hardware confirms it in the builder
+key a
+wait Load a switch
+type ~/captures/
+wait core-sw.cfg
+dump tilde
+type co
+key Tab
+settle
+dump tilde-tab
+key Enter
+wait Hardware for core-sw
+dump a-configuration-s-hardware
+key Enter
+prompt core-sw>
+line exit
+fullscreen
+# a path pasted into the field, quotes and all
+key a
+wait Load a switch
+paste-text "{repo}/tests/c9200-design.toml"
+settle
+dump a-pasted-path
+key Enter
+prompt idf-9200>
+line exit
+fullscreen
+dump three-loaded
+key q
+exit
