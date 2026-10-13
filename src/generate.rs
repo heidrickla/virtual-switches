@@ -108,6 +108,9 @@ pub struct Access {
     /// a sample value to confirm before applying, written as a `! verify:` comment above the port
     #[serde(default)]
     pub verify: Option<String>,
+    /// configured but administratively down, such as a spare port
+    #[serde(default)]
+    pub shutdown: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,7 +557,14 @@ pub fn render(s: &Spec) -> Vec<String> {
             c.push(" spanning-tree portfast".into());
             c.push(" spanning-tree bpduguard enable".into());
         }
-        c.push(" no shutdown".into());
+        c.push(
+            if a.shutdown {
+                " shutdown"
+            } else {
+                " no shutdown"
+            }
+            .into(),
+        );
     }
     for p in &s.shutdown {
         c.push(format!("interface {}", full(p)));
@@ -608,8 +618,9 @@ pub fn render_change(s: &Spec, config: &[String]) -> Vec<String> {
         }
     }
     for a in &s.access {
+        let down = if a.shutdown { ", shut down" } else { "" };
         c.push(format!(
-            "| {} | {} | - | access {} |",
+            "| {} | {} | - | access {}{down} |",
             a.port, a.description, a.vlan
         ));
     }
@@ -684,6 +695,43 @@ mod tests {
 
     fn spec(toml: &str) -> Spec {
         toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn a_spare_access_port_is_configured_and_left_down() {
+        let s = spec(
+            r#"
+hostname = "x"
+stack = ["C9300X-24Y"]
+vtp_mode = "transparent"
+[[vlan]]
+id = 499
+[[access]]
+port = "Twe1/0/5"
+vlan = 499
+description = "spare"
+shutdown = true
+[[access]]
+port = "Twe1/0/6"
+vlan = 499
+description = "host"
+"#,
+        );
+        assert!(check(&s).is_empty());
+        let c = render(&s);
+        let block = |name: &str| -> Vec<String> {
+            let at = c.iter().position(|l| l == name).unwrap();
+            c[at + 1..]
+                .iter()
+                .take_while(|l| l.starts_with(' '))
+                .cloned()
+                .collect()
+        };
+        let spare = block("interface TwentyFiveGigE1/0/5");
+        assert!(spare.contains(&" switchport access vlan 499".to_string()));
+        assert_eq!(spare.last().map(String::as_str), Some(" shutdown"));
+        let host = block("interface TwentyFiveGigE1/0/6");
+        assert_eq!(host.last().map(String::as_str), Some(" no shutdown"));
     }
 
     #[test]
