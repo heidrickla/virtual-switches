@@ -25,6 +25,9 @@ pub struct Source {
     pub running: Vec<File>,
     pub logs: Vec<File>,
     pub stacks: Vec<File>,
+    /// each folder's `crawl/crawl.log`, the `?` probes of a crawl of the switch: read for the help
+    /// it held, and for nothing else
+    pub crawls: Vec<File>,
     /// the site's own designs and scripts, beside the captures folder (`../designs`): read only for
     /// the names they give
     pub designs: Vec<String>,
@@ -62,6 +65,7 @@ impl Source {
                 });
             }
         }
+        src.crawls = Source::read_crawls(dir);
         if let Ok(designs) = std::fs::read_dir(dir.join("../designs")) {
             for f in designs.flatten() {
                 if let Ok(text) = std::fs::read_to_string(f.path()) {
@@ -69,12 +73,37 @@ impl Source {
                 }
             }
         }
-        for list in [&mut src.running, &mut src.logs, &mut src.stacks] {
+        for list in [
+            &mut src.running,
+            &mut src.logs,
+            &mut src.stacks,
+            &mut src.crawls,
+        ] {
             list.sort_by(|a, b| {
                 (&a.book, &a.release, &a.name).cmp(&(&b.book, &b.release, &b.name))
             });
         }
         Ok(src)
+    }
+
+    /// Every `<book>-<release>/crawl/crawl.log` under `dir`, and no other file of a crawl's folder.
+    pub fn read_crawls(dir: &Path) -> Vec<File> {
+        let mut out = vec![];
+        for d in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let folder = d.file_name().to_string_lossy().to_string();
+            let Some((book, release)) = folder.split_once('-') else {
+                continue;
+            };
+            if let Ok(text) = std::fs::read_to_string(d.path().join("crawl").join("crawl.log")) {
+                out.push(File {
+                    book: book.into(),
+                    release: release.into(),
+                    name: "crawl.log".into(),
+                    text,
+                });
+            }
+        }
+        out
     }
 
     /// The captures compiled into a build that names a captures folder.
@@ -94,6 +123,8 @@ impl Source {
             running: files(crate::grammars::LIVE),
             logs: files(crate::grammars::LIVE_LOGS),
             stacks: files(crate::grammars::LIVE_STACKS),
+            // a crawl's log is not embedded in the binary: read from the folder it was built against
+            crawls: Source::read_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             designs: std::fs::read_dir(concat!(env!("VSWITCH_CAPTURES_DIR"), "/../designs"))
                 .into_iter()
                 .flatten()
@@ -116,6 +147,10 @@ pub struct HeldTable {
     pub after: Vec<(String, String)>,
     /// (mode, `help_key` of the line before `?`, the answer)
     pub help: Vec<(String, String, Vec<String>)>,
+    /// (mode, context, `context::key` of the line before `?`, the answer) from a crawl, which asked
+    /// in each submode as each of its entering lines reached it; absent from a corpus without one
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crawl: Vec<(String, String, String, Vec<String>)>,
     /// the captures read, by name
     pub captures: Vec<String>,
 }
@@ -234,14 +269,63 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
             }
         }
     }
+    let mut crawl: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for f in src
+        .crawls
+        .iter()
+        .filter(|f| f.book == book && f.release == release)
+    {
+        for (mode, context, key, answer) in crawled_help(&f.text) {
+            crawl.entry((mode, context, key)).or_insert(answer);
+        }
+    }
     HeldTable {
         lines: lines.into_iter().collect(),
         indent: indent.into_iter().map(|((k, l), i)| (k, l, i)).collect(),
         opens: opens.into_iter().collect(),
         after: after.into_iter().collect(),
         help: help.into_iter().map(|((m, k), a)| (m, k, a)).collect(),
+        crawl: crawl
+            .into_iter()
+            .map(|((m, c, k), a)| (m, c, k, a))
+            .collect(),
         captures,
     }
+}
+
+/// The `?` answers a crawl's log holds, as (mode, context, key, answer): the mode its prompt showed
+/// and the context its entering lines give it, or privileged EXEC for a line typed after `do-exec`,
+/// which runs the rest of the line there. A refused probe and one asked where the context is unknown
+/// are left out.
+pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<String>)> {
+    let Some((_, exchanges)) = crate::capture::exchanges(text) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    for e in exchanges {
+        let Some(before) = e.command.strip_suffix('?') else {
+            continue;
+        };
+        if e.output.iter().any(|l| l.starts_with('%')) {
+            continue;
+        }
+        let exec = before
+            .trim_start()
+            .split_once(char::is_whitespace)
+            .filter(|(w, _)| w.eq_ignore_ascii_case("do-exec") && crate::cli::is_config(&e.mode))
+            .map(|(_, rest)| rest);
+        let (mode, context, typed) = match exec {
+            Some(rest) => ("privileged".to_string(), String::new(), rest),
+            None => {
+                let Some(context) = e.context.clone() else {
+                    continue;
+                };
+                (e.mode.clone(), context, before)
+            }
+        };
+        out.push((mode, context, crate::context::key(typed), e.output.clone()));
+    }
+    out
 }
 
 /// The indentation every capture at a release printed a block's own lines with, by the block's first
@@ -385,6 +469,7 @@ pub fn build(src: &Source) -> Corpus {
         .running
         .iter()
         .chain(&src.logs)
+        .chain(&src.crawls)
         .map(|f| (f.book.clone(), f.release.clone()))
         .collect();
     for (book, release) in &keys {
@@ -950,6 +1035,8 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
         t.after = after.into_iter().collect();
         t.help
             .retain(|(_, k, a)| !deny.hits(k) && !a.iter().any(|r| deny.hits(r)));
+        t.crawl
+            .retain(|(_, _, k, a)| !deny.hits(k) && !a.iter().any(|r| deny.hits(r)));
         let n = t.captures.len();
         t.captures = (1..=n)
             .map(|i| format!("{book} {release} capture {i}"))
@@ -1232,6 +1319,127 @@ mod tests {
             "{} lines name the site: {shown:?}",
             hits.len()
         );
+    }
+
+    const CRAWL: &str = "Switch#configure terminal\nEnter configuration commands, one per line.  End with CNTL/Z.\nSwitch(config)# ?\nConfigure commands:\n  auto  Configure Automation\n  auto  Configure Automation\nSwitch(config)#do-exec show ?\n  vlan  VTP VLAN status\nSwitch(config)#bogus ?\n% Unrecognized command\nSwitch(config)#router ospf 1\nSwitch(config-router)# ?\n  area  OSPF area parameters\nSwitch(config-router)#end\n";
+
+    #[test]
+    fn a_crawl_log_under_crawl_reaches_the_corpus_and_no_other_file_of_its_folder_does() {
+        let dir = std::env::temp_dir().join(format!("vswitch-crawl-test-{}", std::process::id()));
+        let folder = dir.join("c9300-17.6");
+        std::fs::create_dir_all(folder.join("crawl")).unwrap();
+        let put = |name: &str, text: &str| std::fs::write(folder.join(name), text).unwrap();
+        put("crawl/crawl.log", CRAWL);
+        put(
+            "crawl/notes.log",
+            "Switch#show version\nnot a session of the crawl\n",
+        );
+        put("crawl/state.json", "{}");
+        put(
+            "lab-show.log",
+            "lab#show vtp ?\n  status  VTP status\nlab#\n",
+        );
+        let src = Source::read(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(src.crawls.len(), 1);
+        assert_eq!(
+            (&src.crawls[0].book[..], &src.crawls[0].release[..]),
+            ("c9300", "17.6")
+        );
+        assert_eq!(src.crawls[0].text, CRAWL);
+        let logs: Vec<&str> = src.logs.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(logs, ["lab-show.log"]);
+        let built = build(&src);
+        let (_, _, table) = built
+            .held
+            .iter()
+            .find(|(b, r, _)| b == "c9300" && r == "17.6")
+            .unwrap();
+        let held: Vec<(&str, &str, &str, usize)> = table
+            .crawl
+            .iter()
+            .map(|(m, c, k, a)| (m.as_str(), c.as_str(), k.as_str(), a.len()))
+            .collect();
+        // the repeated row stays; `do-exec show ?` is privileged EXEC's `show ?`; a refusal is no answer
+        assert_eq!(
+            held,
+            [
+                ("config", "", "", 3),
+                ("config-router", "router ospf", "", 1),
+                ("privileged", "", "show ", 1),
+            ]
+        );
+        assert_eq!(table.help.len(), 1);
+    }
+
+    /// A crawl's log is read by `vswitch corpus` from its folder and never embedded: the build's
+    /// `LIVE_LOGS` holds the top-level session logs of each folder only.
+    #[cfg(captures)]
+    #[test]
+    fn a_crawl_log_is_not_embedded_in_the_binary() {
+        for f in Source::read_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))) {
+            assert!(
+                crate::grammars::LIVE_LOGS.iter().all(|l| l.3 != f.text),
+                "{} {}'s crawl log is embedded",
+                f.book,
+                f.release
+            );
+        }
+        assert!(
+            crate::grammars::LIVE_LOGS
+                .iter()
+                .all(|l| l.2 != "crawl.log" && !l.2.contains(['/', '\\']))
+        );
+    }
+
+    #[test]
+    fn a_crawl_answer_naming_the_site_is_left_out() {
+        let deny = Deny::from_tokens(["plantx".into()].into());
+        let mut c = Corpus::default();
+        c.held.push((
+            "c9300".into(),
+            "17.6".into(),
+            HeldTable {
+                crawl: vec![
+                    (
+                        "config".into(),
+                        "".into(),
+                        "ip ".into(),
+                        vec!["  routing  ok".into()],
+                    ),
+                    (
+                        "config".into(),
+                        "".into(),
+                        "snmp ".into(),
+                        vec!["  plantx  site".into()],
+                    ),
+                ],
+                ..Default::default()
+            },
+        ));
+        let kept = filtered(c, &deny);
+        let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.2.as_str()).collect();
+        assert_eq!(keys, ["ip "]);
+        assert!(leaks(&kept, &deny).is_empty());
+    }
+
+    #[test]
+    fn a_corpus_without_a_crawl_has_no_crawl_field_and_one_with_it_round_trips() {
+        let plain = Corpus {
+            held: vec![("c9300".into(), "17.6".into(), HeldTable::default())],
+            ..Default::default()
+        };
+        let json = String::from_utf8(serde_json::to_vec(&plain).unwrap()).unwrap();
+        assert!(!json.contains("crawl"), "{json}");
+        assert_eq!(Corpus::from_gzip(&plain.to_gzip()).unwrap(), plain);
+        let mut with = plain.clone();
+        with.held[0].2.crawl.push((
+            "config".into(),
+            "router bgp".into(),
+            "".into(),
+            vec!["  neighbor  x".into()],
+        ));
+        assert_eq!(Corpus::from_gzip(&with.to_gzip()).unwrap(), with);
     }
 
     #[test]

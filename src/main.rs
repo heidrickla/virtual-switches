@@ -10,6 +10,7 @@ mod check;
 mod cli;
 mod compile;
 mod console;
+mod context;
 mod corpus;
 #[cfg(captures)]
 mod coverage;
@@ -1930,7 +1931,12 @@ fn run(args: &[String]) -> Result<bool, String> {
                 // which denied word took out each `?` answer row
                 let mut seen = std::collections::BTreeMap::new();
                 for (_, _, t) in &corpus::build(&src).held {
-                    for (_, _, a) in &t.help {
+                    let answers = t
+                        .help
+                        .iter()
+                        .map(|(_, _, a)| a)
+                        .chain(t.crawl.iter().map(|(_, _, _, a)| a));
+                    for a in answers {
                         for r in a {
                             if let Some(w) = deny.hit(r) {
                                 *seen.entry(w).or_insert(0) += 1;
@@ -1943,7 +1949,11 @@ fn run(args: &[String]) -> Result<bool, String> {
                 }
                 return Ok(true);
             }
-            let c = corpus::filtered(corpus::with_forms(corpus::build(&src), &src)?, &deny);
+            let built = corpus::with_forms(corpus::build(&src), &src)?;
+            let crawled = |c: &corpus::Corpus| c.held.iter().map(|(_, _, t)| t.crawl.len()).sum();
+            let asked: usize = crawled(&built);
+            let c = corpus::filtered(built, &deny);
+            let kept: usize = crawled(&c);
             let leaks = corpus::leaks(&c, &deny);
             if !leaks.is_empty() {
                 return Err(format!(
@@ -1953,9 +1963,10 @@ fn run(args: &[String]) -> Result<bool, String> {
             }
             std::fs::write(out, c.to_gzip()).map_err(|e| format!("{out}: {e}"))?;
             println!(
-                "{} running configurations, {} session logs, {} site words left out -> {out}",
+                "{} running configurations, {} session logs, {} crawl logs ({kept} of {asked} answers kept), {} site words left out -> {out}",
                 src.running.len(),
                 src.logs.len(),
+                src.crawls.len(),
                 deny.len()
             );
             Ok(true)

@@ -39,10 +39,14 @@ pub const COMMANDS: &[&str] = &[
 ];
 
 /// One command, the mode its prompt showed as vswitch names modes (`exec` for `>`, `privileged` for
-/// `#`, `config-if`), and the lines the switch printed after it.
+/// `#`, `config-if`), the context the submodes entered before it give that mode (`context`), and the
+/// lines the switch printed after it.
 #[derive(Debug, PartialEq)]
 pub struct Exchange {
     pub mode: String,
+    /// `context::of` the lines that entered the mode's submodes; none where the session began inside
+    /// a submode and has not left it
+    pub context: Option<String>,
     pub command: String,
     pub output: Vec<String>,
 }
@@ -123,6 +127,7 @@ pub fn exchanges(transcript: &str) -> Option<(String, Vec<Exchange>)> {
         match prompt(l) {
             Some((mode, command)) => out.push(Exchange {
                 mode,
+                context: None,
                 command,
                 output: vec![],
             }),
@@ -132,6 +137,14 @@ pub fn exchanges(transcript: &str) -> Option<(String, Vec<Exchange>)> {
                 }
             }
         }
+    }
+    // each prompt's context, from the entering lines of the prompts before it
+    let mut stack = crate::context::Stack::default();
+    for i in 0..out.len() {
+        out[i].context = stack.context(&out[i].mode);
+        let refused = out[i].output.iter().any(|l| l.starts_with('%'));
+        let next = out.get(i + 1).map(|e| e.mode.clone());
+        stack.advance(&out[i].mode, &out[i].command, refused, next.as_deref());
     }
     Some((host, out))
 }

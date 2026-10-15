@@ -19,6 +19,8 @@ struct Frame {
     prefix: String,
     /// the key of the line that opened this indented section, which its `exit-` line closes
     section: Option<String>,
+    /// the line as typed that entered this mode, which its help context is derived from
+    entered: String,
 }
 
 impl Frame {
@@ -28,6 +30,7 @@ impl Frame {
             blocks: vec![],
             prefix: String::new(),
             section: None,
+            entered: String::new(),
         }
     }
 }
@@ -497,6 +500,7 @@ impl<'a> Session<'a> {
                 blocks: vec![b],
                 prefix: String::new(),
                 section: None,
+                entered: text.to_string(),
             });
         } else if !self.device.global.iter().any(|e| e.key == text) {
             self.device.global.push(Entry {
@@ -586,8 +590,7 @@ impl<'a> Session<'a> {
             return column;
         };
         // the words a real switch offered there when asked `?`, else the books'
-        let key = (self.mode().to_string(), crate::live::help_key(&line[..at]));
-        let mut words: Vec<String> = match self.engine.held.help.get(&key) {
+        let mut words: Vec<String> = match self.held_help(self.mode(), &line[..at]) {
             Some(lines) => lines
                 .iter()
                 .filter_map(|l| l.split_whitespace().next())
@@ -708,6 +711,15 @@ impl<'a> Session<'a> {
             return done;
         }
         let prompt_len = lead.unwrap_or_else(|| self.prompt().chars().count());
+        if let Some(at) = self.do_exec_at(line) {
+            if line[at..].trim().is_empty() {
+                return (
+                    vec!["% Incomplete command.".into(), String::new()],
+                    Result::Error,
+                );
+            }
+            return self.run_exec(prompt_len, line, at);
+        }
         if let Some(done) = self.terminal(line, prompt_len) {
             return done;
         }
@@ -1038,6 +1050,31 @@ impl<'a> Session<'a> {
         Some((vec![], Result::Ok))
     }
 
+    /// The rest of `line` from `at`, as typed, run at the privileged prompt (`do`, `do-exec`); a
+    /// refused word's caret stands under it after the configuration prompt and the words before it.
+    fn run_exec(&mut self, prompt_len: usize, line: &str, at: usize) -> (Vec<String>, Result) {
+        let lead = prompt_len + line[..at].chars().count();
+        let saved = std::mem::replace(&mut self.frames, vec![Frame::top("privileged")]);
+        self.lead = Some(lead);
+        let out = self.type_line(&line[at..]);
+        self.frames = saved;
+        out
+    }
+
+    /// Where the command of a configuration line `do-exec <command>` starts: IOS XE 17 and the
+    /// 2960's 15.0 list `do-exec` in configuration modes and hide `do`.
+    fn do_exec_at(&self, line: &str) -> Option<usize> {
+        if !cli::is_config(self.mode()) {
+            return None;
+        }
+        let toks = cli::tokens(line);
+        let first = toks.first()?;
+        first
+            .text
+            .eq_ignore_ascii_case("do-exec")
+            .then(|| toks.get(1).map_or(line.len(), |t| t.at))
+    }
+
     fn run(&mut self, mode: &str, line: &str, p: &Parse) -> (Vec<String>, Result) {
         self.raw = line.to_string();
         let cmd = &self.engine.grammar.commands[p.command];
@@ -1045,15 +1082,8 @@ impl<'a> Session<'a> {
         let enters = self.engine.enters(p).map(str::to_string);
         match name {
             "do" => {
-                // the rest of the line as typed, run at the privileged prompt; a refused word's
-                // caret stands under it after the configuration prompt and `do `
                 let at = cli::tokens(line).get(1).map_or(line.len(), |t| t.at);
-                let lead = self.prompt().chars().count() + line[..at].chars().count();
-                let saved = std::mem::replace(&mut self.frames, vec![Frame::top("privileged")]);
-                self.lead = Some(lead);
-                let out = self.type_line(&line[at..]);
-                self.frames = saved;
-                return out;
+                return self.run_exec(self.prompt().chars().count(), line, at);
             }
             "exit" => {
                 if mode == "privileged" || mode == "exec" {
@@ -1184,6 +1214,7 @@ impl<'a> Session<'a> {
                     blocks,
                     prefix: String::new(),
                     section: None,
+                    entered: line.trim().to_string(),
                 });
             }
             Some(sub) if cli::is_config(sub) && top.mode.starts_with("config-if") => {
@@ -1194,6 +1225,7 @@ impl<'a> Session<'a> {
                     blocks: top.blocks.clone(),
                     prefix: top.prefix.clone(),
                     section: None,
+                    entered: line.trim().to_string(),
                 });
             }
             Some(sub) if cli::is_config(sub) => {
@@ -1222,6 +1254,7 @@ impl<'a> Session<'a> {
                     blocks: top.blocks.clone(),
                     prefix: format!("{} ", top.prefix),
                     section: Some(format!("{}{header}", top.prefix)),
+                    entered: line.trim().to_string(),
                 });
             }
             _ => self.write(p),
@@ -1389,19 +1422,50 @@ impl<'a> Session<'a> {
     /// keywords that word begins.
     pub fn help(&self, text: &str) -> Vec<String> {
         match self.after_do(text) {
-            Some(rest) => self.help_in("privileged", rest),
-            None => self.help_in(self.mode(), text),
+            Some(rest) => self.help_in("privileged", Some(""), rest),
+            None => self.help_in(self.mode(), self.context().as_deref(), text),
         }
     }
 
-    /// The text after a configuration line's `do` and a space, which EXEC reads: `?` and Tab
-    /// answer it as the privileged prompt would.
+    /// The text after a configuration line's `do` or `do-exec` and a space, which EXEC reads: `?`
+    /// and Tab answer it as the privileged prompt would.
     fn after_do<'t>(&self, text: &'t str) -> Option<&'t str> {
         let toks = cli::tokens(text);
         let first = toks.first()?;
         let spaced = text.len() > first.at + first.text.len();
-        (cli::is_config(self.mode()) && first.text.eq_ignore_ascii_case("do") && spaced)
+        let exec =
+            first.text.eq_ignore_ascii_case("do") || first.text.eq_ignore_ascii_case("do-exec");
+        (cli::is_config(self.mode()) && exec && spaced)
             .then(|| &text[toks.get(1).map_or(text.len(), |t| t.at)..])
+    }
+
+    /// The context the submodes entered give the current mode, as the corpus derives it from a
+    /// session's prompts (`context::of`); none when a frame's entering line is unknown.
+    fn context(&self) -> Option<String> {
+        let entered: Vec<&str> = self
+            .frames
+            .iter()
+            .skip(3)
+            .map(|f| f.entered.as_str())
+            .collect();
+        if entered.iter().any(|l| l.is_empty()) {
+            return None;
+        }
+        Some(crate::context::of(&entered))
+    }
+
+    /// Whether the running configuration holds `line` at its top level.
+    fn running_has(&self, line: &str) -> bool {
+        self.device.global.iter().any(|e| e.text.trim() == line)
+    }
+
+    /// What a real switch printed for `?` after `text` in `mode` and the current context, where the
+    /// session's state leaves that answer true.
+    fn held_help(&self, mode: &str, text: &str) -> Option<&Vec<String>> {
+        let context = self.context();
+        self.engine
+            .held
+            .help_for(mode, context.as_deref(), text, |l| self.running_has(l))
     }
 
     /// What may follow the whole tokens `done` at `mode`, and whether the line is complete there; at
@@ -1452,7 +1516,7 @@ impl<'a> Session<'a> {
     }
 
     /// `help` at `mode`.
-    fn help_in(&self, mode: &str, text: &str) -> Vec<String> {
+    fn help_in(&self, mode: &str, context: Option<&str>, text: &str) -> Vec<String> {
         // after a command raised above `>`'s level, at `>` (c9200 17.15 capture 27's `show ?`)
         let typed: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         if text.ends_with(char::is_whitespace)
@@ -1465,8 +1529,11 @@ impl<'a> Session<'a> {
         {
             return vec!["% Unrecognized command".into()];
         }
-        let key = (mode.to_string(), crate::live::help_key(text));
-        if let Some(lines) = self.engine.held.help.get(&key) {
+        let held = self
+            .engine
+            .held
+            .help_for(mode, context, text, |l| self.running_has(l));
+        if let Some(lines) = held {
             return lines.clone();
         }
         let toks = crate::cli::tokens(text);
@@ -3263,5 +3330,320 @@ mod tests {
             let run = crate::show::configuration(&s.device);
             assert!(run.contains(&printed.to_string()), "{typed:?}: {run:?}");
         }
+    }
+
+    /// A crawl's log as a session transcript: each step is the prompt and what was typed, then the
+    /// lines IOS printed.
+    fn transcript(steps: &[(&str, &[&str])]) -> String {
+        steps
+            .iter()
+            .flat_map(|(typed, out)| std::iter::once(*typed).chain(out.iter().copied()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+
+    /// The crawl the tests below hold: global configuration's `?` with a row printed twice, each router
+    /// protocol and interface family asked under the `(config-router)#` and `(config-if)#` prompts they
+    /// share, an address family under its router, and `do-exec show ?`.
+    fn crawl() -> String {
+        const CONF: &[&str] = &["Enter configuration commands, one per line.  End with CNTL/Z."];
+        let sections: &[(&str, &[&str])] = &[
+            ("Switch#configure terminal", CONF),
+            (
+                "Switch(config)# ?",
+                &[
+                    "Configure commands:",
+                    "  aaa   Authentication, Authorization and Accounting.",
+                    "  auto  Configure Automation",
+                    "  auto  Configure Automation",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#aaa ?",
+                &[
+                    "  new-model  Enable NEW access control commands and functions.(Disables OLD commands.)",
+                ],
+            ),
+            (
+                "Switch(config)#do-exec show ?",
+                &["  vlan  VTP VLAN status", "  zzz   held only by the crawl"],
+            ),
+            ("Switch(config)#router ospf 1", &[]),
+            (
+                "Switch(config-router)# ?",
+                &["  area  OSPF area parameters"],
+            ),
+            ("Switch(config-router)#exit", &[]),
+            ("Switch(config)#router bgp 65000", &[]),
+            (
+                "Switch(config-router)# ?",
+                &["  neighbor  Specify a neighbor router"],
+            ),
+            ("Switch(config-router)#address-family ipv4", &[]),
+            (
+                "Switch(config-router-af)# ?",
+                &["  network  Specify a network to announce via BGP"],
+            ),
+            ("Switch(config-router-af)#end", &[]),
+            ("Switch#configure terminal", CONF),
+            ("Switch(config)#router eigrp 1", &[]),
+            (
+                "Switch(config-router)# ?",
+                &["  metric  Modify metrics and parameters for advertisement"],
+            ),
+            ("Switch(config-router)#exit", &[]),
+            ("Switch(config)#router eigrp NAMED", &[]),
+            (
+                "Switch(config-router)# ?",
+                &["  address-family  Enter Address Family command mode"],
+            ),
+            ("Switch(config-router)#exit", &[]),
+            ("Switch(config)#interface GigabitEthernet1/0/1", &[]),
+            (
+                "Switch(config-if)# ?",
+                &["  switchport  Set switching mode characteristics"],
+            ),
+            ("Switch(config-if)#interface Vlan10", &[]),
+            (
+                "Switch(config-if)# ?",
+                &["  ip  Interface Internet Protocol config commands"],
+            ),
+            ("Switch(config-if)#interface Loopback0", &[]),
+            (
+                "Switch(config-if)# ?",
+                &["  ipv6  IPv6 interface subcommands"],
+            ),
+            ("Switch(config-if)#end", &[]),
+        ];
+        transcript(sections)
+    }
+
+    /// A C9300 at 17.6 whose books are set aside for what `crawl()` held.
+    fn crawled() -> Engine {
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let table = crate::corpus::HeldTable {
+            crawl: crate::corpus::crawled_help(&crawl()),
+            ..Default::default()
+        };
+        let c = crate::corpus::Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        Engine::with_held(grammar, held)
+    }
+
+    fn books_17_6() -> Engine {
+        let r = crate::release::Release::parse("17.6").unwrap();
+        Engine::new(crate::grammars::grammar("c9300", r).unwrap())
+    }
+
+    #[test]
+    fn a_crawl_answers_each_context_under_a_shared_prompt_with_its_own() {
+        let e = crawled();
+        let ask = |lines: &[&str]| configured(&e, lines).help("");
+        let cases: [(&[&str], &str); 8] = [
+            (&["router ospf 1"], "area"),
+            (&["router ospf 100"], "area"),
+            (&["router bgp 65000"], "neighbor"),
+            (&["router eigrp 1"], "metric"),
+            (&["router eigrp NAMED"], "address-family"),
+            (&["router bgp 65000", "address-family ipv4"], "network"),
+            (&["interface GigabitEthernet1/0/9"], "switchport"),
+            (&["interface Vlan10"], "ip"),
+        ];
+        for (lines, first) in cases {
+            let got = ask(lines);
+            assert_eq!(
+                got[0].split_whitespace().next(),
+                Some(first),
+                "{lines:?}: {got:?}"
+            );
+            assert_eq!(got.len(), 1, "{lines:?}: {got:?}");
+        }
+        assert_eq!(
+            ask(&["interface Loopback0"]),
+            ["  ipv6  IPv6 interface subcommands"]
+        );
+        // a context the crawl never entered takes none of another's answer: the books answer
+        let books = configured(&books_17_6(), &["interface Port-channel1"]).help("");
+        assert_eq!(ask(&["interface Port-channel1"]), books);
+        assert!(books.len() > 1, "{books:?}");
+        let books = configured(&books_17_6(), &["router rip"]).help("");
+        assert_eq!(ask(&["router rip"]), books);
+    }
+
+    #[test]
+    fn the_shell_and_the_corpus_give_a_prompt_the_same_context() {
+        let e = books_17_6();
+        let stack = crate::platform::parse_stack("C9300-48P").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        let script = [
+            "enable",
+            "configure terminal",
+            "router ospf 1",
+            "exit",
+            "router bgp 65000",
+            "address-family ipv4",
+            "exit-address-family",
+            "exit",
+            "router eigrp 1",
+            "exit",
+            "router eigrp NAMED",
+            "end",
+            "configure terminal",
+            "interface GigabitEthernet1/0/1",
+            "interface Vlan10",
+            "interface Loopback0",
+            "interface range GigabitEthernet1/0/5 - 6",
+            "interface Port-channel1",
+            "exit",
+            "policy-map TESTPOLICY",
+            "class class-default",
+            "exit",
+            "exit",
+            "key chain TESTKEYS",
+            "key 1",
+            "end",
+        ];
+        let mut log = vec![];
+        let mut shell_context = vec![];
+        for line in script {
+            log.push(format!("{}{line}", s.prompt()));
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+            log.extend(out);
+            log.push(format!("{} ?", s.prompt()));
+            log.push(format!("  answer-{}", shell_context.len()));
+            shell_context.push(s.context().expect("a context"));
+        }
+        let (_, ex) = crate::capture::exchanges(&log.join("\n")).unwrap();
+        let probes: Vec<_> = ex.iter().filter(|e| e.command.ends_with('?')).collect();
+        assert_eq!(probes.len(), script.len());
+        for (probe, want) in probes.iter().zip(&shell_context) {
+            assert_eq!(probe.context.as_deref(), Some(want.as_str()), "{probe:?}");
+        }
+        let distinct: std::collections::BTreeSet<_> = shell_context.iter().collect();
+        assert!(distinct.len() >= 12, "{distinct:?}");
+        assert!(shell_context.iter().all(|c| !c.contains("TEST")));
+    }
+
+    #[test]
+    fn a_held_crawl_answer_replays_with_its_duplicate_rows_and_spacing() {
+        let e = crawled();
+        let s = configured(&e, &[]);
+        assert_eq!(
+            s.help(""),
+            [
+                "Configure commands:",
+                "  aaa   Authentication, Authorization and Accounting.",
+                "  auto  Configure Automation",
+                "  auto  Configure Automation",
+                "",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crawl_answer_asked_where_the_session_is_not_asked_there() {
+        let e = crawled();
+        // global configuration's own answer is no answer inside a submode the crawl asked in
+        let in_ospf = configured(&e, &["router ospf 1"]);
+        assert!(
+            !in_ospf
+                .help("")
+                .contains(&"Configure commands:".to_string())
+        );
+        // a context the session cannot name holds no crawl answer
+        let mut unknown = configured(&e, &["router ospf 1"]);
+        unknown.frames.last_mut().unwrap().entered.clear();
+        let books = configured(&books_17_6(), &["router ospf 1"]).help("");
+        assert_eq!(unknown.help(""), books);
+    }
+
+    #[test]
+    fn a_crawl_answer_that_depends_on_aaa_holds_only_without_it() {
+        let e = crawled();
+        let mut s = configured(&e, &[]);
+        let crawled_answer = vec![
+            "  new-model  Enable NEW access control commands and functions.(Disables OLD commands.)"
+                .to_string(),
+        ];
+        assert_eq!(s.help("aaa "), crawled_answer);
+        assert_eq!(s.type_line("aaa new-model").1, Result::Ok);
+        let books = configured(&books_17_6(), &["aaa new-model"]).help("aaa ");
+        assert_ne!(s.help("aaa "), crawled_answer);
+        assert_eq!(s.help("aaa "), books);
+        assert!(books.len() > 1, "{books:?}");
+        // the state follows the configuration
+        assert_eq!(s.type_line("no aaa new-model").1, Result::Ok);
+        assert_eq!(s.help("aaa "), crawled_answer);
+    }
+
+    #[test]
+    fn do_exec_runs_the_rest_of_the_line_at_the_privileged_prompt() {
+        let e = c9300();
+        let mut s = configured(&e, &["interface Vlan10", "exit"]);
+        let by_do = s.type_line("do show running-config | include interface Vlan10");
+        assert_eq!(by_do.0, ["interface Vlan10"]);
+        assert_eq!(
+            s.type_line("do-exec show running-config | include interface Vlan10"),
+            by_do
+        );
+        assert_eq!(
+            s.type_line("DO-EXEC  show   vlan   brief"),
+            s.type_line("do show vlan brief")
+        );
+        assert_eq!(s.mode(), "config");
+        // nothing but EXEC ran: the configuration holds no line for it
+        assert!(
+            s.accepted
+                .iter()
+                .all(|a| !a.line.to_lowercase().starts_with("do"))
+        );
+        assert_eq!(
+            s.type_line("do-exec"),
+            (
+                vec!["% Incomplete command.".to_string(), String::new()],
+                Result::Error
+            )
+        );
+        // a refused word's caret stands after the configuration prompt and `do-exec `
+        assert_eq!(caret_at(&s.type_line("do-exec shw run").0), 25);
+        assert_eq!(caret_at(&s.type_line("do shw run").0), 20);
+        // `?` and Tab read it as EXEC does
+        let exec = {
+            let mut p = configured(&e, &[]);
+            p.type_line("end");
+            p.help("show vlan ")
+        };
+        assert_eq!(s.help("do-exec show vlan "), exec);
+        assert_eq!(s.help("do show vlan "), exec);
+        assert_eq!(s.help("do-exec show vl"), s.help("do show vl"));
+        assert_eq!(s.complete("do-exec sh").as_deref(), Some("do-exec show "));
+        // also from a submode
+        s.type_line("interface Vlan10");
+        assert_eq!(s.help("do-exec show vlan "), exec);
+    }
+
+    #[test]
+    fn a_crawl_s_do_exec_answer_is_privileged_exec_help() {
+        let e = crawled();
+        let mut s = configured(&e, &[]);
+        let held = vec![
+            "  vlan  VTP VLAN status".to_string(),
+            "  zzz   held only by the crawl".to_string(),
+        ];
+        assert_eq!(s.help("do-exec show "), held);
+        assert_eq!(s.help("do show "), held);
+        s.type_line("end");
+        assert_eq!(s.help("show "), held);
+        // another context's `do-exec` is the same privileged answer
+        s.type_line("configure terminal");
+        s.type_line("router ospf 1");
+        assert_eq!(s.help("do-exec show "), held);
     }
 }

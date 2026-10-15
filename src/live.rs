@@ -32,6 +32,9 @@ pub struct Held {
     pub captures: Vec<String>,
     /// what a switch printed for `?`, by its mode and the line typed before the `?` (`help_key`)
     pub help: BTreeMap<(String, String), Vec<String>>,
+    /// what a crawl of a switch printed for `?` in each mode, by its mode and `context::key`: one
+    /// answer per context (`context::of` the submodes entered), where it asked in several
+    pub crawl: BTreeMap<(String, String), Vec<CrawlAnswer>>,
     /// the description switches of the family (classic IOS or IOS XE) printed beside each keyword
     /// for `?`, by the mode (`help_mode`), the line typed before the `?` and the keyword: for a
     /// keyword its own book and captures leave bare (the 9300's `show ?` at 17.15, from the 9200's)
@@ -39,6 +42,9 @@ pub struct Held {
     /// `described` for the other family, asked after it
     pub described_other: Option<&'static Described>,
 }
+
+/// A crawl's answer and the context it was asked in.
+pub type CrawlAnswer = (String, Vec<String>);
 
 /// Keyword descriptions by (`help_mode`, `help_key` of the line before `?`, keyword).
 pub type Described = BTreeMap<(String, String, String), String>;
@@ -295,6 +301,12 @@ impl Held {
                 .iter()
                 .map(|(m, k, a)| ((m.clone(), k.clone()), a.clone()))
                 .collect();
+            for (m, c, k, a) in &t.crawl {
+                h.crawl
+                    .entry((m.clone(), k.clone()))
+                    .or_default()
+                    .push((c.clone(), a.clone()));
+            }
             h.captures = t.captures.clone();
         }
         // every platform's captures at the release: IOS XE moved a class map's `description` from
@@ -309,6 +321,34 @@ impl Held {
         h.described = Some(described(c, classic));
         h.described_other = Some(described(c, !classic));
         h
+    }
+
+    /// What a real switch printed for `?` typed after `text` in `mode`, entered through `context`
+    /// (`context::of`; none where the session's context is unknown). A capture's answer holds in
+    /// every context; a crawl's holds in the context it was asked in, and in no other: where a crawl
+    /// answered that mode and text under other contexts only, there is no held answer. A crawl's
+    /// answer that a state predicate ends (`context::STATE_PREDICATES`) is no held answer either.
+    pub fn help_for(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: impl Fn(&str) -> bool,
+    ) -> Option<&Vec<String>> {
+        let key = (mode.to_string(), help_key(text));
+        let crawled = (mode.to_string(), crate::context::key(text));
+        if context == Some("")
+            && let Some(a) = self.help.get(&key)
+        {
+            return Some(a);
+        }
+        match self.crawl.get(&crawled) {
+            None => self.help.get(&key),
+            Some(answers) => {
+                let (_, a) = answers.iter().find(|(c, _)| Some(c.as_str()) == context)?;
+                (!crate::context::stale(&crawled.1, configured)).then_some(a)
+            }
+        }
     }
 
     /// Whether a real switch held `line` under a block of this kind ("" at the top level).
@@ -484,6 +524,107 @@ mod tests {
 
     #[cfg(all(test, captures))]
     include!(concat!(env!("VSWITCH_SITE_TESTS"), "/live-tests.rs"));
+
+    fn answer(s: &str) -> Vec<String> {
+        vec![s.to_string()]
+    }
+
+    #[test]
+    fn a_crawl_answer_holds_in_its_own_context_alone_and_a_capture_s_in_every_one() {
+        let mut h = Held::default();
+        let key = |m: &str, k: &str| (m.to_string(), k.to_string());
+        h.help
+            .insert(key("config-if", "switchport "), answer("capture"));
+        h.help.insert(key("config-router", ""), answer("capture"));
+        h.help
+            .insert(key("privileged", "show vtp "), answer("capture"));
+        h.crawl.insert(
+            key("config-router", ""),
+            vec![
+                ("router ospf".into(), answer("ospf")),
+                ("router bgp".into(), answer("bgp")),
+            ],
+        );
+        h.crawl.insert(
+            key("privileged", "show vtp "),
+            vec![("".into(), answer("crawl"))],
+        );
+        let ask = |m: &str, c: Option<&str>, t: &str| h.help_for(m, c, t, |_| false).cloned();
+        // where no crawl asked, the capture's answer: in any context, the unknown one too
+        for c in [Some(""), Some("interface vlan"), None] {
+            assert_eq!(ask("config-if", c, "switchport "), Some(answer("capture")));
+        }
+        // the context the crawl asked in, its answer; another context, none, whatever a capture held
+        assert_eq!(
+            ask("config-router", Some("router ospf"), ""),
+            Some(answer("ospf"))
+        );
+        assert_eq!(
+            ask("config-router", Some("router bgp"), ""),
+            Some(answer("bgp"))
+        );
+        for c in [
+            Some("router rip"),
+            Some("router bgp > address-family ipv4"),
+            None,
+        ] {
+            assert_eq!(ask("config-router", c, ""), None, "{c:?}");
+        }
+        // where both held it with no context, the capture's
+        assert_eq!(
+            ask("privileged", Some(""), "show vtp "),
+            Some(answer("capture"))
+        );
+        // a mode and a line neither held
+        assert_eq!(ask("config", Some(""), "ip "), None);
+    }
+
+    #[test]
+    fn a_crawl_answer_ended_by_the_session_s_state_is_no_held_answer() {
+        let mut h = Held::default();
+        h.crawl.insert(
+            ("config".into(), "aaa ".into()),
+            vec![("".into(), answer("crawl"))],
+        );
+        h.crawl.insert(
+            ("config".into(), "ip ".into()),
+            vec![("".into(), answer("crawl ip"))],
+        );
+        let ask = |t: &str, on: bool| {
+            h.help_for("config", Some(""), t, |l| on && l == "aaa new-model")
+                .cloned()
+        };
+        assert_eq!(ask("aaa ", false), Some(answer("crawl")));
+        assert_eq!(ask("aaa ", true), None);
+        // another line of the session's does not end it, nor does the state end another answer
+        assert_eq!(ask("ip ", true), Some(answer("crawl ip")));
+    }
+
+    #[test]
+    fn a_crawl_answer_is_found_whatever_address_was_typed() {
+        let mut h = Held::default();
+        h.crawl.insert(
+            (
+                "config".into(),
+                crate::context::key("arp 10.1.1.1 0011.2233.4455 "),
+            ),
+            vec![("".into(), answer("arpa"))],
+        );
+        for typed in [
+            "arp 192.168.5.5 aabb.ccdd.eeff ",
+            "ARP  10.1.1.1  0011.2233.4455 ",
+        ] {
+            assert_eq!(
+                h.help_for("config", Some(""), typed, |_| false).cloned(),
+                Some(answer("arpa")),
+                "{typed}"
+            );
+        }
+        assert_eq!(
+            h.help_for("config", Some(""), "arp 10.1.1.1 ", |_| false),
+            None
+        );
+    }
 
     #[test]
     fn a_session_s_abbreviated_show_inventory_names_its_hardware() {
