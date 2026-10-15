@@ -368,6 +368,19 @@ impl Held {
         }
     }
 
+    /// What a real switch would print for `?` after `text` where no answer for it is held: a
+    /// keyword-set command's answer after several picks, from its answers after each pick alone
+    /// (`derived`), each part held as `help_for` holds it.
+    pub fn derived_help(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: impl Fn(&str) -> bool,
+    ) -> Option<Vec<String>> {
+        derived(text, |t| self.help_for(mode, context, t, &configured))
+    }
+
     /// Whether a real switch held `line` under a block of this kind ("" at the top level).
     pub fn has(&self, kind: &str, line: &str) -> bool {
         let line = line.trim();
@@ -415,6 +428,161 @@ impl Held {
             .get(&(first(header), first(line)))
             .map(String::as_str)
     }
+}
+
+/// A row of a `?` answer: its word, its description and the lines continuing the description.
+struct Row<'a> {
+    word: &'a str,
+    what: &'a str,
+    more: Vec<&'a String>,
+}
+
+/// The rows of a `?` answer: a row is two spaces in, a line further in continues the row before it;
+/// a refusal has none.
+fn rows(answer: &[String]) -> Vec<Row<'_>> {
+    let mut out: Vec<Row<'_>> = vec![];
+    if is_refusal(answer) {
+        return out;
+    }
+    for l in answer {
+        let indent = l.len() - l.trim_start_matches(' ').len();
+        let t = l.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if indent == 2 {
+            let (word, what) = t
+                .split_once(char::is_whitespace)
+                .map_or((t, ""), |(w, d)| (w, d.trim()));
+            out.push(Row {
+                word,
+                what,
+                more: vec![],
+            });
+        } else if indent > 2
+            && let Some(last) = out.last_mut()
+        {
+            last.more.push(l);
+        }
+    }
+    out
+}
+
+/// Whether a row's word is a keyword, as the crawler classes it: not `<cr>`, `|`, a range or other
+/// `<...>` form, nor a word in capitals (`WORD`, `LINE`, `A.B.C.D`, `X:X:X:X::X/<0-128>`).
+fn keyword(word: &str) -> bool {
+    let caps = word.chars().any(|c| c.is_ascii_uppercase())
+        && word
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || "_./:-<>".contains(c));
+    !(word == "|" || word.starts_with('<') || caps)
+}
+
+/// The words an answer offers, `<cr>` left out.
+fn offered(rows: &[Row<'_>]) -> BTreeSet<String> {
+    rows.iter()
+        .filter(|r| r.word != "<cr>")
+        .map(|r| r.word.to_string())
+        .collect()
+}
+
+/// The crawler's rule (`swcon crawl`, `is_subset_answer`) for a pick it does not expand: its answer
+/// offers only words its parent's offered, at least two and at least half as many; `no` and
+/// `default` restate commands and are never such a pick.
+fn subset_answer(parent: &BTreeSet<String>, picked: &str, child: &BTreeSet<String>) -> bool {
+    !matches!(picked, "no" | "default")
+        && child.len() >= 2
+        && child.len() * 2 >= parent.len()
+        && parent.contains(picked)
+        && child.is_subset(parent)
+}
+
+/// The answer after `Q t1 .. tn ` (two picks or more) from the answers `lookup` holds for `Q ` and for
+/// each `Q ti ` alone, where each pick is a keyword `Q` offers and its answer a subset answer of
+/// `Q`'s: `Q`'s rows in its order, each kept only where every pick's answer offers it (a pick too,
+/// where its own answer offers it again, as `ntp peer .. normal-sync ?` does on the C2960G), and
+/// `<cr>` last where every pick's answer offers it. Each pick must be offered after every other, as
+/// the switch takes it then. The word column is as wide as the longest word printed with a
+/// description, and each description is `Q`'s. The longest `Q` that qualifies is taken; none, and
+/// there is no answer.
+pub fn derived<'a>(
+    typed: &str,
+    lookup: impl Fn(&str) -> Option<&'a Vec<String>>,
+) -> Option<Vec<String>> {
+    if !typed.ends_with(char::is_whitespace) {
+        return None;
+    }
+    let words: Vec<&str> = typed.split_whitespace().collect();
+    (1..words.len().saturating_sub(1))
+        .rev()
+        .find_map(|k| derive_at(&words[..k], &words[k..], &lookup))
+}
+
+fn derive_at<'a>(
+    q: &[&str],
+    picks: &[&str],
+    lookup: &impl Fn(&str) -> Option<&'a Vec<String>>,
+) -> Option<Vec<String>> {
+    let base = q.join(" ");
+    let parent = rows(lookup(&format!("{base} "))?);
+    let parent_words = offered(&parent);
+    let mut picked: Vec<&str> = vec![];
+    let mut children: Vec<Vec<Row<'_>>> = vec![];
+    for p in picks {
+        let row = parent
+            .iter()
+            .find(|r| r.word.eq_ignore_ascii_case(p) && keyword(r.word))?;
+        let child = rows(lookup(&format!("{base} {p} "))?);
+        if !subset_answer(&parent_words, row.word, &offered(&child)) {
+            return None;
+        }
+        picked.push(row.word);
+        children.push(child);
+    }
+    let offers = |c: &[Row<'_>], w: &str| c.iter().any(|r| r.word == w);
+    // a pick the switch no longer offers after another is refused there
+    for (i, c) in children.iter().enumerate() {
+        if picked
+            .iter()
+            .enumerate()
+            .any(|(j, w)| i != j && !offers(c, w))
+        {
+            return None;
+        }
+    }
+    let mut kept: Vec<&Row<'_>> = parent
+        .iter()
+        .filter(|r| r.word != "<cr>")
+        .filter(|r| children.iter().all(|c| offers(c, r.word)))
+        .collect();
+    let cr = children
+        .first()
+        .and_then(|c| c.iter().find(|r| r.word == "<cr>"));
+    if let Some(cr) = cr
+        && children.iter().all(|c| offers(c, "<cr>"))
+    {
+        kept.push(cr);
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    // a row printed without a description (classic IOS's `<cr>`) does not widen the column
+    let width = kept
+        .iter()
+        .filter(|r| !r.what.is_empty())
+        .map(|r| r.word.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = vec![];
+    for r in kept {
+        out.push(if r.what.is_empty() {
+            format!("  {}", r.word)
+        } else {
+            format!("  {:<width$}  {}", r.word, r.what)
+        });
+        out.extend(r.more.iter().map(|l| l.to_string()));
+    }
+    Some(out)
 }
 
 /// The keyword descriptions of a family (classic IOS, or IOS XE) in a corpus: built once for the
@@ -722,5 +890,162 @@ mod tests {
         assert!(
             !is_command("s inv", "show inventory") && !is_command("sh inv raw", "show inventory")
         );
+    }
+
+    #[test]
+    fn a_derived_answer_s_column_and_cr_are_as_classic_ios_prints_them() {
+        // the C2960G at 15.0(2)SE: a bare `<cr>` does not widen the column
+        let held: BTreeMap<&str, Vec<String>> = [
+            (
+                "ip arp inspection validate ",
+                &[
+                    "  dst-mac  Validate destination MAC address",
+                    "  ip       Validate IP addresses",
+                    "  src-mac  Validate source MAC address",
+                ][..],
+            ),
+            (
+                "ip arp inspection validate dst-mac ",
+                &[
+                    "  ip       Validate IP addresses",
+                    "  src-mac  Validate source MAC address",
+                    "  <cr>",
+                ],
+            ),
+            (
+                "ip arp inspection validate src-mac ",
+                &[
+                    "  dst-mac  Validate destination MAC address",
+                    "  ip       Validate IP addresses",
+                    "  <cr>",
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|(k, a)| (k, a.iter().map(|l| l.to_string()).collect()))
+        .collect();
+        let lookup = |t: &str| held.get(t);
+        for typed in [
+            "ip arp inspection validate dst-mac src-mac ",
+            "ip arp inspection validate src-mac dst-mac ",
+        ] {
+            assert_eq!(
+                derived(typed, lookup),
+                Some(vec![
+                    "  ip  Validate IP addresses".to_string(),
+                    "  <cr>".to_string()
+                ]),
+                "{typed}"
+            );
+        }
+        // one pick is held, not derived; a word asked after is not
+        assert_eq!(derived("ip arp inspection validate dst-mac ", lookup), None);
+        assert_eq!(
+            derived("ip arp inspection validate dst-mac src-mac", lookup),
+            None
+        );
+        // a pick repeated is offered again only where its own answer offers it
+        assert_eq!(
+            derived("ip arp inspection validate dst-mac dst-mac ", lookup),
+            None
+        );
+    }
+
+    /// Leave-one-out over the crawl logs under `VSWITCH_CRAWLS` (`<book>-<release>/crawl/crawl.log`):
+    /// every held answer `derived` can give with that answer itself set aside, compared with what the
+    /// switch printed. `--nocapture` prints the counts and up to three keys per mismatch class.
+    #[test]
+    #[ignore = "an audit: reads the crawl logs VSWITCH_CRAWLS names"]
+    fn derived_answers_against_the_held_ones() {
+        let Ok(dir) = std::env::var("VSWITCH_CRAWLS") else {
+            return;
+        };
+        for f in crate::corpus::Source::read_crawls(std::path::Path::new(&dir)) {
+            let mut held: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+            for (m, c, k, a) in crate::corpus::crawled_help(&f.text) {
+                held.entry((m, c, k)).or_insert(a);
+            }
+            for longest in [true, false] {
+                let (mut tested, mut exact) = (0, 0);
+                let mut classes: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+                for ((m, c, k), a) in &held {
+                    let lookup = |t: &str| {
+                        let t = crate::context::key(t);
+                        (t != *k)
+                            .then(|| held.get(&(m.clone(), c.clone(), t)))
+                            .flatten()
+                    };
+                    let words: Vec<&str> = k.split_whitespace().collect();
+                    let mut splits: Vec<usize> = (1..words.len().saturating_sub(1)).collect();
+                    if longest {
+                        splits.reverse();
+                    }
+                    if !k.ends_with(' ') {
+                        continue;
+                    }
+                    let Some(d) = splits
+                        .into_iter()
+                        .find_map(|i| derive_at(&words[..i], &words[i..], &lookup))
+                    else {
+                        continue;
+                    };
+                    tested += 1;
+                    if d == *a {
+                        exact += 1;
+                        continue;
+                    }
+                    let names = |x: &[String]| -> Vec<String> {
+                        rows(x).iter().map(|r| r.word.to_string()).collect()
+                    };
+                    let (dn, an) = (names(&d), names(a));
+                    let extra: Vec<&String> = dn.iter().filter(|w| !an.contains(w)).collect();
+                    let missing: Vec<&String> = an.iter().filter(|w| !dn.contains(w)).collect();
+                    let class = if is_refusal(a) {
+                        "the switch refused"
+                    } else if dn == an {
+                        "same rows, other text"
+                    } else if dn.iter().collect::<BTreeSet<_>>() == an.iter().collect() {
+                        "same rows, other order"
+                    } else if extra.is_empty() {
+                        "the switch offered more"
+                    } else if missing.is_empty() {
+                        "the switch offered fewer"
+                    } else {
+                        "other rows"
+                    };
+                    let e = classes.entry(class).or_default();
+                    let shown = e.iter().filter(|x| !x.is_empty()).count();
+                    let prefix = |x: &str| x.split(' ').take(4).collect::<Vec<_>>().join(" ");
+                    let new_command = !e
+                        .iter()
+                        .any(|x| prefix(x) == prefix(&format!("{m} [{c}] {k:?}")));
+                    if shown < 8 && new_command {
+                        let first = d
+                            .iter()
+                            .zip(a)
+                            .find(|(x, y)| x != y)
+                            .map(|(x, y)| format!("derived {x:?} switch {y:?}"))
+                            .unwrap_or_default();
+                        e.push(format!(
+                            "{m} [{c}] {k:?}: extra {extra:?} missing {missing:?} {first}"
+                        ));
+                    } else {
+                        e.push(String::new());
+                    }
+                }
+                println!(
+                    "{}-{} {}: {tested} tested, {exact} exact",
+                    f.book,
+                    f.release,
+                    if longest { "longest Q" } else { "shortest Q" }
+                );
+                for (class, ex) in classes {
+                    println!("  {class}: {}", ex.len());
+                    for x in ex.iter().filter(|x| !x.is_empty()) {
+                        println!("    {x}");
+                    }
+                }
+            }
+        }
     }
 }

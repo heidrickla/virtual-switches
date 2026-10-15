@@ -1539,6 +1539,14 @@ impl<'a> Session<'a> {
         if let Some(lines) = held {
             return lines.clone();
         }
+        // a keyword-set command after several picks, from what it offered after each alone
+        if let Some(lines) = self
+            .engine
+            .held
+            .derived_help(mode, context, text, |l| self.running_has(l))
+        {
+            return lines;
+        }
         let toks = crate::cli::tokens(text);
         let whole = text.is_empty() || text.ends_with(char::is_whitespace);
         let done = if whole {
@@ -3365,6 +3373,76 @@ mod tests {
                 ],
             ),
             (
+                "Switch(config)#no aaa ?",
+                &[
+                    "  new-model  Enable NEW access control commands and functions.(Disables OLD commands.)",
+                ],
+            ),
+            (
+                "Switch(config)#default aaa ?",
+                &[
+                    "  new-model  Enable NEW access control commands and functions.(Disables OLD commands.)",
+                ],
+            ),
+            (
+                "Switch(config)#snmp-server enable traps stackwise ?",
+                &[
+                    "  member-upgrade-notification  Enable STACKWISE member to be reloaded for upgrade trap",
+                    "  new-master                   Enable STACKWISE new master trap",
+                    "  new-member                   Enable STACKWISE stack new member trap",
+                    "  port-change                  Enable STACKWISE port change trap",
+                    "  ring-redundant               Enable STACKWISE stack ring redundant trap",
+                    "  <cr>                         <cr>",
+                ],
+            ),
+            (
+                "Switch(config)#snmp-server enable traps stackwise member-upgrade-notification ?",
+                &[
+                    "  new-master      Enable STACKWISE new master trap",
+                    "  new-member      Enable STACKWISE stack new member trap",
+                    "  port-change     Enable STACKWISE port change trap",
+                    "  ring-redundant  Enable STACKWISE stack ring redundant trap",
+                    "  <cr>            <cr>",
+                ],
+            ),
+            (
+                "Switch(config)#snmp-server enable traps stackwise new-master ?",
+                &[
+                    "  member-upgrade-notification  Enable STACKWISE member to be reloaded for upgrade trap",
+                    "  new-member                   Enable STACKWISE stack new member trap",
+                    "  port-change                  Enable STACKWISE port change trap",
+                    "  ring-redundant               Enable STACKWISE stack ring redundant trap",
+                    "  <cr>                         <cr>",
+                ],
+            ),
+            (
+                "Switch(config)#snmp-server enable traps stackwise port-change ?",
+                &[
+                    "  member-upgrade-notification  Enable STACKWISE member to be reloaded for upgrade trap",
+                    "  new-master                   Enable STACKWISE new master trap",
+                    "  new-member                   Enable STACKWISE stack new member trap",
+                    "  ring-redundant               Enable STACKWISE stack ring redundant trap",
+                    "  <cr>                         <cr>",
+                ],
+            ),
+            (
+                // a new row: a subcommand, not a pick of the set
+                "Switch(config)#snmp-server enable traps stackwise ring-redundant ?",
+                &[
+                    "  <1-10>                       Ring priority",
+                    "  member-upgrade-notification  Enable STACKWISE member to be reloaded for upgrade trap",
+                    "  new-master                   Enable STACKWISE new master trap",
+                    "  port-change                  Enable STACKWISE port change trap",
+                ],
+            ),
+            (
+                "Switch(config)#snmp-server enable traps stackwise new-master port-change ?",
+                &[
+                    "  member-upgrade-notification  held after both picks",
+                    "  <cr>                         <cr>",
+                ],
+            ),
+            (
                 "Switch(config)#do-exec show ?",
                 &["  vlan  VTP VLAN status", "  zzz   held only by the crawl"],
             ),
@@ -3588,9 +3666,72 @@ mod tests {
         assert_ne!(s.help("aaa "), crawled_answer);
         assert_eq!(s.help("aaa "), books);
         assert!(books.len() > 1, "{books:?}");
+        // `no aaa ?` and `default aaa ?` offer `new-model` alone only while AAA is off, too
+        for typed in ["no aaa ", "default aaa "] {
+            let books = configured(&books_17_6(), &["aaa new-model"]).help(typed);
+            assert_eq!(s.help(typed), books, "{typed}");
+            assert_ne!(books, crawled_answer, "{typed}");
+            assert_eq!(configured(&e, &[]).help(typed), crawled_answer, "{typed}");
+        }
         // the state follows the configuration
         assert_eq!(s.type_line("no aaa new-model").1, Result::Ok);
         assert_eq!(s.help("aaa "), crawled_answer);
+        assert_eq!(s.help("no aaa "), crawled_answer);
+    }
+
+    const STACKWISE: &str = "snmp-server enable traps stackwise ";
+
+    #[test]
+    fn a_keyword_set_after_several_picks_offers_what_every_pick_left_in_the_set_s_order() {
+        let e = crawled();
+        let s = configured(&e, &[]);
+        let want = [
+            "  new-master      Enable STACKWISE new master trap",
+            "  new-member      Enable STACKWISE stack new member trap",
+            "  ring-redundant  Enable STACKWISE stack ring redundant trap",
+            "  <cr>            <cr>",
+        ];
+        // the column narrows to the longest word left, `<cr>` and its description included
+        for picks in [
+            "member-upgrade-notification port-change ",
+            "port-change member-upgrade-notification ",
+            "PORT-CHANGE  member-upgrade-notification ",
+        ] {
+            assert_eq!(s.help(&format!("{STACKWISE}{picks}")), want, "{picks}");
+        }
+    }
+
+    #[test]
+    fn a_held_answer_after_several_picks_wins_over_the_derived_one() {
+        let e = crawled();
+        let s = configured(&e, &[]);
+        assert_eq!(
+            s.help(&format!("{STACKWISE}new-master port-change ")),
+            [
+                "  member-upgrade-notification  held after both picks",
+                "  <cr>                         <cr>",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_value_a_subcommand_or_an_unheld_pick_leaves_several_picks_to_the_books() {
+        let (e, b) = (crawled(), books_17_6());
+        let (s, books) = (configured(&e, &[]), configured(&b, &[]));
+        for picks in [
+            // a value typed where the set offers none ends the picks
+            "new-master 5 ",
+            "5 new-master port-change ",
+            // `ring-redundant ?` offers a row the set does not: not a pick of it
+            "new-master ring-redundant ",
+            // `new-member ?` was never asked
+            "new-master new-member ",
+            // an abbreviated pick is not looked up
+            "member-upgrade-notification port ",
+        ] {
+            let typed = format!("{STACKWISE}{picks}");
+            assert_eq!(s.help(&typed), books.help(&typed), "{picks}");
+        }
     }
 
     #[test]

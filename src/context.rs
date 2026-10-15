@@ -177,9 +177,13 @@ const FAMILIES: &[(&str, &[&str])] = &[
 ];
 
 /// Crawl answers that hold only in the state the crawl saw: a key's start, and the configuration
-/// line whose presence ends them. The crawl's switch had AAA off, so its `aaa ?` offers `new-model`
-/// alone.
-pub const STATE_PREDICATES: &[(&str, &str)] = &[("aaa ", "aaa new-model")];
+/// line whose presence ends them. The crawl's switch had AAA off, so its `aaa ?`, `no aaa ?` and
+/// `default aaa ?` offer `new-model` alone.
+pub const STATE_PREDICATES: &[(&str, &str)] = &[
+    ("aaa ", "aaa new-model"),
+    ("no aaa ", "aaa new-model"),
+    ("default aaa ", "aaa new-model"),
+];
 
 /// Whether a crawl answer for `key` no longer holds: a predicate names it and `configured` says the
 /// session has the line that changes the answer.
@@ -1114,5 +1118,11 @@ mod tests {
         assert!(stale("aaa ", |l| l == "aaa new-model"));
         assert!(stale("aaa authentication ", |l| l == "aaa new-model"));
         assert!(!stale("ip ", |_| true));
+        for key in ["no aaa ", "default aaa ", "no aaa accounting "] {
+            assert!(!stale(key, |_| false), "{key}");
+            assert!(stale(key, |l| l == "aaa new-model"), "{key}");
+        }
+        assert!(!stale("no aaa ", |l| l == "no aaa new-model"));
+        assert!(!stale("no ip ", |_| true));
     }
 }
