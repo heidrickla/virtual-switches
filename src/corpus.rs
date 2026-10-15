@@ -147,8 +147,9 @@ pub struct HeldTable {
     pub after: Vec<(String, String)>,
     /// (mode, `help_key` of the line before `?`, the answer)
     pub help: Vec<(String, String, Vec<String>)>,
-    /// (mode, context, `context::key` of the line before `?`, the answer) from a crawl, which asked
-    /// in each submode as each of its entering lines reached it; absent from a corpus without one
+    /// (mode, context, `context::key` of the line before `?`, the answer or refusal) from a crawl,
+    /// which asked in each submode as each of its entering lines reached it; absent from a corpus
+    /// without one
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crawl: Vec<(String, String, String, Vec<String>)>,
     /// the captures read, by name
@@ -293,18 +294,125 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
     }
 }
 
+/// IOS's answer to `?` after a line it cannot read, alone on its line.
+pub const UNRECOGNIZED: &str = "% Unrecognized command";
+
+/// IOS's answer to `?` after a line holding an abbreviation two keywords begin, as the corpus holds
+/// it: IOS quotes the line typed (`% Ambiguous command:  "alias filter "`, both crawls), so the quote
+/// is left empty and the shell fills in the line its user typed (`live::refusal_for`).
+pub const AMBIGUOUS: &str = "% Ambiguous command:  \"\"";
+
+/// Where a crawl's answers show an interface's number coming next: the switch answered `?` after a
+/// line ending in a type with `  <0-2147483647>  Lspvif interface number`.
+struct Interfaces {
+    /// interface types, lowercase: those the crawl's answers name and those vswitch models
+    types: BTreeSet<String>,
+    /// (mode, context, `context::key`) of each line ending in a type whose number came next
+    numbered: BTreeSet<(String, Option<String>, String)>,
+}
+
+impl Interfaces {
+    fn of(exchanges: &[crate::capture::Exchange]) -> Interfaces {
+        let mut types: BTreeSet<String> = crate::cli::interface_types()
+            .iter()
+            .map(|(full, _)| full.to_lowercase())
+            .collect();
+        let mut numbered = BTreeSet::new();
+        for e in exchanges {
+            let Some(before) = e.command.strip_suffix('?') else {
+                continue;
+            };
+            let Some(last) = before.split_whitespace().last() else {
+                continue;
+            };
+            let names = e.output.iter().any(|l| {
+                let words: Vec<&str> = l.split_whitespace().collect();
+                words.len() == 4
+                    && words[0].starts_with('<')
+                    && words[1] == last
+                    && words[2..] == ["interface", "number"]
+            });
+            if names {
+                types.insert(last.to_lowercase());
+                numbered.insert((
+                    e.mode.clone(),
+                    e.context.clone(),
+                    crate::context::key(&format!("{before} ")),
+                ));
+            }
+        }
+        Interfaces { types, numbered }
+    }
+
+    /// Whether `typed`, asked in `mode` and `context`, names an interface: a type with its number
+    /// joined to it (`Loopback0`, `GigabitEthernet1/0/1`), or a number after a type where the crawl's
+    /// answer for the line up to the type asked for one (`Lspvif 0`; `spanning-tree vlan 1` names a
+    /// VLAN). Whether an interface exists is the switch's hardware and configuration: the C9300
+    /// crawl's `buffers Loopback0 ?` and `ntp source Tunnel0 ?` are refused where `buffers Vlan1 ?`
+    /// and `buffers GigabitEthernet1/0/1 ?` are answered.
+    fn named(&self, mode: &str, context: &Option<String>, typed: &str) -> bool {
+        let words: Vec<String> = typed.split_whitespace().map(str::to_lowercase).collect();
+        words.iter().enumerate().any(|(i, w)| {
+            let split = w.find(|c: char| c.is_ascii_digit()).unwrap_or(w.len());
+            let (ty, num) = w.split_at(split);
+            if !num.is_empty() {
+                return self.types.contains(ty)
+                    && num
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == '/' || c == '.');
+            }
+            words
+                .get(i + 1)
+                .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
+                && self.numbered.contains(&(
+                    mode.to_string(),
+                    context.clone(),
+                    crate::context::key(&format!("{} ", words[..=i].join(" "))),
+                ))
+        })
+    }
+}
+
+/// The refusal a crawl's `?` exchange holds, as the corpus keeps it: `% Unrecognized command` alone,
+/// or `% Ambiguous command:` alone quoting the line exactly as typed (`AMBIGUOUS`). An answer holding
+/// any other `%` line names the switch's state (`%Illegal Hostname or IP/IPv6 address` after a name
+/// it could not resolve, `% LISP is not running.`), and a refused line naming an interface depends on
+/// which interfaces the switch has: neither is held.
+fn refusal(
+    e: &crate::capture::Exchange,
+    typed: &str,
+    interfaces: &Interfaces,
+) -> Option<Vec<String>> {
+    let [line] = &e.output[..] else {
+        return None;
+    };
+    if interfaces.named(&e.mode, &e.context, typed) {
+        return None;
+    }
+    if line == UNRECOGNIZED {
+        Some(vec![UNRECOGNIZED.to_string()])
+    } else if *line == format!("% Ambiguous command:  \"{typed}\"") {
+        Some(vec![AMBIGUOUS.to_string()])
+    } else {
+        None
+    }
+}
+
 /// The `?` answers a crawl's log holds, as (mode, context, key, answer): the mode its prompt showed
 /// and the context its entering lines give it, or privileged EXEC for a line typed after `do-exec`,
 /// which runs the rest of the line there. Only a complete exchange is an answer: `swcon crawl` writes
 /// a probe to the log once the switch has printed its answer and the prompt again, and leaves a probe
 /// that timed out, left the mode or met a question out, so a probe is complete when another prompt
-/// follows it. The last probe of a log read while the crawl writes it may be cut short and is left
-/// out. A refused probe, one asked where the context is unknown and one whose answer holds a pager's
-/// `--More--`, a control character (an erase's backspaces) or undecodable bytes are left out.
+/// follows it; a refusal is complete the same way, the switch having printed it and the prompt again.
+/// The last probe of a log read while the crawl writes it may be cut short and is left out. A refusal
+/// is held as `refusal` keeps it; a probe asked where the context is unknown and one whose answer
+/// holds a pager's `--More--`, a control character (an erase's backspaces) or undecodable bytes are
+/// left out.
 pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<String>)> {
     let Some((_, exchanges)) = crate::capture::exchanges(text) else {
         return vec![];
     };
+    let interfaces = Interfaces::of(&exchanges);
     let residue = |l: &str| {
         l.contains("--More--")
             || l.contains('\u{fffd}')
@@ -316,9 +424,17 @@ pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<Strin
         let Some(before) = e.command.strip_suffix('?') else {
             continue;
         };
-        if e.output.iter().any(|l| l.starts_with('%') || residue(l)) || residue(&e.command) {
+        if e.output.iter().any(|l| residue(l)) || residue(&e.command) {
             continue;
         }
+        let answer = if e.output.iter().any(|l| l.starts_with('%')) {
+            match refusal(&e, before, &interfaces) {
+                Some(a) => a,
+                None => continue,
+            }
+        } else {
+            e.output.clone()
+        };
         let exec = before
             .trim_start()
             .split_once(char::is_whitespace)
@@ -333,7 +449,7 @@ pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<Strin
                 (e.mode.clone(), context, before)
             }
         };
-        out.push((mode, context, crate::context::key(typed), e.output.clone()));
+        out.push((mode, context, crate::context::key(typed), answer));
     }
     out
 }
@@ -1385,11 +1501,12 @@ mod tests {
             .iter()
             .map(|(m, c, k, a)| (m.as_str(), c.as_str(), k.as_str(), a.len()))
             .collect();
-        // the repeated row stays; `do-exec show ?` is privileged EXEC's `show ?`; a refusal is no answer
+        // the repeated row stays; `do-exec show ?` is privileged EXEC's `show ?`; a refusal is held
         assert_eq!(
             held,
             [
                 ("config", "", "", 3),
+                ("config", "", "bogus ", 1),
                 ("config-router", "router ospf", "", 1),
                 ("privileged", "", "show ", 1),
             ]
@@ -1490,6 +1607,65 @@ mod tests {
                     "cdp ".to_string(),
                     vec!["  advertise-v2  CDP sends version-2 advertisements".to_string()]
                 ),
+                ("bogus ".to_string(), vec![UNRECOGNIZED.to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crawl_s_refusal_is_held_as_the_switch_printed_it_where_no_state_decides_it() {
+        let log = [
+            "Switch#configure terminal",
+            "Switch(config)#buffers test ?",
+            "% Unrecognized command",
+            "Switch(config)#alias filter ?",
+            "% Ambiguous command:  \"alias filter \"",
+            "Switch(config)#do-exec show aliases filter ?",
+            "% Ambiguous command:  \"do-exec show aliases filter \"",
+            // a quote that is not the line typed is no answer this crawl gave for it
+            "Switch(config)#privilege map ?",
+            "% Ambiguous command:  \"privilege\"",
+            // a name the switch could not resolve, and a feature it was not running
+            "Switch(config)#snmp-server host test ?",
+            "%Illegal Hostname or IP/IPv6 address",
+            "% Unrecognized command",
+            "Switch(config)#do-exec show ip lisp ?",
+            "% LISP is not running.",
+            "  instance-id  EID instance-ID",
+            // an interface the configuration creates, joined to its number or after its type
+            "Switch(config)#buffers Loopback0 ?",
+            "% Unrecognized command",
+            "Switch(config)#buffers Lspvif ?",
+            "  <0-2147483647>  Lspvif interface number",
+            "Switch(config)#buffers Lspvif 0 ?",
+            "% Unrecognized command",
+            "Switch(config)#buffers GigabitEthernet1/0/1 x ?",
+            "% Unrecognized command",
+            // a number after a word the switch asked no interface number for names no interface
+            "Switch(config)#spanning-tree vlan 1 test ?",
+            "% Unrecognized command",
+            // the last probe: the log may have been read before its prompt came back
+            "Switch(config)#bogus ?",
+            "% Unrecognized command",
+        ]
+        .join("\n");
+        let held: Vec<(String, String, Vec<String>)> = crawled_help(&log)
+            .into_iter()
+            .map(|(m, _, k, a)| (m, k, a))
+            .collect();
+        let row = |m: &str, k: &str, a: &str| (m.to_string(), k.to_string(), vec![a.to_string()]);
+        assert_eq!(
+            held,
+            [
+                row("config", "buffers test ", UNRECOGNIZED),
+                row("config", "alias filter ", AMBIGUOUS),
+                row("privileged", "show aliases filter ", AMBIGUOUS),
+                row(
+                    "config",
+                    "buffers lspvif ",
+                    "  <0-2147483647>  Lspvif interface number"
+                ),
+                row("config", "spanning-tree vlan 1 test ", UNRECOGNIZED),
             ]
         );
     }

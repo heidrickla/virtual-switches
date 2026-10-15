@@ -46,6 +46,21 @@ pub struct Held {
 /// A crawl's answer and the context it was asked in.
 pub type CrawlAnswer = (String, Vec<String>);
 
+/// Whether a held `?` answer is a refusal (`corpus::UNRECOGNIZED`, `corpus::AMBIGUOUS`).
+pub fn is_refusal(answer: &[String]) -> bool {
+    answer.iter().any(|l| l.starts_with('%'))
+}
+
+/// A `?` answer as the switch prints it after `typed`, the whole line before the `?` (`do-exec`
+/// included): a held ambiguous refusal quotes that line as typed, as both crawls' switches did.
+pub fn refusal_for(typed: &str, answer: Vec<String>) -> Vec<String> {
+    if answer.len() == 1 && answer[0] == crate::corpus::AMBIGUOUS {
+        vec![format!("% Ambiguous command:  \"{typed}\"")]
+    } else {
+        answer
+    }
+}
+
 /// Keyword descriptions by (`help_mode`, `help_key` of the line before `?`, keyword).
 pub type Described = BTreeMap<(String, String, String), String>;
 
@@ -600,6 +615,76 @@ mod tests {
         assert_eq!(ask("aaa ", true), None);
         // another line of the session's does not end it, nor does the state end another answer
         assert_eq!(ask("ip ", true), Some(answer("crawl ip")));
+    }
+
+    #[test]
+    fn a_crawl_s_refusal_takes_the_place_of_a_crawl_s_answer_in_the_lookup_order() {
+        let refused = answer(crate::corpus::UNRECOGNIZED);
+        let mut h = Held::default();
+        let key = |m: &str, k: &str| (m.to_string(), k.to_string());
+        // a production capture's answer, and the crawl's refusal of the same line
+        h.help
+            .insert(key("privileged", "show vtp "), answer("capture"));
+        h.crawl.insert(
+            key("privileged", "show vtp "),
+            vec![("".into(), refused.clone())],
+        );
+        h.crawl.insert(
+            key("config-router", "bogus "),
+            vec![("router ospf".into(), refused.clone())],
+        );
+        h.help.insert(key("config", "bogus "), answer("capture"));
+        h.crawl.insert(
+            key("config", "aaa authentication "),
+            vec![("".into(), refused.clone())],
+        );
+        let ask = |m: &str, c: Option<&str>, t: &str, aaa: bool| {
+            h.help_for(m, c, t, |l| aaa && l == "aaa new-model")
+                .cloned()
+        };
+        // with no context, the capture's answer first
+        assert_eq!(
+            ask("privileged", Some(""), "show vtp ", false),
+            Some(answer("capture"))
+        );
+        // the crawl's refusal in the context it was asked in; in another, none: the books answer
+        assert_eq!(
+            ask("config-router", Some("router ospf"), "bogus ", false),
+            Some(refused.clone())
+        );
+        assert_eq!(
+            ask("config-router", Some("router bgp"), "bogus ", false),
+            None
+        );
+        // a line the crawl never asked in that mode takes the capture's answer
+        assert_eq!(
+            ask("config", Some(""), "bogus ", false),
+            Some(answer("capture"))
+        );
+        // the state predicate ends a refusal as it ends an answer
+        assert_eq!(
+            ask("config", Some(""), "aaa authentication ", false),
+            Some(refused)
+        );
+        assert_eq!(ask("config", Some(""), "aaa authentication ", true), None);
+    }
+
+    #[test]
+    fn a_held_ambiguous_refusal_quotes_the_line_and_any_other_answer_is_as_held() {
+        let ambiguous = answer(crate::corpus::AMBIGUOUS);
+        assert!(is_refusal(&ambiguous) && is_refusal(&answer(crate::corpus::UNRECOGNIZED)));
+        assert!(!is_refusal(&answer("  <cr>")));
+        assert_eq!(
+            refusal_for("alias  Filter ", ambiguous),
+            ["% Ambiguous command:  \"alias  Filter \""]
+        );
+        for held in [
+            answer(crate::corpus::UNRECOGNIZED),
+            answer("  <cr>"),
+            vec![],
+        ] {
+            assert_eq!(refusal_for("alias filter ", held.clone()), held);
+        }
     }
 
     #[test]

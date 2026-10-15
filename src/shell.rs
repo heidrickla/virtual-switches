@@ -589,8 +589,12 @@ impl<'a> Session<'a> {
         let Some(i) = toks.iter().position(|t| t.at == at) else {
             return column;
         };
-        // the words a real switch offered there when asked `?`, else the books'
-        let mut words: Vec<String> = match self.held_help(self.mode(), &line[..at]) {
+        // the words a real switch offered there when asked `?`, else the books' (a held refusal
+        // offers none)
+        let held = self
+            .held_help(self.mode(), &line[..at])
+            .filter(|a| !crate::live::is_refusal(a));
+        let mut words: Vec<String> = match held {
             Some(lines) => lines
                 .iter()
                 .filter_map(|l| l.split_whitespace().next())
@@ -1420,10 +1424,11 @@ impl<'a> Session<'a> {
     /// may come next with its help and `<cr>` when the line is complete, and right after a word, the
     /// keywords that word begins.
     pub fn help(&self, text: &str) -> Vec<String> {
-        match self.after_do(text) {
+        let answer = match self.after_do(text) {
             Some(rest) => self.help_in("privileged", Some(""), rest),
             None => self.help_in(self.mode(), self.context().as_deref(), text),
-        }
+        };
+        crate::live::refusal_for(text, answer)
     }
 
     /// The text after a configuration line's `do` or `do-exec` (whole or abbreviated) and a space,
@@ -3363,6 +3368,18 @@ mod tests {
                 "Switch(config)#do-exec show ?",
                 &["  vlan  VTP VLAN status", "  zzz   held only by the crawl"],
             ),
+            (
+                "Switch(config)#alias filter ?",
+                &["% Ambiguous command:  \"alias filter \""],
+            ),
+            (
+                "Switch(config)#do-exec show aliases filter ?",
+                &["% Ambiguous command:  \"do-exec show aliases filter \""],
+            ),
+            (
+                "Switch(config)#event manager applet 10 class test ?",
+                &["% Unrecognized command"],
+            ),
             ("Switch(config)#router ospf 1", &[]),
             (
                 "Switch(config-router)# ?",
@@ -3638,6 +3655,75 @@ mod tests {
         s.type_line("configure terminal");
         s.type_line("router ospf 1");
         assert_eq!(s.help("do-exec show "), held);
+    }
+
+    #[test]
+    fn a_refusal_the_crawl_held_answers_where_the_books_offer() {
+        let e = crawled();
+        let s = configured(&e, &[]);
+        let typed = "event manager applet 10 class test ";
+        let books = configured(&books_17_6(), &[]).help(typed);
+        assert!(!crate::live::is_refusal(&books), "{books:?}");
+        assert_eq!(s.help(typed), ["% Unrecognized command"]);
+        // spaced and cased otherwise, the same line
+        assert_eq!(
+            s.help("EVENT  manager applet 10   class test "),
+            ["% Unrecognized command"]
+        );
+        // the same line in a submode the crawl did not ask it in is the books'
+        let in_ospf = configured(&e, &["router ospf 1"]);
+        let books = configured(&books_17_6(), &["router ospf 1"]).help(typed);
+        assert_eq!(in_ospf.help(typed), books);
+    }
+
+    #[test]
+    fn a_held_ambiguous_refusal_quotes_the_line_the_user_typed() {
+        let e = crawled();
+        let mut s = configured(&e, &[]);
+        assert_eq!(
+            s.help("alias filter "),
+            ["% Ambiguous command:  \"alias filter \""]
+        );
+        assert_eq!(
+            s.help("alias   FILTER "),
+            ["% Ambiguous command:  \"alias   FILTER \""]
+        );
+        // `do-exec`'s answer is privileged EXEC's, quoting the whole line as the C9300 did
+        for typed in [
+            "do-exec show aliases filter ",
+            "do-ex show  aliases filter ",
+            "do show aliases filter ",
+        ] {
+            assert_eq!(
+                s.help(typed),
+                [format!("% Ambiguous command:  \"{typed}\"")],
+                "{typed}"
+            );
+        }
+        s.type_line("end");
+        assert_eq!(
+            s.help("show aliases filter "),
+            ["% Ambiguous command:  \"show aliases filter \""]
+        );
+    }
+
+    #[test]
+    fn a_held_refusal_leaves_an_executed_line_s_caret_where_the_books_put_it() {
+        let crawl = crawled();
+        let books = books_17_6();
+        // the books offer `trap` there: the caret stands past `tr`, under the `x`
+        for line in [
+            "event manager applet 10 class test trx",
+            "event  manager   applet 10 class    test trx",
+        ] {
+            let mut held = configured(&crawl, &[]);
+            let mut plain = configured(&books, &[]);
+            let (out, r) = held.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            assert_eq!(out, plain.type_line(line).0, "{line}");
+            let x = line.find("trx").unwrap() + 2 + "Switch(config)#".len();
+            assert_eq!(caret_at(&out), x, "{line}: {out:?}");
+        }
     }
 
     /// The shell's contexts for `script` typed from privileged EXEC, and the corpus's for the session
