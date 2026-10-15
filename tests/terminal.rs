@@ -188,12 +188,18 @@ fn tab_completes_keywords_and_interfaces(cols: u16, rows: u16) {
     t.type_text("configure t").press(Key::Tab);
     t.wait_prompt(&format!("{NAME}#configure terminal "));
     t.press_for(Key::Enter, &format!("{NAME}(config)#"));
-    t.type_text("int")
-        .press(Key::Tab)
-        .type_text("gi1/0/1")
+    // the rest of the one keyword begun, appended to the word as typed (lab C9300 17.6.4)
+    t.type_text("int").press(Key::Tab);
+    t.wait_prompt(&format!("{NAME}(config)#interface "));
+    t.type_text("gi").press(Key::Tab);
+    t.wait_prompt(&format!("{NAME}(config)#interface gigabitEthernet "));
+    // a type with its number attached rings the bell and stays as typed
+    let bells = t.bells();
+    t.press(Key::Ctrl('u'))
+        .type_text("interface gi1/0/1")
         .press(Key::Tab);
-    t.wait_prompt(&format!("{NAME}(config)#interface GigabitEthernet1/0/1 "));
     t.press_for(Key::Enter, &format!("{NAME}(config-if)#"));
+    assert_eq!(t.bells(), bells + 1, "{}", t.framed());
 }
 
 fn show_running_config_prints_the_configuration(cols: u16, rows: u16) {

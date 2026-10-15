@@ -149,9 +149,11 @@ impl<'a> Session<'a> {
     }
 
     /// The commands `privilege exec level <n> <command>` raises above level 1, where `>` runs, as
-    /// their words (c9200 17.15 capture 27 raises 14, `show` and `terminal` among them).
+    /// their words (c9200 17.15 capture 27 raises 14, `show` and `terminal` among them), each start of
+    /// a raised command with them unless a line of its own sets it.
     fn raised(&self) -> Vec<Vec<String>> {
-        self.device
+        let levels: BTreeMap<Vec<String>, u32> = self
+            .device
             .global
             .iter()
             .filter_map(|e| {
@@ -159,9 +161,19 @@ impl<'a> Session<'a> {
                 let rest = rest.strip_prefix("all ").unwrap_or(rest);
                 let (n, cmd) = rest.strip_prefix("level ")?.split_once(' ')?;
                 let words: Vec<String> = cmd.split_whitespace().map(str::to_lowercase).collect();
-                (n.parse::<u32>().ok()? > 1 && !words.is_empty()).then_some(words)
+                (!words.is_empty()).then_some((words, n.parse::<u32>().ok()?))
             })
-            .collect()
+            .collect();
+        let mut out: BTreeSet<Vec<String>> = BTreeSet::new();
+        for (words, _) in levels.iter().filter(|(_, n)| **n > 1) {
+            for k in 1..=words.len() {
+                let start = words[..k].to_vec();
+                if k == words.len() || !levels.contains_key(&start) {
+                    out.insert(start);
+                }
+            }
+        }
+        out.into_iter().collect()
     }
 
     /// Whether a line's words start a command raised above `>`'s level, at `>`.
@@ -222,6 +234,37 @@ impl<'a> Session<'a> {
             self.length_set = true;
         }
         Some((vec![], Result::Ok))
+    }
+
+    /// `vlan <n>` past 4094 in global configuration, refused by the VLAN list reader with no caret
+    /// (lab C9300-24T 17.6.4: `vlan 5000`), the character number the one after the number. A list of
+    /// several VLANs or a range is left to the grammar: its message is derived, not measured.
+    fn vlan_past_4094(&self, line: &str) -> Option<(Vec<String>, Result)> {
+        if self.mode() != "config" {
+            return None;
+        }
+        let toks = cli::tokens(line);
+        let [t, n] = &toks[..] else {
+            return None;
+        };
+        let value = n.text.trim_start_matches('0');
+        let past = value.len() > 4 || value.parse::<u32>().is_ok_and(|v| v > 4094);
+        if !past
+            || !n.text.bytes().all(|b| b.is_ascii_digit())
+            || !self.names(&t.text.to_lowercase(), "vlan", &["config"])
+        {
+            return None;
+        }
+        Some((
+            vec![
+                format!(
+                    "Command rejected: Bad VLAN list - character #{} (EOL) delimits a VLAN",
+                    n.text.len() + 1
+                ),
+                "number which is out of the range 1..4094.".into(),
+            ],
+            Result::Error,
+        ))
     }
 
     /// `banner <kind> <delimiter><text>`: the delimiter is `^C` as a running configuration prints it,
@@ -600,10 +643,12 @@ impl<'a> Session<'a> {
                 .filter_map(|l| l.split_whitespace().next())
                 .map(str::to_string)
                 .collect(),
-            None => {
-                let (next, _) = self.engine.next(self.mode(), &toks[..i]);
-                self.offered(&next).into_iter().map(|o| o.shown).collect()
-            }
+            None => self
+                .offered_at(self.mode(), &toks[..i])
+                .0
+                .into_iter()
+                .map(|o| o.shown)
+                .collect(),
         };
         // a command raised above `>`'s level is no word there
         if i == 0 {
@@ -637,7 +682,7 @@ impl<'a> Session<'a> {
             }
         };
         if words.iter().any(|w| could_be(w)) {
-            return column;
+            return column + past_the_top(&words, &typed);
         }
         let matched = words
             .iter()
@@ -725,6 +770,9 @@ impl<'a> Session<'a> {
             return self.run_exec(prompt_len, line, at);
         }
         if let Some(done) = self.terminal(line, prompt_len) {
+            return done;
+        }
+        if let Some(done) = self.vlan_past_4094(line) {
             return done;
         }
         if let Some(done) = self.save_line(line) {
@@ -1327,13 +1375,54 @@ impl<'a> Session<'a> {
             .map(|(full, _)| *full)
             .filter(|full| {
                 ["Loopback", "Port-channel", "Tunnel", "Vlan"].contains(full)
-                    || physical.iter().any(|p| {
-                        p.strip_prefix(full)
-                            .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
-                    })
+                    || physical.iter().any(|p| cli::of_type(p, full))
             })
             .map(str::to_string)
             .collect()
+    }
+
+    /// A held `?` answer as this session's switch prints it: an interface-type list (one with a
+    /// physical-type row) offers the stack's physical types, not the crawled switch's, the logical
+    /// ones as held; at `>`, no row for a command `privilege exec level` raised above it.
+    fn as_this_switch(&self, mode: &str, text: &str, answer: Vec<String>) -> Vec<String> {
+        let rows = crate::live::keywords(&answer);
+        let physical = |w: &str| cli::PHYSICAL_TYPES.iter().any(|(t, _)| *t == w);
+        let types = rows.iter().any(|w| physical(w));
+        let ports = self.device.stack.physical();
+        let fitted = |w: &str| ports.iter().any(|p| cli::of_type(p, w));
+        let add: Vec<(&str, &str)> = if types {
+            cli::PHYSICAL_TYPES
+                .iter()
+                .filter(|(t, _)| fitted(t) && !rows.iter().any(|w| w == t))
+                .copied()
+                .collect()
+        } else {
+            vec![]
+        };
+        // the words before the row's keyword, each a start of a raised command's word
+        let mut before: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+        if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+            before.pop();
+        }
+        let raised = if mode == "exec" {
+            self.raised()
+        } else {
+            vec![]
+        };
+        let above = |w: &str| {
+            raised.iter().any(|r| {
+                r.len() == before.len() + 1
+                    && r.iter()
+                        .zip(&before)
+                        .all(|(a, b)| a.starts_with(b.as_str()))
+                    && r[before.len()] == w.to_lowercase()
+            })
+        };
+        let drop = |w: &str| (types && physical(w) && !fitted(w)) || above(w);
+        if add.is_empty() && !rows.iter().any(|w| drop(w)) {
+            return answer;
+        }
+        crate::live::relaid(&answer, |w| !drop(w), &add)
     }
 
     /// How `?` shows what may come next: a keyword, an interface type, or an argument's placeholder,
@@ -1532,7 +1621,8 @@ impl<'a> Session<'a> {
     /// What `?` after `text` answers before the books: a refusal after a command raised above `>`'s
     /// level (c9200 17.15 capture 27's `show ?`), else a held answer, abbreviations read as their
     /// keywords; else a keyword-set command after several picks, from what it offered after each
-    /// alone; the image's own first, then a donor's.
+    /// alone; the image's own first, then a donor's. Each is printed for this switch
+    /// (`as_this_switch`).
     fn held_answer(&self, mode: &str, context: Option<&str>, text: &str) -> Option<Vec<String>> {
         let typed: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         if text.ends_with(char::is_whitespace)
@@ -1545,11 +1635,13 @@ impl<'a> Session<'a> {
         {
             return Some(vec!["% Unrecognized command".into()]);
         }
-        self.engine
-            .held
-            .answer(self.level().as_deref(), mode, context, text, |l| {
-                self.running_has(l)
-            })
+        let answer =
+            self.engine
+                .held
+                .answer(self.level().as_deref(), mode, context, text, |l| {
+                    self.running_has(l)
+                })?;
+        Some(self.as_this_switch(mode, text, answer))
     }
 
     /// `help` at `mode`.
@@ -1658,8 +1750,10 @@ impl<'a> Session<'a> {
         out
     }
 
-    /// The line Tab makes of `text`: its last word completed to the one keyword or interface type it
-    /// begins (a whole keyword is taken as itself), or none when it begins none or several.
+    /// The line Tab makes of `text`: its last word as typed, then the rest of the one keyword or
+    /// interface type it begins and a space, or none when it begins none or several, a whole keyword
+    /// among them (lab C9300-24T 17.6.4: `interface TWE` Tab gives `interface TWEntyFiveGigE `;
+    /// `interface Twe1/0/1`, `sh` and `ip` beside `ipv6` change nothing).
     pub fn complete(&self, text: &str) -> Option<String> {
         match self.after_do(text) {
             Some(rest) => {
@@ -1671,24 +1765,27 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// `complete` at `mode`. The keywords come from the answer `?` gives for the line before the
-    /// word, a held one included (`held_answer`), a refusal offering none; the books where none is held.
+    /// `complete` at `mode`. The words come from the answer `?` gives for the line before the word,
+    /// a held one included (`held_answer`), a refusal offering none; the books' keywords and the
+    /// stack's interface types where none is held.
     fn complete_in(&self, mode: &str, context: Option<&str>, text: &str) -> Option<String> {
         if text.is_empty() || text.ends_with(char::is_whitespace) {
             return None;
         }
         let toks = crate::cli::tokens(text);
         let last = toks.last()?;
-        let (offered, _) = self.offered_at(mode, &toks[..toks.len() - 1]);
         let typed = last.text.to_lowercase();
         let head = &text[..last.at];
         let mut kws: Vec<String> = match self.held_answer(mode, context, head) {
             Some(answer) => crate::live::keywords(&answer),
-            None => offered
-                .iter()
-                .filter(|o| o.kind == Offered::Keyword)
-                .map(|o| o.shown.clone())
-                .collect(),
+            None => {
+                let (offered, _) = self.offered_at(mode, &toks[..toks.len() - 1]);
+                offered
+                    .into_iter()
+                    .filter(|o| o.kind != Offered::Placeholder)
+                    .map(|o| o.shown)
+                    .collect()
+            }
         };
         kws.retain(|k| k.to_lowercase().starts_with(&typed));
         if do_exec_begins(mode, &toks[..toks.len() - 1], &typed)
@@ -1696,39 +1793,41 @@ impl<'a> Session<'a> {
         {
             kws.push("do-exec".into());
         }
-        let pick = kws
-            .iter()
-            .find(|k| k.to_lowercase() == typed)
-            .or(if kws.len() == 1 { kws.first() } else { None });
-        if let Some(k) = pick {
-            return Some(format!("{head}{k} "));
-        }
-        let interface = offered.iter().any(|o| o.kind == Offered::Type);
-        if !kws.is_empty() || !interface {
+        // one keyword the word begins, whole or not: `ip` beside `ipv6` rings the bell (lab C9300-24T
+        // 17.6.4), though `?` and Enter take a whole word as itself
+        let mut begun: Vec<String> = kws.iter().map(|k| k.to_lowercase()).collect();
+        begun.sort_unstable();
+        begun.dedup();
+        let [_] = begun[..] else {
             return None;
+        };
+        let pick = kws.first()?;
+        let rest = pick.get(last.text.len()..).unwrap_or("");
+        Some(format!("{head}{}{rest} ", last.text))
+    }
+
+    /// After `privilege exec level <n> <command>` of several words, each shorter start of the command
+    /// raised to the same level, over a start set before at another level: the lab C9300-24T
+    /// (17.6.4) kept `... 14 show ip route`, `... 14 show ip`, `... 14 show`, and after `... 5 show`,
+    /// `... 14 show version` left `... 14 show`. Their order in print is `show::configuration`'s.
+    fn raise_parents(&mut self, p: &Parse) {
+        let line = p.canonical();
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let [privilege, exec, level, n, command @ ..] = &words[..] else {
+            return;
+        };
+        let head = [privilege, exec, level].map(|w| w.to_lowercase());
+        if p.negated || head != ["privilege", "exec", "level"] || command.len() < 2 {
+            return;
         }
-        // `twe` or `twe1/0/1`: the type written out, a space after a whole name
-        let split = last
-            .text
-            .find(|c: char| c.is_ascii_digit())
-            .unwrap_or(last.text.len());
-        let (ty, num) = last.text.split_at(split);
-        let ty = ty.to_lowercase();
-        let types: Vec<String> = self
-            .interface_types()
-            .into_iter()
-            .filter(|t| t.to_lowercase().starts_with(&ty))
-            .collect();
-        let full = types
-            .iter()
-            .find(|t| t.to_lowercase() == ty)
-            .or(if types.len() == 1 {
-                types.first()
-            } else {
-                None
-            })?;
-        let space = if num.is_empty() { "" } else { " " };
-        Some(format!("{head}{full}{num}{space}"))
+        for k in (1..command.len()).rev() {
+            let parent = format!("privilege exec level {n} {}", command[..k].join(" "));
+            if let Outcome::Ok(q) = self.engine.parse("config", &parent) {
+                let kept = self.engine.held.has("", &q.canonical());
+                self.device
+                    .apply_as(&q, None, kept, self.whole("config", &q));
+            }
+        }
     }
 
     /// Writes an accepted configuration line where the current mode keeps it.
@@ -1757,6 +1856,7 @@ impl<'a> Session<'a> {
                 let text = self.device.global[i].text.clone();
                 self.wrote_top(&text);
             }
+            self.raise_parents(p);
             return;
         }
         // a member's `channel-group <n>` makes its port-channel interface, as IOS does; the interface
@@ -1907,6 +2007,34 @@ fn wrapped(head: &str, help: &str, limit: usize) -> Vec<String> {
     }
     out.push(line.trim_end().to_string());
     out
+}
+
+/// Where in a refused number the caret stands past its start: under the digit that takes it past the
+/// top of the ranges offered there (lab C9300-24T 17.6.4: `terminal length 600` under the last `0`,
+/// `spanning-tree vlan 1 priority 70000` under the fifth digit, `privilege exec level 99` under the
+/// second `9`); 0 for a number some range takes, one below every range, or a word not a number.
+fn past_the_top(offered: &[String], typed: &str) -> usize {
+    if typed.is_empty() || !typed.bytes().all(|b| b.is_ascii_digit()) {
+        return 0;
+    }
+    let ranges: Vec<(u128, u128)> = offered
+        .iter()
+        .filter_map(|w| {
+            let (a, b) = w.strip_prefix('<')?.strip_suffix('>')?.split_once('-')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        })
+        .collect();
+    let Some(top) = ranges.iter().map(|r| r.1).max() else {
+        return 0;
+    };
+    let mut value: u128 = 0;
+    for (i, d) in typed.bytes().enumerate() {
+        value = value * 10 + u128::from(d - b'0');
+        if value > top {
+            return i;
+        }
+    }
+    0
 }
 
 /// Whether `do-exec` is among the words a configuration line's first word, typed as `typed`, begins:
@@ -2108,7 +2236,10 @@ mod tests {
         let mut s = Session::new(&e, Device::new(stack));
         s.frames.push(Frame::top("config"));
         assert_eq!(s.help("i"), vec!["ip  ipv6", ""]);
-        assert_eq!(s.complete("IP").as_deref(), Some("ip "));
+        // Tab keeps the word as typed (lab C9300-24T 17.6.4: `interface TWE` gives `TWEntyFiveGigE`)
+        // and completes only where one keyword begins with it: `IP` and `ip` are one, `ipv6` another
+        assert_eq!(s.complete("IP"), None);
+        assert_eq!(s.complete("IPV").as_deref(), Some("IPV6 "));
     }
 
     #[test]
@@ -2265,6 +2396,15 @@ mod tests {
     fn c9300() -> Engine {
         let r = crate::release::Release::parse("17.15").unwrap();
         Engine::new(crate::grammars::grammar("c9300", r).unwrap())
+    }
+
+    /// `c9300` with no donor answering, so the books answer where the image holds nothing.
+    fn c9300_books() -> Engine {
+        let r = crate::release::Release::parse("17.15").unwrap();
+        let g = crate::grammars::grammar("c9300", r).unwrap();
+        let held =
+            crate::live::Held::with_donors(crate::corpus::get(), &g.platform, &g.release, &[]);
+        Engine::with_held(g, held)
     }
 
     /// A C9300-48P in global configuration with each line typed, every one taken.
@@ -3055,6 +3195,305 @@ mod tests {
     }
 
     #[test]
+    fn a_held_interface_list_offers_the_session_s_physical_types() {
+        // the C9300 17.6 crawl's `interface ?` lists Fo, Gi, Te and Twe: on another stack its
+        // physical rows follow that stack, the logical ones stay as held
+        let e = c9300();
+        let at = |spec: &str| {
+            let mut s = Session::new(&e, Device::new(crate::platform::parse_stack(spec).unwrap()));
+            s.type_line("enable");
+            s.type_line("configure terminal");
+            s
+        };
+        let words = |h: &[String]| -> Vec<String> {
+            h.iter()
+                .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+                .collect()
+        };
+        let phys = |h: &[String]| -> Vec<String> {
+            words(h)
+                .into_iter()
+                .filter(|w| cli::PHYSICAL_TYPES.iter().any(|(t, _)| t == w))
+                .collect()
+        };
+        // a C9300 lists every slot-1 type; the 48UXM's 2.5G ports add a type the crawl lacks
+        let mgig = at("C9300-48UXM");
+        let h = mgig.help("interface ");
+        assert_eq!(
+            phys(&h),
+            [
+                "FortyGigabitEthernet",
+                "GigabitEthernet",
+                "TenGigabitEthernet",
+                "TwentyFiveGigE",
+                "TwoGigabitEthernet"
+            ],
+            "{h:?}"
+        );
+        // a type no held answer describes prints bare, in ASCII order among the held rows
+        assert!(h.contains(&"  TwoGigabitEthernet".to_string()), "{h:?}");
+        let w = words(&h);
+        let pos = |x: &str| w.iter().position(|y| y == x).unwrap();
+        assert!(pos("TwentyFiveGigE") < pos("TwoGigabitEthernet"));
+        assert!(pos("TwoGigabitEthernet") < pos("VirtualPortGroup"));
+        assert!(
+            h.contains(&"  Vlan                  Catalyst Vlans".to_string()),
+            "{h:?}"
+        );
+        // two C9300X-24Y with 100G modules: no 40G row, so the column narrows to AppGigabitEthernet
+        let x = at("C9300X-24Y+C9300X-NM-4C,C9300X-24Y+C9300X-NM-4C");
+        let h = x.help("interface ");
+        assert!(
+            !phys(&h).contains(&"FortyGigabitEthernet".to_string()),
+            "{h:?}"
+        );
+        assert!(phys(&h).contains(&"HundredGigE".to_string()), "{h:?}");
+        assert!(
+            h.contains(&"  Vlan                Catalyst Vlans".to_string()),
+            "{h:?}"
+        );
+        let w = words(&h);
+        for logical in [
+            "AccessTunnel",
+            "Loopback",
+            "Port-channel",
+            "Vlan",
+            "nve",
+            "range",
+        ] {
+            assert!(w.contains(&logical.to_string()), "{logical}: {h:?}");
+        }
+        // Tab reads the same list
+        assert_eq!(mgig.complete("interface tw"), None, "TwentyFive and Two");
+        assert_eq!(
+            mgig.complete("interface two").as_deref(),
+            Some("interface twoGigabitEthernet ")
+        );
+        assert_eq!(
+            mgig.complete("interface fo").as_deref(),
+            Some("interface fortyGigabitEthernet ")
+        );
+        assert_eq!(x.complete("interface fo"), None);
+        assert_eq!(
+            x.complete("interface hu").as_deref(),
+            Some("interface hundredGigE ")
+        );
+        // an answer with no physical-type row is not a type list and stays as held
+        assert_eq!(mgig.help("switchport mode "), x.help("switchport mode "));
+    }
+
+    #[test]
+    fn a_held_answer_at_the_user_level_drops_rows_a_raised_command_takes() {
+        let e = c9300();
+        // the parent at level 1 by a line of its own: only `show version` stays raised
+        let mut s = configured(
+            &e,
+            &[
+                "privilege exec level 14 show version",
+                "privilege exec level 1 show",
+            ],
+        );
+        s.type_line("end");
+        let has = |h: &[String], w: &str| h.iter().any(|l| l.split_whitespace().next() == Some(w));
+        let at_hash = s.help("show ");
+        assert!(
+            has(&at_hash, "version") && has(&at_hash, "clock"),
+            "{at_hash:?}"
+        );
+        assert_eq!(s.complete("show vers").as_deref(), Some("show version "));
+        s.type_line("disable");
+        assert_eq!(s.mode(), "exec");
+        for typed in ["show ", "sh ", "SHO  "] {
+            let h = s.help(typed);
+            assert!(!has(&h, "version"), "{typed:?}: {h:?}");
+            assert!(has(&h, "clock"), "{typed:?}: {h:?}");
+        }
+        assert_eq!(s.complete("show vers"), None);
+        assert_eq!(s.complete("sh cloc").as_deref(), Some("sh clock "));
+        assert_eq!(s.type_line("show version").1, Result::Error);
+    }
+
+    #[test]
+    fn a_privilege_level_is_0_to_15_and_a_parent_set_before_takes_the_command_s() {
+        let e = c9300();
+        let mut s = configured(&e, &[]);
+        // lab C9300-24T 17.6.4: `Switch(config)#` and the caret under the second `9`
+        let (out, r) = s.type_line("privilege exec level 99 show version");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(out[1], "% Invalid input detected at '^' marker.");
+        assert_eq!(caret_at(&out), "Switch(config)#".len() + 22, "{out:?}");
+        assert!(shown(&s, &["privilege"]).is_empty());
+        assert_eq!(
+            s.type_line("privilege exec level 15 show version").1,
+            Result::Ok
+        );
+        // a start raised before is taken to the command's level and printed after it
+        let s = configured(
+            &e,
+            &[
+                "privilege exec level 5 show",
+                "privilege exec level 14 show version",
+            ],
+        );
+        assert_eq!(
+            shown(&s, &["privilege"]),
+            [
+                "privilege exec level 14 show version",
+                "privilege exec level 14 show"
+            ]
+        );
+        // three words: each start, longest first
+        let s = configured(&e, &["privilege exec level 14 show ip route"]);
+        assert_eq!(
+            shown(&s, &["privilege"]),
+            [
+                "privilege exec level 14 show ip route",
+                "privilege exec level 14 show ip",
+                "privilege exec level 14 show"
+            ]
+        );
+    }
+
+    #[test]
+    fn privilege_lines_print_in_the_parse_tree_s_order_whatever_order_they_were_typed_in() {
+        let e = c9300();
+        // the captures' order (a 2960 at 15.2(6)E, a 9200 at 17.15), typed backwards
+        let captured = [
+            "rcommand",
+            "connect",
+            "telnet",
+            "tunnel",
+            "access-enable",
+            "traceroute",
+            "systat",
+            "ping",
+            "where",
+            "resume",
+            "name-connection",
+            "login",
+            "terminal",
+            "show",
+            "clear",
+        ];
+        let lines: Vec<String> = captured
+            .iter()
+            .map(|c| format!("privilege exec level 15 {c}"))
+            .collect();
+        let backwards: Vec<&str> = lines.iter().rev().map(String::as_str).collect();
+        let s = configured(&e, &backwards);
+        assert_eq!(shown(&s, &["privilege"]), lines);
+        // a sibling no switch has ordered keeps its typed place after the listed ones
+        let s = configured(
+            &e,
+            &[
+                "privilege exec level 14 show clock",
+                "privilege exec level 14 show version",
+                "privilege exec level 15 ping",
+            ],
+        );
+        assert_eq!(
+            shown(&s, &["privilege"]),
+            [
+                "privilege exec level 15 ping",
+                "privilege exec level 14 show version",
+                "privilege exec level 14 show clock",
+                "privilege exec level 14 show"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_number_past_its_range_is_refused_under_the_digit_that_passes_the_top() {
+        let e = c9300();
+        let mut s = configured(&e, &[]);
+        // lab C9300-24T 17.6.4: the fifth digit of 70000 (max 61440)
+        let (out, r) = s.type_line("spanning-tree vlan 1 priority 70000");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config)#".len() + 34, "{out:?}");
+        // under the range, and a word, at its start
+        let (out, _) = s.type_line("spanning-tree vlan 1 priority abc");
+        assert_eq!(caret_at(&out), "Switch(config)#".len() + 30, "{out:?}");
+    }
+
+    #[test]
+    fn a_vlan_past_4094_is_rejected_as_the_vlan_list_reader_rejects_it() {
+        let e = c9300();
+        let mut s = configured(&e, &[]);
+        // lab C9300-24T 17.6.4: two lines, no caret, the prompt stays global configuration
+        for (line, at) in [("vlan 5000", 5), ("vlan 4095", 5), ("vlan 10000", 6)] {
+            assert_eq!(
+                s.type_line(line),
+                (
+                    vec![
+                        format!(
+                            "Command rejected: Bad VLAN list - character #{at} (EOL) delimits a VLAN"
+                        ),
+                        "number which is out of the range 1..4094.".to_string(),
+                    ],
+                    Result::Error
+                ),
+                "{line}"
+            );
+            assert_eq!(s.mode(), "config");
+        }
+        assert!(shown(&s, &["vlan 5000", "vlan 4095"]).is_empty());
+        assert_eq!(s.type_line("vlan 4094").1, Result::Ok);
+        assert_eq!(s.mode(), "config-vlan");
+    }
+
+    #[test]
+    fn a_privilege_line_takes_a_command_of_several_words_and_raises_its_starts() {
+        let e = c9300();
+        // lab C9300-24T 17.6.4: the line is taken, and its parent printed after it at its level
+        let mut s = configured(&e, &["privilege exec level 14 show version"]);
+        assert_eq!(
+            shown(&s, &["privilege"]),
+            [
+                "privilege exec level 14 show version",
+                "privilege exec level 14 show"
+            ]
+        );
+        // printed as IOS walks its parse tree: longer forms first, `ip` before `version` (lab
+        // C9300-24T 17.6.4)
+        let (out, r) = s.type_line("privilege exec level 14 show ip route");
+        assert_eq!(r, Result::Ok, "{out:?}");
+        assert_eq!(
+            shown(&s, &["privilege"]),
+            [
+                "privilege exec level 14 show ip route",
+                "privilege exec level 14 show ip",
+                "privilege exec level 14 show version",
+                "privilege exec level 14 show"
+            ]
+        );
+        // at `>` the whole path is raised: `show` is neither listed, answered nor completed
+        s.type_line("end");
+        s.type_line("disable");
+        let listed: Vec<String> = s
+            .help("")
+            .iter()
+            .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+            .collect();
+        assert!(listed.contains(&"enable".to_string()), "{listed:?}");
+        assert!(!listed.contains(&"show".to_string()), "{listed:?}");
+        assert_eq!(s.help("show "), ["% Unrecognized command"]);
+        assert_eq!(s.complete("sho"), None);
+        assert_eq!(s.type_line("show version").1, Result::Error);
+        // the one-word form the captures hold prints alone
+        let s = configured(&e, &["privilege exec level 15 show"]);
+        assert_eq!(shown(&s, &["privilege"]), ["privilege exec level 15 show"]);
+        // a configuration holding the command without its parent raises the parent with it
+        let mut s = configured(&e, &[]);
+        s.device.global.push(Entry {
+            key: "privilege #exec show version".into(),
+            text: "privilege exec level 14 show version".into(),
+        });
+        s.type_line("end");
+        s.type_line("disable");
+        assert_eq!(s.help("show "), ["% Unrecognized command"]);
+    }
+
+    #[test]
     fn a_default_turned_back_on_prints_nothing_and_an_interface_keeps_its_no_lines() {
         let e = c9300();
         let s = configured(
@@ -3159,10 +3598,13 @@ mod tests {
         let mut s = Session::new(&e, Device::new(stack));
         s.type_line("enable");
         // `Switch#terminal length 600`: under the value
+        // a number past the range under the digit that takes it past 512 (lab C9300-24T 17.6.4:
+        // `terminal length 600` under the last `0`), a word at its start
         for (line, at) in [
-            ("terminal length 600", 23),
+            ("terminal length 600", 25),
             ("terminal length abc", 23),
-            ("terminal width 600", 22),
+            ("terminal width 600", 24),
+            ("terminal width 999", 24),
         ] {
             let (out, r) = s.type_line(line);
             assert_eq!(r, Result::Error, "{line}");
@@ -3173,13 +3615,31 @@ mod tests {
         assert_eq!(s.length, 30);
         assert_eq!(s.type_line("term wid 100"), (vec![], Result::Ok));
         assert_eq!(s.width, 100);
-        // `?` and Tab know both words and the range
-        assert!(s.help("terminal ").iter().any(|l| l.trim() == "width"));
-        assert_eq!(s.help("terminal width ")[0].trim_end(), "  <0-512>");
-        assert!(s.help("terminal length ")[0].starts_with("  <0-512>"));
+        // `?` and Tab know both words and the range: the books', and where a real switch's answer
+        // is held (the C9300 17.6 crawl), its rows with their descriptions
+        let books = c9300_books();
+        let mut b = Session::new(&books, Device::new(s.device.stack.clone()));
+        b.type_line("enable");
+        assert!(b.help("terminal ").iter().any(|l| l.trim() == "width"));
+        assert_eq!(b.help("terminal width ")[0].trim_end(), "  <0-512>");
+        for s in [&s, &b] {
+            assert!(
+                s.help("terminal ")
+                    .iter()
+                    .any(|l| l.split_whitespace().next() == Some("width"))
+            );
+            assert!(s.help("terminal width ")[0].starts_with("  <0-512>"));
+            assert!(s.help("terminal length ")[0].starts_with("  <0-512>"));
+            assert_eq!(
+                s.complete("terminal wi").as_deref(),
+                Some("terminal width ")
+            );
+        }
+        let width = format!("  {:<22}  Set width of the display terminal", "width");
+        assert!(s.help("terminal ").contains(&width));
         assert_eq!(
-            s.complete("terminal wi").as_deref(),
-            Some("terminal width ")
+            s.help("terminal width ")[0],
+            "  <0-512>  Number of characters on a screen line"
         );
     }
 
@@ -3997,7 +4457,8 @@ mod tests {
         for (typed, done) in [
             ("do-exec show z", "do-exec show zzz "),
             ("do show zz", "do show zzz "),
-            ("DO-EXEC  show ZZZ", "DO-EXEC  show zzz "),
+            ("DO-EXEC  show ZZZ", "DO-EXEC  show ZZZ "),
+            ("do show ZZ", "do show ZZz "),
         ] {
             assert_eq!(s.complete(typed).as_deref(), Some(done), "{typed}");
         }
@@ -4049,9 +4510,11 @@ mod tests {
         for typed in ["interface twe", "interface twe1/0/1"] {
             let head = &typed[..=typed.rfind(' ').unwrap()];
             assert_eq!(s.held_answer("config", Some(""), head), None, "{typed}");
-            assert!(books.complete(typed).is_some(), "{typed}");
             assert_eq!(s.complete(typed), books.complete(typed), "{typed}");
         }
+        // a type's start completes; a name with its number is left as typed (lab C9300-24T 17.6.4)
+        assert!(books.complete("interface twe").is_some());
+        assert_eq!(books.complete("interface twe1/0/1"), None);
         // the first word, where no answer is held for the empty line
         let (mut s, mut books) = (configured(&e, &[]), configured(&b, &[]));
         s.type_line("end");
@@ -4225,7 +4688,13 @@ mod tests {
                 s.complete(&format!("{typed} sh")).as_deref(),
                 Some(format!("{typed} show ").as_str())
             );
-            assert_eq!(s.complete(typed).as_deref(), Some("do-exec "), "{typed}");
+            // the word as typed, then the rest of `do-exec` (`interface TWE` Tab gives `TWEntyFiveGigE`)
+            let rest = &"do-exec"[typed.len()..];
+            assert_eq!(
+                s.complete(typed),
+                Some(format!("{typed}{rest} ")),
+                "{typed}"
+            );
             assert_eq!(
                 s.type_line(typed),
                 (
@@ -4242,8 +4711,10 @@ mod tests {
             "{:?}",
             s.help("do")
         );
-        // `do` is its own command, and `d` begins too many words to be either
-        assert_eq!(s.complete("do").as_deref(), Some("do "));
+        // `do` begins `do-exec` and `dot1x` (lab C9300-24T 17.6.4: Tab rings the bell), and runs as
+        // its own command; `d` begins too many words to be either
+        assert_eq!(s.complete("do"), None);
+        assert_eq!(s.complete("do-e").as_deref(), Some("do-exec "));
         assert_eq!(
             s.type_line("do show running-config | include interface Vlan10"),
             whole

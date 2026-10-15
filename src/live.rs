@@ -795,6 +795,69 @@ pub fn keywords(answer: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// `answer` with the rows whose word `keep` refuses dropped and `add`'s (word, description) rows put
+/// in ASCII order before `|` and `<cr>`, the column laid out again as IOS lays it: the longest word
+/// printed plus two, a bare `<cr>` not counted, a word with no description printed bare. Lines that
+/// are not rows (a heading, the closing blank) stay where they were.
+pub fn relaid(answer: &[String], keep: impl Fn(&str) -> bool, add: &[(&str, &str)]) -> Vec<String> {
+    enum Line<'a> {
+        Row(&'a str, &'a str, Vec<&'a str>),
+        Other(&'a str),
+    }
+    let mut lines: Vec<Line<'_>> = vec![];
+    if is_refusal(answer) {
+        return answer.to_vec();
+    }
+    for l in answer {
+        let indent = l.len() - l.trim_start_matches(' ').len();
+        let t = l.trim();
+        match lines.last_mut() {
+            _ if indent == 2 && !t.is_empty() => {
+                let (word, what) = t
+                    .split_once(char::is_whitespace)
+                    .map_or((t, ""), |(w, d)| (w, d.trim()));
+                lines.push(Line::Row(word, what, vec![]));
+            }
+            Some(Line::Row(_, _, more)) if indent > 2 && !t.is_empty() => more.push(t),
+            _ => lines.push(Line::Other(l)),
+        }
+    }
+    lines.retain(|l| !matches!(l, Line::Row(w, ..) if !keep(w)));
+    for &(word, what) in add {
+        let at = lines
+            .iter()
+            .position(|l| matches!(l, Line::Row(w, ..) if *w == "<cr>" || *w == "|" || *w > word))
+            .or_else(|| {
+                lines
+                    .iter()
+                    .rposition(|l| matches!(l, Line::Row(..)))
+                    .map(|i| i + 1)
+            })
+            .unwrap_or(0);
+        lines.insert(at, Line::Row(word, what, vec![]));
+    }
+    let width = lines
+        .iter()
+        .filter_map(|l| match l {
+            Line::Row(w, what, _) if !(*w == "<cr>" && what.is_empty()) => Some(w.chars().count()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let mut out = vec![];
+    for l in lines {
+        match l {
+            Line::Row(w, "", _) => out.push(format!("  {w}")),
+            Line::Row(w, what, more) => {
+                out.push(format!("  {w:<width$}  {what}"));
+                out.extend(more.iter().map(|m| format!("{}{m}", " ".repeat(width + 4))));
+            }
+            Line::Other(l) => out.push(l.to_string()),
+        }
+    }
+    out
+}
+
 /// The words an answer offers, `<cr>` left out.
 fn offered(rows: &[Row<'_>]) -> BTreeSet<String> {
     rows.iter()
@@ -1812,12 +1875,15 @@ mod tests {
             both.answer(Some(ESS), "config", Some(""), "ip ", |_| false),
             Some(answer("  multicast  Global IP multicast commands"))
         );
-        // shipped, every mapping is off: the books answer
+        // with no mapping enabled the books answer
+        let off = Held::with_donors(&c, "Catalyst 9200", "17.15", &[]);
+        assert!(off.donors.is_empty());
+        assert_eq!(off.answer(adv, "config", Some(""), "ip ", |_| false), None);
+        // shipped, `license::ENABLED` lists the 9200 at 17.15: its donor answers
         let shipped = Held::from_corpus(&c, "Catalyst 9200", "17.15");
-        assert!(shipped.donors.is_empty());
         assert_eq!(
             shipped.answer(adv, "config", Some(""), "ip ", |_| false),
-            None
+            Some(answer("  routing  Enable IP routing"))
         );
         // the caret's lookup never reads a donor
         assert_eq!(h.help_for(adv, "config", Some(""), "ip ", |_| false), None);
@@ -1861,7 +1927,7 @@ mod tests {
         assert_eq!(keywords(&derived.1), ["c"]);
         assert_eq!(derived.1.last().map(String::as_str), Some("  <cr>  <cr>"));
         // the same lines with the mapping off
-        let off = Held::from_corpus(&c, "Catalyst 9200", "17.15");
+        let off = Held::with_donors(&c, "Catalyst 9200", "17.15", &[]);
         for t in ["i ", &format!("{STACKWISE}a b ")] {
             assert_eq!(
                 off.answer(Some(ADV), "config", Some(""), t, |_| false),
@@ -1869,6 +1935,49 @@ mod tests {
                 "{t}"
             );
         }
+    }
+
+    #[test]
+    fn an_answer_relaid_drops_and_adds_rows_and_widens_its_column_to_fit() {
+        let lines = |s: &str| -> Vec<String> { s.split('\n').map(str::to_string).collect() };
+        let held = lines(
+            "Exec commands:\n  AppGigabitEthernet    App-hosting Gigabit Ethernet\n  \
+             FortyGigabitEthernet  Forty Gigabit Ethernet\n  Loopback              Loopback \
+             interface which\n                        wraps\n  range                 interface \
+             range command\n  |                     Output modifiers\n  <cr>                  <cr>\n",
+        );
+        let out = relaid(
+            &held,
+            |w| w != "FortyGigabitEthernet",
+            &[
+                ("HundredGigE", ""),
+                ("TwentyFiveGigE", "Twenty Five Gigabit Ethernet"),
+            ],
+        );
+        assert_eq!(
+            out,
+            [
+                "Exec commands:",
+                "  AppGigabitEthernet  App-hosting Gigabit Ethernet",
+                "  HundredGigE",
+                "  Loopback            Loopback interface which",
+                "                      wraps",
+                "  TwentyFiveGigE      Twenty Five Gigabit Ethernet",
+                "  range               interface range command",
+                "  |                   Output modifiers",
+                "  <cr>                <cr>",
+                "",
+            ]
+        );
+        // a word sorting after every row goes before `|` and `<cr>`; a bare `<cr>` sets no column
+        let classic = lines("  ab  A\n  <cr>\n");
+        assert_eq!(
+            relaid(&classic, |_| true, &[("zz", "Z")]),
+            ["  ab  A", "  zz  Z", "  <cr>", ""]
+        );
+        assert_eq!(relaid(&classic, |w| w != "ab", &[]), ["  <cr>", ""]);
+        let refusal = answer(crate::corpus::UNRECOGNIZED);
+        assert_eq!(relaid(&refusal, |_| false, &[("x", "")]), refusal);
     }
 
     #[test]

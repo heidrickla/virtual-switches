@@ -295,6 +295,85 @@ fn top_order(d: &Device) -> Vec<&'static Precedence> {
         .collect()
 }
 
+/// The sibling order IOS prints `privilege exec level` commands in, by the command they follow ("" at
+/// the top): its parse tree's, as captures printed it (a 2960 at 15.2(6)E and a 9200 at 17.15 alike)
+/// and the lab C9300-24T (17.6.4) printed `show ip ...` before `show version`.
+const PRIVILEGE_SIBLINGS: &[(&str, &[&str])] = &[
+    (
+        "",
+        &[
+            "rcommand",
+            "connect",
+            "telnet",
+            "tunnel",
+            "access-enable",
+            "traceroute",
+            "systat",
+            "ping",
+            "where",
+            "resume",
+            "name-connection",
+            "login",
+            "terminal",
+            "show",
+            "clear",
+        ],
+    ),
+    ("show", &["ip", "version"]),
+];
+
+fn entry_text<'x>(e: &'x &&crate::device::Entry) -> &'x str {
+    e.text.as_str()
+}
+
+/// `privilege exec level` lines put in their own places in the order IOS walks its parse tree: a
+/// command's longer forms before it, siblings as `PRIVILEGE_SIBLINGS` orders them, else as typed
+/// (derived: no switch has shown where an unlisted sibling goes). Other lines stay.
+fn privilege_tree<T>(items: Vec<T>, text: impl Fn(&T) -> &str) -> Vec<T> {
+    fn walk(paths: &[(usize, Vec<String>)], at: &[String], out: &mut Vec<usize>) {
+        let mut kids: Vec<(&str, usize)> = vec![];
+        for (i, p) in paths {
+            if p.len() > at.len() && p.starts_with(at) && !kids.iter().any(|k| k.0 == p[at.len()]) {
+                kids.push((&p[at.len()], *i));
+            }
+        }
+        let known = PRIVILEGE_SIBLINGS
+            .iter()
+            .find(|(c, _)| *c == at.join(" "))
+            .map_or(&[][..], |(_, k)| *k);
+        kids.sort_by_key(|(w, i)| (known.iter().position(|k| k == w).unwrap_or(usize::MAX), *i));
+        for (w, _) in kids {
+            let mut next = at.to_vec();
+            next.push(w.to_string());
+            walk(paths, &next, out);
+            out.extend(paths.iter().filter(|(_, p)| *p == next).map(|(i, _)| *i));
+        }
+    }
+    let paths: Vec<(usize, Vec<String>)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let rest = text(e).strip_prefix("privilege exec level ")?;
+            let (_, command) = rest.split_once(' ')?;
+            Some((
+                i,
+                command.split_whitespace().map(str::to_lowercase).collect(),
+            ))
+        })
+        .collect();
+    if paths.len() < 2 {
+        return items;
+    }
+    let mut order = vec![];
+    walk(&paths, &[], &mut order);
+    let mut items: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    let walked: Vec<T> = order.iter().filter_map(|&i| items[i].take()).collect();
+    for ((slot, _), item) in paths.iter().zip(walked) {
+        items[*slot] = Some(item);
+    }
+    items.into_iter().flatten().collect()
+}
+
 /// A block's lines as IOS prints them: an interface's and a line's in IOS's order, an access list's
 /// by sequence number as its release prints them (`acl::running`), any other block's as typed (a
 /// policy map's order is its meaning).
@@ -396,8 +475,12 @@ pub fn configuration(d: &Device) -> Vec<String> {
     // each section's lines in IOS's order whatever order they were typed in (`service` lines before
     // `hostname`)
     let top = top_order(d);
-    let ordered =
-        |lines: Vec<_>| in_ios_order(lines, |e: &&&crate::device::Entry| e.text.as_str(), &top);
+    let ordered = |lines: Vec<_>| {
+        privilege_tree(
+            in_ios_order(lines, |e: &&&crate::device::Entry| e.text.as_str(), &top),
+            entry_text,
+        )
+    };
     let last = ordered(kept.iter().filter(|e| starts(&e.text, LAST)).collect());
     // IOS 12.2 writes its `ip ssh` lines after the VLAN blocks, before the interfaces (four 2960s at
     // 12.2(44)SE and 12.2(55)SE; c2960 12.2(55)SE capture 2's follow its `vlan 535`), 15.2 and IOS XE after the

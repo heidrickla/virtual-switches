@@ -182,6 +182,28 @@ pub fn interface_types() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
+/// The front-panel port types, whose rows in a `?` answer follow a switch's hardware, each with the
+/// description held answers print beside it (corpus, every crawl and capture). The empty ones are
+/// derived: no held answer lists the type, so it prints bare, as the books' rows do.
+pub const PHYSICAL_TYPES: &[(&str, &str)] = &[
+    ("FastEthernet", ""),
+    ("FiveGigabitEthernet", ""),
+    ("FortyGigabitEthernet", "Forty Gigabit Ethernet"),
+    ("FourHundredGigE", ""),
+    ("GigabitEthernet", "GigabitEthernet IEEE 802.3z"),
+    ("HundredGigE", ""),
+    ("TenGigabitEthernet", "Ten Gigabit Ethernet"),
+    ("TwentyFiveGigE", "Twenty Five Gigabit Ethernet"),
+    ("TwoGigabitEthernet", ""),
+    ("TwoHundredGigE", ""),
+];
+
+/// Whether `name` is a port of type `full`: the type, then its number (`TwentyFiveGigE1/0/1`).
+pub fn of_type(name: &str, full: &str) -> bool {
+    name.strip_prefix(full)
+        .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
+}
+
 /// `TwentyFiveGigE1/0/1`, `twe1/0/1` or `Twe` + `1/0/1`: the full type name and the number.
 pub fn interface_name(first: &str, second: Option<&str>) -> Option<(String, String, usize)> {
     let split = first

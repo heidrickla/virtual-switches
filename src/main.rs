@@ -3242,6 +3242,13 @@ mod console_tests {
         cli::Engine::new(grammars::grammar("c9300", release::DEFAULT).unwrap())
     }
 
+    /// `engine` with no donor answering, so the books answer where the image holds nothing.
+    fn books() -> cli::Engine {
+        let g = grammars::grammar("c9300", release::DEFAULT).unwrap();
+        let held = live::Held::with_donors(corpus::get(), &g.platform, &g.release, &[]);
+        cli::Engine::with_held(g, held)
+    }
+
     fn at<'a>(e: &'a cli::Engine, lines: &[&str]) -> shell::Session<'a> {
         let mut s = shell::Session::new(e, device::Device::new(stack(&[]).unwrap().0));
         for l in lines {
@@ -3252,12 +3259,23 @@ mod console_tests {
 
     #[test]
     fn question_mark_lists_what_may_follow_with_the_reference_s_help() {
-        let e = engine();
+        let e = books();
         let s = at(&e, &["enable", "configure terminal", "interface Twe1/0/1"]);
         let h = s.help("switchport mode ");
         assert!(
             h.iter()
                 .any(|l| l.starts_with("  access") && l.ends_with("Sets the port to access mode")),
+            "{h:?}"
+        );
+        // where a real switch's answer is held, its text (the C9300 17.6 crawl)
+        let real = engine();
+        let h = at(
+            &real,
+            &["enable", "configure terminal", "interface Twe1/0/1"],
+        )
+        .help("switchport mode ");
+        assert!(
+            h.contains(&"  access        Set trunking mode to ACCESS unconditionally".to_string()),
             "{h:?}"
         );
         assert_eq!(s.help("shutdown "), vec!["  <cr>", ""]);
@@ -3268,36 +3286,69 @@ mod console_tests {
 
     #[test]
     fn an_interface_is_offered_as_the_stack_s_types() {
+        for e in [books(), engine()] {
+            let s = at(&e, &["enable", "configure terminal"]);
+            let h = s.help("interface ");
+            let has = |w: &str| h.iter().any(|l| l.split_whitespace().next() == Some(w));
+            assert!(has("TwentyFiveGigE") && has("HundredGigE") && has("Port-channel"));
+            assert!(
+                !has("FortyGigabitEthernet"),
+                "no 40G port on two C9300X-24Y: {h:?}"
+            );
+            assert!(!has("port-channel"), "listed once, as IOS spells it: {h:?}");
+        }
+        // the C9300 17.6 crawl's list on this stack: its 40G row gone, the 100G type added bare, the
+        // logical types as held, the column as wide as the longest word
         let e = engine();
-        let s = at(&e, &["enable", "configure terminal"]);
-        let h = s.help("interface ");
-        let has = |w: &str| h.iter().any(|l| l.split_whitespace().next() == Some(w));
-        assert!(has("TwentyFiveGigE") && has("HundredGigE") && has("Port-channel"));
-        assert!(
-            !has("FortyGigabitEthernet"),
-            "no 40G port on two C9300X-24Y"
-        );
-        assert!(!has("port-channel"), "listed once, as IOS spells it: {h:?}");
+        let h = at(&e, &["enable", "configure terminal"]).help("interface ");
+        for row in [
+            "  AppGigabitEthernet  App-hosting Gigabit Ethernet",
+            "  BDI                 Bridge-Domain interface",
+            "  HundredGigE",
+            "  TwentyFiveGigE      Twenty Five Gigabit Ethernet",
+            "  range               interface range command",
+        ] {
+            assert!(h.contains(&row.to_string()), "{row:?}: {h:?}");
+        }
+        let at_ = |w: &str| {
+            h.iter()
+                .position(|l| l.split_whitespace().next() == Some(w))
+        };
+        assert!(at_("GigabitEthernet") < at_("HundredGigE"));
+        assert!(at_("HundredGigE") < at_("InternalInterface"));
     }
 
     #[test]
     fn tab_completes_a_keyword_or_an_interface_type() {
-        let e = engine();
-        let s = at(&e, &["enable"]);
-        assert_eq!(s.complete("conf").as_deref(), Some("configure "));
-        assert_eq!(s.complete("configure "), None);
-        let s = at(&e, &["enable", "configure terminal"]);
-        assert_eq!(s.complete("s"), None, "s begins many keywords");
-        assert_eq!(
-            s.complete("interface twe").as_deref(),
-            Some("interface TwentyFiveGigE")
-        );
-        assert_eq!(
-            s.complete("interface twe1/0/1").as_deref(),
-            Some("interface TwentyFiveGigE1/0/1 ")
-        );
-        // a whole keyword is itself, though ipv6 begins with it
-        assert_eq!(s.complete("ip").as_deref(), Some("ip "));
+        // lab C9300-24T 17.6.4: the word as typed, the rest of the one word it begins, a space
+        for e in [books(), engine()] {
+            let s = at(&e, &["enable"]);
+            assert_eq!(s.complete("conf").as_deref(), Some("configure "));
+            assert_eq!(s.complete("configure "), None);
+            let s = at(&e, &["enable", "configure terminal"]);
+            assert_eq!(s.complete("s"), None, "s begins many keywords");
+            assert_eq!(s.complete("host").as_deref(), Some("hostname "));
+            assert_eq!(
+                s.complete("interface twe").as_deref(),
+                Some("interface twentyFiveGigE ")
+            );
+            assert_eq!(
+                s.complete("interface TWE").as_deref(),
+                Some("interface TWEntyFiveGigE ")
+            );
+            assert_eq!(s.complete("interface twe1/0/1"), None);
+            assert_eq!(
+                s.complete("interface fo"),
+                None,
+                "no 40G port on this stack"
+            );
+            // one keyword the word begins, whole or not: `ip` beside `ipv6` completes nothing
+            assert_eq!(s.complete("ip"), None);
+            assert_eq!(s.complete("no ip"), None);
+            assert_eq!(s.complete("ipv").as_deref(), Some("ipv6 "));
+            assert_eq!(s.complete("IPV").as_deref(), Some("IPV6 "));
+            assert_eq!(s.complete("interface").as_deref(), Some("interface "));
+        }
     }
 
     #[test]

@@ -50,8 +50,20 @@ pub const DONORS: &[(&[&str], &str, Image)] = &[
 ];
 
 /// The (book, release, level) of each switch whose donor answers; a mapping answers only once it is
-/// listed here.
-pub const ENABLED: &[(&str, &str, &str)] = &[];
+/// listed here. Each is an image whose captures hold `?` answers the donor beat the books on with
+/// those answers masked (`shell::tests::donor_answers_against_the_captures_answers`, 2026-10-15),
+/// keyword recall 73-98% against the books' 32-51%. A Catalyst 9000 takes both levels: the
+/// advantage donor scored 95-99% recall against essentials captures.
+pub const ENABLED: &[(&str, &str, &str)] = &[
+    ("c2960x", "15.2(7)E", "lanbase"),
+    ("c9200", "17.6", "network-essentials"),
+    ("c9200", "17.6", "network-advantage"),
+    ("c9200", "17.15", "network-essentials"),
+    ("c9200", "17.15", "network-advantage"),
+    ("c9300", "17.15", "network-essentials"),
+    ("c9300", "17.15", "network-advantage"),
+    ("c9400", "17.5", "network-advantage"),
+];
 
 /// The donor `DONORS` names for a switch, none where that is the switch's own crawl.
 pub fn donor(book: &str, release: &str, level: &str) -> Option<Image> {
@@ -135,9 +147,17 @@ mod tests {
         assert_eq!(donor("c2960x", "15.2(7)E", "network-advantage"), None);
         assert_eq!(donor("c9300", "17.6", "network-advantage"), None);
         assert_eq!(donor("c2960", "15.0(2)SE", "lanbase"), None);
-        assert!(ENABLED.is_empty(), "every mapping ships off");
+        assert_eq!(enabled_donor("c2960x", "15.2(7)E", "lanbase", &[]), None);
+        // every enabled switch has a donor that is not its own image
+        for &(b, r, l) in ENABLED {
+            assert!(enabled_donor(b, r, l, ENABLED).is_some(), "{b} {r} {l}");
+        }
         assert_eq!(
-            enabled_donor("c2960x", "15.2(7)E", "lanbase", ENABLED),
+            enabled_donor("c9300", "17.15", "network-essentials", ENABLED),
+            Some(("c9300", "17.6", "network-essentials"))
+        );
+        assert_eq!(
+            enabled_donor("c2960x", "15.2(2)E", "lanbase", ENABLED),
             None
         );
         let on = [("c2960x", "15.2(7)E", "lanbase")];
