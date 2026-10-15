@@ -203,7 +203,7 @@ pub struct HeldTable {
     /// (license level, mode, context, `context::key` of the line before `?`, the answer or refusal)
     /// from a crawl at that level, which asked in each submode as each of its entering lines reached
     /// it; absent from a corpus without one
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "interned")]
     pub crawl: Vec<CrawlRow>,
     /// the captures read, by name
     pub captures: Vec<String>,
@@ -211,6 +211,54 @@ pub struct HeldTable {
 
 /// A crawl's answer as the corpus holds it: (level, mode, context, key, answer).
 pub type CrawlRow = (String, String, String, String, Vec<String>);
+
+/// Crawl rows as the file holds them: each distinct answer once, each row naming its answer by
+/// number. A crawl repeats its answers about five times over, and parsing the repeats cost every
+/// start a third of a second.
+mod interned {
+    use super::CrawlRow;
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    #[derive(Serialize, Deserialize)]
+    struct Table {
+        answers: Vec<Vec<String>>,
+        rows: Vec<(String, String, String, String, usize)>,
+    }
+
+    pub fn serialize<S: Serializer>(rows: &[CrawlRow], s: S) -> Result<S::Ok, S::Error> {
+        let mut seen: HashMap<&[String], usize> = HashMap::new();
+        let mut answers = Vec::new();
+        let mut numbered = Vec::with_capacity(rows.len());
+        for (l, m, c, k, a) in rows {
+            let n = *seen.entry(a.as_slice()).or_insert_with(|| {
+                answers.push(a.clone());
+                answers.len() - 1
+            });
+            numbered.push((l.clone(), m.clone(), c.clone(), k.clone(), n));
+        }
+        Table {
+            answers,
+            rows: numbered,
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<CrawlRow>, D::Error> {
+        let t = Table::deserialize(d)?;
+        t.rows
+            .into_iter()
+            .map(|(l, m, c, k, n)| {
+                let a = t
+                    .answers
+                    .get(n)
+                    .ok_or_else(|| D::Error::custom("a crawl row names no answer"))?;
+                Ok((l, m, c, k, a.clone()))
+            })
+            .collect()
+    }
+}
 
 /// Commands by number, and which pairs real switches printed in one order only (`show::Orders`).
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -1418,8 +1466,25 @@ mod tests {
         );
     }
 
+    /// Addresses IOS's own `?` rows print as examples (`e.g., 192.168.0.0/16`,
+    /// `tftp://223.255.254.254/...`, `(aabb.ccdd.eeff ...)`), held only inside crawl answers; none
+    /// is in a site capture.
+    const IOS_HELP_EXAMPLES: &[&str] = &[
+        "10.0.0.0",
+        "10.10.0.0",
+        "10.10.10.10",
+        "127.0.0.0",
+        "192.168.0.0",
+        "223.255.254.254",
+        "24.6.0.0",
+        "35.0.0.0",
+        "aabb.ccdd.eeff",
+        "ffff.ffff.ffff",
+    ];
+
     /// The public corpus names no site: every characterized value is one of `live::PLACES`, and no
-    /// address but a mask, no MAC address and no serial number is left.
+    /// address but a mask, no MAC address and no serial number is left; a crawl answer may hold
+    /// IOS's example addresses.
     #[test]
     fn the_corpus_holds_only_characterized_values() {
         let json = String::from_utf8(serde_json::to_vec(get()).unwrap()).unwrap();
@@ -1428,14 +1493,32 @@ mod tests {
             assert!(crate::live::PLACES.contains(&m.as_str()), "{}", m.as_str());
         }
         let ip = regex::Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap();
-        let addresses: Vec<&str> = ip
-            .find_iter(&json)
-            .map(|m| m.as_str())
-            .filter(|a| !mask_like(a))
-            .collect();
-        assert!(addresses.is_empty(), "{addresses:?}");
         let mac = regex::Regex::new(r"\b[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\b").unwrap();
-        assert!(!mac.is_match(&json));
+        let addresses = |text: &str| -> Vec<String> {
+            ip.find_iter(text)
+                .chain(mac.find_iter(text))
+                .map(|m| m.as_str().to_string())
+                .filter(|a| !mask_like(a))
+                .collect()
+        };
+        let mut answers = String::new();
+        let mut bare = get().clone();
+        for (_, _, h) in &mut bare.held {
+            for (_, _, c, k, a) in std::mem::take(&mut h.crawl) {
+                assert!(
+                    addresses(&c).is_empty() && addresses(&k).is_empty(),
+                    "{c} {k}"
+                );
+                answers.extend(a.into_iter().map(|l| l + "\n"));
+            }
+        }
+        let rest = addresses(&String::from_utf8(serde_json::to_vec(&bare).unwrap()).unwrap());
+        assert!(rest.is_empty(), "{rest:?}");
+        let unknown: Vec<String> = addresses(&answers)
+            .into_iter()
+            .filter(|a| !IOS_HELP_EXAMPLES.contains(&a.as_str()))
+            .collect();
+        assert!(unknown.is_empty(), "{unknown:?}");
         // free text and a switch's name, in every held line and block
         let free = regex::Regex::new(
             r"^\s*(?:\S+ )*?(?:description|name|remark|location|contact) (.+)$|^\s*hostname (\S+)$",
@@ -1454,6 +1537,38 @@ mod tests {
             }
         }
         assert!(seen > 0 || get().held.is_empty());
+    }
+
+    /// The file holds a repeated crawl answer once and reads the rows back as they were.
+    #[test]
+    fn crawl_rows_round_trip_with_each_answer_held_once() {
+        let brief = vec!["  brief  Brief summary".to_string()];
+        let refused = vec!["% Unrecognized command".to_string()];
+        let row = |k: &str, a: &Vec<String>| {
+            let level = "network-advantage".to_string();
+            (
+                level,
+                "exec".to_string(),
+                String::new(),
+                k.to_string(),
+                a.clone(),
+            )
+        };
+        let table = HeldTable {
+            crawl: vec![
+                row("show vlan ", &brief),
+                row("show vtp ", &refused),
+                row("sh vlan ", &brief),
+            ],
+            ..Default::default()
+        };
+        let c = Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        let json = String::from_utf8(serde_json::to_vec(&c).unwrap()).unwrap();
+        assert_eq!(json.matches("Brief summary").count(), 1, "{json}");
+        assert_eq!(Corpus::from_gzip(&c.to_gzip()).unwrap(), c);
     }
 
     #[test]

@@ -3682,9 +3682,16 @@ mod tests {
         }
     }
 
+    /// A C9300 at 17.6 on its books and the captures' held lines, without the crawls' answers.
     fn books_17_6() -> Engine {
         let r = crate::release::Release::parse("17.6").unwrap();
-        Engine::new(crate::grammars::grammar("c9300", r).unwrap())
+        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let mut c = crate::corpus::get().clone();
+        for (_, _, h) in &mut c.held {
+            h.crawl.clear();
+        }
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        Engine::with_held(grammar, held)
     }
 
     #[test]
