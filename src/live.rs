@@ -5,7 +5,14 @@
 
 #[cfg(captures)]
 use crate::grammars::{LIVE, LIVE_LOGS, LIVE_STACKS};
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(test)]
+thread_local! {
+    /// How many held-answer lookups this thread has made.
+    static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// The lines real switches of one platform and release held.
 #[derive(Debug, Default)]
@@ -593,8 +600,23 @@ impl<'a> Answers<'a> {
         text: &str,
         configured: &dyn Fn(&str) -> bool,
     ) -> Option<&'a Vec<String>> {
-        let key = (mode.to_string(), help_key(text));
-        let crawled = (mode.to_string(), crate::context::key(text));
+        let (help, crawled) = (help_key(text), crate::context::key(text));
+        self.held_by_key(mode, context, &help, &crawled, configured)
+    }
+
+    /// `held_as_typed` for a line's keys (`help_key`, `context::key`).
+    fn held_by_key(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        help_key: &str,
+        crawled_key: &str,
+        configured: &dyn Fn(&str) -> bool,
+    ) -> Option<&'a Vec<String>> {
+        #[cfg(test)]
+        LOOKUPS.with(|n| n.set(n.get() + 1));
+        let key = (mode.to_string(), help_key.to_string());
+        let crawled = (mode.to_string(), crawled_key.to_string());
         let help = self.help.and_then(|h| h.get(&key));
         if context == Some("")
             && let Some(a) = help
@@ -619,8 +641,8 @@ impl<'a> Answers<'a> {
 /// held or is followed by a held answer is left as typed, and the words after it are read on; a
 /// word beginning two keywords or more, none of them whole, makes the line ambiguous.
 /// A word still being typed (no space after it) is left as typed.
-fn read(
-    tiers: &[Answers<'_>],
+fn read<'a>(
+    tiers: &[Answers<'a>],
     mode: &str,
     context: Option<&str>,
     text: &str,
@@ -633,48 +655,86 @@ fn read(
     } else {
         words.len().saturating_sub(1)
     };
-    let as_typed = |t: &str| {
+    let as_typed = |keys: &Keys| {
         tiers
             .iter()
-            .find_map(|a| a.held_as_typed(mode, context, t, configured))
+            .find_map(|a| a.held_by_key(mode, context, &keys.help, &keys.crawled, configured))
     };
     let mut out: Vec<String> = vec![];
+    let mut keys = Keys::default();
+    // each tier's held answer after each prefix of `out` as it stands: a derivation takes its parent's
+    // from here and is tried only where one is held
+    let mut after: Vec<Vec<Option<&'a Vec<String>>>> = vec![vec![]; tiers.len()];
     for (i, w) in words.iter().enumerate() {
         if i >= complete {
             out.push(w.to_string());
             continue;
         }
-        let before = if out.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", out.join(" "))
-        };
+        for (a, seen) in tiers.iter().zip(after.iter_mut()) {
+            seen.push(a.held_by_key(mode, context, &keys.help, &keys.crawled, configured));
+        }
         let held = tiers.iter().enumerate().find_map(|(n, a)| {
-            a.held_as_typed(mode, context, &before, configured)
+            after[n][i]
                 .cloned()
-                .or_else(|| derived(&before, |t| a.held_as_typed(mode, context, t, configured)))
+                .or_else(|| {
+                    derived_words(
+                        &out,
+                        &|t: &str| a.held_as_typed(mode, context, t, configured),
+                        |k| after[n][k].is_some(),
+                    )
+                })
                 .map(|h| (n, h))
         });
         // a word the switch answered after is one it took as typed, a keyword `?` leaves out
         // (the C9300's `ipv6 nd ra`, beside `ra-throttler` and `raguard`) or a value
-        let took = || as_typed(&format!("{before}{w} ")).is_some_and(|a| !is_refusal(a));
-        let Some((n, held)) = held.filter(|_| !took()) else {
-            out.push(w.to_string());
-            continue;
+        let took = || as_typed(&keys.with(w)).is_some_and(|a| !is_refusal(a));
+        let next = match held.filter(|_| !took()) {
+            None => w.to_string(),
+            Some((n, held)) => {
+                let known = keywords(&held);
+                let known: Vec<&str> = known.iter().map(String::as_str).collect();
+                match crate::context::reads(w, &known) {
+                    crate::context::Reads::One(k) => k.to_string(),
+                    crate::context::Reads::Several => return Read::Ambiguous(n),
+                    _ => w.to_string(),
+                }
+            }
         };
-        let known = keywords(&held);
-        let known: Vec<&str> = known.iter().map(String::as_str).collect();
-        match crate::context::reads(w, &known) {
-            crate::context::Reads::One(k) => out.push(k.to_string()),
-            crate::context::Reads::Several => return Read::Ambiguous(n),
-            _ => out.push(w.to_string()),
-        }
+        keys.push(&next);
+        out.push(next);
     }
     let mut line = out.join(" ");
     if whole && !line.is_empty() {
         line.push(' ');
     }
     Read::Line(line)
+}
+
+/// The lookup keys of the words of a line read so far (`help_key` and `context::key` of the line,
+/// a space after each word), kept as the line grows.
+#[derive(Default)]
+struct Keys {
+    help: String,
+    crawled: String,
+}
+
+impl Keys {
+    fn push(&mut self, word: &str) {
+        let word = word.to_lowercase();
+        self.crawled.push_str(&crate::context::values(&word));
+        self.crawled.push(' ');
+        self.help.push_str(&word);
+        self.help.push(' ');
+    }
+
+    fn with(&self, word: &str) -> Keys {
+        let mut keys = Keys {
+            help: self.help.clone(),
+            crawled: self.crawled.clone(),
+        };
+        keys.push(word);
+        keys
+    }
 }
 
 /// A row of a `?` answer: its word, its description and the lines continuing the description.
@@ -770,14 +830,25 @@ pub fn derived<'a>(
         return None;
     }
     let words: Vec<&str> = typed.split_whitespace().collect();
-    (1..words.len().saturating_sub(1))
-        .rev()
-        .find_map(|k| derive_at(&words[..k], &words[k..], &lookup))
+    derived_words(&words, &lookup, |_| true)
 }
 
-fn derive_at<'a>(
-    q: &[&str],
-    picks: &[&str],
+/// `derived` for the words of the line, trying only the splits `viable` allows (a split whose first
+/// part has no held answer derives nothing).
+fn derived_words<'a, S: Borrow<str>>(
+    words: &[S],
+    lookup: &impl Fn(&str) -> Option<&'a Vec<String>>,
+    viable: impl Fn(usize) -> bool,
+) -> Option<Vec<String>> {
+    (1..words.len().saturating_sub(1))
+        .rev()
+        .filter(|&k| viable(k))
+        .find_map(|k| derive_at(&words[..k], &words[k..], lookup))
+}
+
+fn derive_at<'a, S: Borrow<str>>(
+    q: &[S],
+    picks: &[S],
     lookup: &impl Fn(&str) -> Option<&'a Vec<String>>,
 ) -> Option<Vec<String>> {
     let base = q.join(" ");
@@ -786,6 +857,7 @@ fn derive_at<'a>(
     let mut picked: Vec<&str> = vec![];
     let mut children: Vec<Vec<Row<'_>>> = vec![];
     for p in picks {
+        let p: &str = p.borrow();
         let row = parent
             .iter()
             .find(|r| r.word.eq_ignore_ascii_case(p) && keyword(r.word))?;
@@ -1214,6 +1286,204 @@ mod tests {
             Some(vec!["% Ambiguous command:  \"alias filter \"".to_string()])
         );
         assert_eq!(ask("alias filter-g "), None);
+    }
+
+    /// `read` as it walked a line before the prefix keys were kept: each word's preceding line
+    /// rebuilt whole, a derivation tried at every split of it.
+    fn read_before(
+        tiers: &[Answers<'_>],
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: &dyn Fn(&str) -> bool,
+    ) -> Read {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let whole = text.ends_with(char::is_whitespace);
+        let complete = if whole {
+            words.len()
+        } else {
+            words.len().saturating_sub(1)
+        };
+        let as_typed = |t: &str| {
+            tiers
+                .iter()
+                .find_map(|a| a.held_as_typed(mode, context, t, configured))
+        };
+        let mut out: Vec<String> = vec![];
+        for (i, w) in words.iter().enumerate() {
+            if i >= complete {
+                out.push(w.to_string());
+                continue;
+            }
+            let before = if out.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", out.join(" "))
+            };
+            let held = tiers.iter().enumerate().find_map(|(n, a)| {
+                a.held_as_typed(mode, context, &before, configured)
+                    .cloned()
+                    .or_else(|| derived(&before, |t| a.held_as_typed(mode, context, t, configured)))
+                    .map(|h| (n, h))
+            });
+            let took = || as_typed(&format!("{before}{w} ")).is_some_and(|a| !is_refusal(a));
+            let Some((n, held)) = held.filter(|_| !took()) else {
+                out.push(w.to_string());
+                continue;
+            };
+            let known = keywords(&held);
+            let known: Vec<&str> = known.iter().map(String::as_str).collect();
+            match crate::context::reads(w, &known) {
+                crate::context::Reads::One(k) => out.push(k.to_string()),
+                crate::context::Reads::Several => return Read::Ambiguous(n),
+                _ => out.push(w.to_string()),
+            }
+        }
+        let mut line = out.join(" ");
+        if whole && !line.is_empty() {
+            line.push(' ');
+        }
+        Read::Line(line)
+    }
+
+    /// The tests' answers: the image's own, and a donor's that holds a few others.
+    fn two_tiers() -> Held {
+        let mut h = crawled(&[
+            (
+                "",
+                &[
+                    "  interface  Select an interface to configure",
+                    "  ip         Global IP configuration subcommands",
+                    "  tr         Traps",
+                    "  vlan       Vlan commands",
+                ],
+            ),
+            IP,
+            ACL,
+            ("ip access-list standard ", &["  <1-99>  Number"]),
+            (
+                "tr ",
+                &[
+                    "  alpha  First",
+                    "  beta   Second",
+                    "  gamma  Third",
+                    "  <cr>   <cr>",
+                ],
+            ),
+            (
+                "tr alpha ",
+                &["  beta   Second", "  gamma  Third", "  <cr>   <cr>"],
+            ),
+            (
+                "tr beta ",
+                &["  alpha  First", "  gamma  Third", "  <cr>   <cr>"],
+            ),
+            (
+                "tr gamma ",
+                &["  alpha  First", "  beta   Second", "  <cr>   <cr>"],
+            ),
+            ("vlan ", &["  <1-4094>  VLAN ID"]),
+            ("vlan 10 ", &["  <cr>   <cr>"]),
+        ]);
+        let donor = h.donors.entry(L.unwrap().to_string()).or_default();
+        for (k, rows) in [
+            ("", &["  vtp  VTP", "  vlan  Vlan commands"][..]),
+            ("vtp ", &["  mode  Mode", "  domain  Domain"][..]),
+            ("ip ", &["  multicast  Multicast", "  address  Address"][..]),
+        ] {
+            donor.insert(
+                ("config".into(), k.to_string()),
+                vec![("".into(), rows.iter().map(|r| r.to_string()).collect())],
+            );
+        }
+        h
+    }
+
+    /// Held-answer lookups `f` made, and what it returned.
+    fn lookups<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        LOOKUPS.with(|n| n.set(0));
+        let out = f();
+        (out, LOOKUPS.with(std::cell::Cell::get))
+    }
+
+    #[test]
+    fn a_line_is_read_as_it_was_before_the_prefix_keys_were_kept() {
+        let h = two_tiers();
+        let (own, donor) = (h.own(L), h.donor(L).unwrap());
+        let lines = [
+            "",
+            " ",
+            "tr ",
+            "tr al ",
+            "tr alpha beta ",
+            "tr al be ",
+            "tr alp be ga ",
+            "t alpha b g ",
+            "tr beta alpha g",
+            "TR  ALPHA   BETA ",
+            "tr alpha beta gamma delta ",
+            "ip acc ext ",
+            "ip acc e ",
+            "ip acc st 5 ",
+            "ip acc st 5 6 7 ",
+            "ip a ",
+            "ip address 1.2.3.4 255.0.0.0 ",
+            "i ac ",
+            "i",
+            "vlan 10 ",
+            "vl 10 20 30 ",
+            "vlan 10 tr alpha beta ",
+            "vt mo ",
+            "vtp d x ",
+            "v ",
+            "ip m ",
+            "ip mu x ",
+            "zz yy xx ",
+        ];
+        for tiers in [vec![own], vec![own, donor], vec![donor, own]] {
+            for ctx in [Some(""), Some("router ospf"), None] {
+                for typed in lines {
+                    assert_eq!(
+                        read(&tiers, "config", ctx, typed, &|_| false),
+                        read_before(&tiers, "config", ctx, typed, &|_| false),
+                        "{typed:?} in {ctx:?} through {} tiers",
+                        tiers.len()
+                    );
+                }
+            }
+        }
+        // the lines read through a held answer are not all left as typed
+        let tiers = [own, donor];
+        let read_as = |t: &str| read(&tiers, "config", Some(""), t, &|_| false);
+        assert_eq!(
+            read_as("ip acc ext "),
+            Read::Line("ip access-list extended ".into())
+        );
+        assert_eq!(read_as("ip a "), Read::Ambiguous(0));
+        assert_eq!(
+            read(&[donor], "config", Some(""), "vt mo ", &|_| false),
+            Read::Line("vtp mode ".into())
+        );
+    }
+
+    #[test]
+    fn a_long_line_is_read_with_lookups_in_step_with_its_words() {
+        let h = two_tiers();
+        let tiers = [h.own(L), h.donor(L).unwrap()];
+        let words = 200;
+        let tail: String = (0..words).map(|i| format!("w{i} ")).collect();
+        // values after a held word, after a held keyword set, and with no held word at all
+        for head in ["ip ", "tr alpha ", ""] {
+            let typed = format!("{head}{tail}");
+            let (now, took) = lookups(|| read(&tiers, "config", Some(""), &typed, &|_| false));
+            let (before, was) =
+                lookups(|| read_before(&tiers, "config", Some(""), &typed, &|_| false));
+            assert_eq!(now, before, "{head:?}");
+            // each word costs a lookup in each tier, one for the word as typed and a few for the
+            // derivation's parent, not one per split of the line before it
+            assert!(took <= 8 * words, "{head:?}: {took} lookups");
+            assert!(was > 4 * took, "{head:?}: {was} lookups before, {took} now");
+        }
     }
 
     #[test]

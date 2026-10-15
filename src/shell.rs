@@ -1529,9 +1529,11 @@ impl<'a> Session<'a> {
         (offered, complete)
     }
 
-    /// `help` at `mode`.
-    fn help_in(&self, mode: &str, context: Option<&str>, text: &str) -> Vec<String> {
-        // after a command raised above `>`'s level, at `>` (c9200 17.15 capture 27's `show ?`)
+    /// What `?` after `text` answers before the books: a refusal after a command raised above `>`'s
+    /// level (c9200 17.15 capture 27's `show ?`), else a held answer, abbreviations read as their
+    /// keywords; else a keyword-set command after several picks, from what it offered after each
+    /// alone; the image's own first, then a donor's.
+    fn held_answer(&self, mode: &str, context: Option<&str>, text: &str) -> Option<Vec<String>> {
         let typed: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
         if text.ends_with(char::is_whitespace)
             && typed.first().is_some_and(|w| {
@@ -1541,17 +1543,18 @@ impl<'a> Session<'a> {
             })
             && mode == "exec"
         {
-            return vec!["% Unrecognized command".into()];
+            return Some(vec!["% Unrecognized command".into()]);
         }
-        // a held answer, abbreviations read as their keywords; else a keyword-set command after
-        // several picks, from what it offered after each alone; the image's own first, then a donor's
-        if let Some(lines) =
-            self.engine
-                .held
-                .answer(self.level().as_deref(), mode, context, text, |l| {
-                    self.running_has(l)
-                })
-        {
+        self.engine
+            .held
+            .answer(self.level().as_deref(), mode, context, text, |l| {
+                self.running_has(l)
+            })
+    }
+
+    /// `help` at `mode`.
+    fn help_in(&self, mode: &str, context: Option<&str>, text: &str) -> Vec<String> {
+        if let Some(lines) = self.held_answer(mode, context, text) {
             return lines;
         }
         let toks = crate::cli::tokens(text);
@@ -1661,15 +1664,16 @@ impl<'a> Session<'a> {
         match self.after_do(text) {
             Some(rest) => {
                 let head = &text[..text.len() - rest.len()];
-                self.complete_in("privileged", rest)
+                self.complete_in("privileged", Some(""), rest)
                     .map(|done| format!("{head}{done}"))
             }
-            None => self.complete_in(self.mode(), text),
+            None => self.complete_in(self.mode(), self.context().as_deref(), text),
         }
     }
 
-    /// `complete` at `mode`.
-    fn complete_in(&self, mode: &str, text: &str) -> Option<String> {
+    /// `complete` at `mode`. The keywords come from the answer `?` gives for the line before the
+    /// word, a held one included (`held_answer`), a refusal offering none; the books where none is held.
+    fn complete_in(&self, mode: &str, context: Option<&str>, text: &str) -> Option<String> {
         if text.is_empty() || text.ends_with(char::is_whitespace) {
             return None;
         }
@@ -1677,16 +1681,21 @@ impl<'a> Session<'a> {
         let last = toks.last()?;
         let (offered, _) = self.offered_at(mode, &toks[..toks.len() - 1]);
         let typed = last.text.to_lowercase();
-        let do_exec = "do-exec".to_string();
-        let mut kws: Vec<&String> = offered
-            .iter()
-            .filter(|o| o.kind == Offered::Keyword && o.shown.to_lowercase().starts_with(&typed))
-            .map(|o| &o.shown)
-            .collect();
-        if do_exec_begins(mode, &toks[..toks.len() - 1], &typed) && !kws.contains(&&do_exec) {
-            kws.push(&do_exec);
-        }
         let head = &text[..last.at];
+        let mut kws: Vec<String> = match self.held_answer(mode, context, head) {
+            Some(answer) => crate::live::keywords(&answer),
+            None => offered
+                .iter()
+                .filter(|o| o.kind == Offered::Keyword)
+                .map(|o| o.shown.clone())
+                .collect(),
+        };
+        kws.retain(|k| k.to_lowercase().starts_with(&typed));
+        if do_exec_begins(mode, &toks[..toks.len() - 1], &typed)
+            && !kws.iter().any(|k| k == "do-exec")
+        {
+            kws.push("do-exec".into());
+        }
         let pick = kws
             .iter()
             .find(|k| k.to_lowercase() == typed)
@@ -3462,6 +3471,10 @@ mod tests {
                 &["  vlan  VTP VLAN status", "  zzz   held only by the crawl"],
             ),
             (
+                "Switch(config)#do-exec show frob ?",
+                &["  zeta  held by the crawl", "  zeus  held by the crawl"],
+            ),
+            (
                 "Switch(config)#alias filter ?",
                 &["% Ambiguous command:  \"alias filter \""],
             ),
@@ -3964,6 +3977,84 @@ mod tests {
         s.type_line("configure terminal");
         s.type_line("router ospf 1");
         assert_eq!(s.help("do-exec show "), held);
+    }
+
+    #[test]
+    fn tab_completes_from_the_answer_that_question_mark_gives() {
+        let e = crawled();
+        let books = books_17_6();
+        let mut s = configured(&e, &[]);
+        let plain = configured(&books, &[]);
+        // `zzz` is held by the crawl alone: `?` lists it, so Tab takes its unique start
+        assert_eq!(plain.complete("do-exec show z"), None);
+        for (typed, done) in [
+            ("do-exec show z", "do-exec show zzz "),
+            ("do show zz", "do show zzz "),
+            ("DO-EXEC  show ZZZ", "DO-EXEC  show zzz "),
+        ] {
+            assert_eq!(s.complete(typed).as_deref(), Some(done), "{typed}");
+        }
+        assert_eq!(
+            s.complete("do-exec show v").as_deref(),
+            Some("do-exec show vlan ")
+        );
+        // the keywords held are the whole answer: the books' `show s...` words are not offered
+        assert_eq!(s.complete("do-exec show s"), None);
+        s.type_line("end");
+        assert_eq!(s.complete("show z").as_deref(), Some("show zzz "));
+        // a start two held keywords share completes nothing, as it does for the books' keywords
+        assert_eq!(s.complete("show frob ze"), None);
+        assert_eq!(
+            s.complete("show frob zet").as_deref(),
+            Some("show frob zeta ")
+        );
+        assert_eq!(
+            s.complete("show frob zeu").as_deref(),
+            Some("show frob zeus ")
+        );
+    }
+
+    #[test]
+    fn tab_completes_nothing_after_a_held_refusal() {
+        let e = crawled();
+        let s = configured(&e, &[]);
+        let typed = "event manager applet 10 class test ";
+        let b = books_17_6();
+        let books = configured(&b, &[]);
+        let first = crate::live::keywords(&books.help(typed))
+            .into_iter()
+            .next()
+            .expect("the books offer a keyword there");
+        let start = &first[..1];
+        assert!(books.complete(&format!("{typed}{first}")).is_some());
+        assert_eq!(s.help(typed), ["% Unrecognized command"]);
+        assert_eq!(s.complete(&format!("{typed}{first}")), None);
+        assert_eq!(s.complete(&format!("{typed}{start}")), None);
+        // a held ambiguous refusal likewise
+        assert_eq!(s.complete("alias filter e"), None);
+    }
+
+    #[test]
+    fn tab_completes_from_the_books_where_no_answer_is_held_for_the_line_before() {
+        let e = crawled();
+        let b = books_17_6();
+        let (s, books) = (configured(&e, &[]), configured(&b, &[]));
+        for typed in ["interface twe", "interface twe1/0/1"] {
+            let head = &typed[..=typed.rfind(' ').unwrap()];
+            assert_eq!(s.held_answer("config", Some(""), head), None, "{typed}");
+            assert!(books.complete(typed).is_some(), "{typed}");
+            assert_eq!(s.complete(typed), books.complete(typed), "{typed}");
+        }
+        // the first word, where no answer is held for the empty line
+        let (mut s, mut books) = (configured(&e, &[]), configured(&b, &[]));
+        s.type_line("end");
+        books.type_line("end");
+        assert_eq!(s.held_answer("privileged", Some(""), ""), None);
+        assert_eq!(s.complete("conf").as_deref(), Some("configure "));
+        assert_eq!(s.complete("conf"), books.complete("conf"));
+        assert_eq!(s.held_answer("privileged", Some(""), "terminal "), None);
+        assert_eq!(s.complete("terminal wi"), books.complete("terminal wi"));
+        assert!(books.complete("terminal wi").is_some());
     }
 
     #[test]
