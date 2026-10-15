@@ -32,9 +32,11 @@ pub struct Held {
     pub captures: Vec<String>,
     /// what a switch printed for `?`, by its mode and the line typed before the `?` (`help_key`)
     pub help: BTreeMap<(String, String), Vec<String>>,
-    /// what a crawl of a switch printed for `?` in each mode, by its mode and `context::key`: one
-    /// answer per context (`context::of` the submodes entered), where it asked in several
-    pub crawl: BTreeMap<(String, String), Vec<CrawlAnswer>>,
+    /// what crawls of a switch of this image printed for `?`, by the license level it ran at
+    pub crawls: BTreeMap<String, Crawl>,
+    /// by a session's level, the crawl of another image that answers where this image's own
+    /// answers hold none (`license::DONORS`), for the levels whose mapping is enabled
+    pub donors: BTreeMap<String, Crawl>,
     /// the description switches of the family (classic IOS or IOS XE) printed beside each keyword
     /// for `?`, by the mode (`help_mode`), the line typed before the `?` and the keyword: for a
     /// keyword its own book and captures leave bare (the 9300's `show ?` at 17.15, from the 9200's)
@@ -45,6 +47,26 @@ pub struct Held {
 
 /// A crawl's answer and the context it was asked in.
 pub type CrawlAnswer = (String, Vec<String>);
+
+/// What a crawl printed for `?` in each mode, by its mode and `context::key`: one answer per context
+/// (`context::of` the submodes entered), where it asked in several.
+pub type Crawl = BTreeMap<(String, String), Vec<CrawlAnswer>>;
+
+/// Which answers gave a `?` answer (`Held::answered`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// the image's own: its captures and its crawl at the session's level
+    Own,
+    /// the donor crawl at the session's level
+    Donor,
+}
+
+/// One tier's held answers: a capture's in every context, a crawl's in its own.
+#[derive(Clone, Copy)]
+struct Answers<'a> {
+    help: Option<&'a BTreeMap<(String, String), Vec<String>>>,
+    crawl: Option<&'a Crawl>,
+}
 
 /// Whether a held `?` answer is a refusal (`corpus::UNRECOGNIZED`, `corpus::AMBIGUOUS`).
 pub fn is_refusal(answer: &[String]) -> bool {
@@ -61,13 +83,13 @@ pub fn refusal_for(typed: &str, answer: Vec<String>) -> Vec<String> {
     }
 }
 
-/// A line typed before `?` as the held answers read it (`Held::read`).
+/// A line typed before `?` as the held answers read it (`read`).
 #[derive(Debug, PartialEq, Eq)]
 enum Read {
     /// the line, each abbreviated keyword written whole
     Line(String),
-    /// a word begins two keywords or more and is neither
-    Ambiguous,
+    /// a word begins two keywords or more and is neither, by the answer of the tier at this index
+    Ambiguous(usize),
 }
 
 /// The held answer for an ambiguous line, which `refusal_for` quotes as typed.
@@ -299,6 +321,26 @@ impl Held {
 
     /// As `of`, from a corpus being built.
     pub fn from_corpus(c: &crate::corpus::Corpus, platform: &str, release: &str) -> Held {
+        Held::lent(c, platform, release, crate::license::ENABLED)
+    }
+
+    /// As `from_corpus`, with the donor mappings of the switches `enabled` lists answering.
+    #[cfg(test)]
+    pub fn with_donors(
+        c: &crate::corpus::Corpus,
+        platform: &str,
+        release: &str,
+        enabled: &[(&str, &str, &str)],
+    ) -> Held {
+        Held::lent(c, platform, release, enabled)
+    }
+
+    fn lent(
+        c: &crate::corpus::Corpus,
+        platform: &str,
+        release: &str,
+        enabled: &[(&str, &str, &str)],
+    ) -> Held {
         let mut h = Held::default();
         let Some(book) = crate::grammars::book_of(platform) else {
             return h;
@@ -333,13 +375,34 @@ impl Held {
                 .iter()
                 .map(|(m, k, a)| ((m.clone(), k.clone()), a.clone()))
                 .collect();
-            for (m, c, k, a) in &t.crawl {
-                h.crawl
+            for (l, m, c, k, a) in &t.crawl {
+                h.crawls
+                    .entry(l.clone())
+                    .or_default()
                     .entry((m.clone(), k.clone()))
                     .or_default()
                     .push((c.clone(), a.clone()));
             }
             h.captures = t.captures.clone();
+        }
+        for &(_, _, level) in enabled
+            .iter()
+            .filter(|(b, r, _)| *b == book && *r == release)
+        {
+            let Some((db, dr, dl)) = crate::license::enabled_donor(book, release, level, enabled)
+            else {
+                continue;
+            };
+            let Some((_, _, t)) = c.held.iter().find(|(b, r, _)| b == db && r == dr) else {
+                continue;
+            };
+            let crawl = h.donors.entry(level.to_string()).or_default();
+            for (_, m, c, k, a) in t.crawl.iter().filter(|e| e.0 == dl) {
+                crawl
+                    .entry((m.clone(), k.clone()))
+                    .or_default()
+                    .push((c.clone(), a.clone()));
+            }
         }
         // every platform's captures at the release: IOS XE moved a class map's `description` from
         // two spaces in to one between 17.12 and 17.15, alike on the 9200, 9300 and 9400
@@ -355,150 +418,95 @@ impl Held {
         h
     }
 
-    /// What a real switch printed for `?` typed after `text` in `mode`, entered through `context`
-    /// (`context::of`; none where the session's context is unknown). A capture's answer holds in
-    /// every context; a crawl's holds in the context it was asked in, and in no other: where a crawl
-    /// answered that mode and text under other contexts only, there is no held answer. A crawl's
-    /// answer that a state predicate ends (`context::STATE_PREDICATES`) is no held answer either.
-    /// The line is read with each keyword whole (`read`): a line held as typed is its own answer, an
-    /// abbreviation that begins several keywords is refused as ambiguous.
+    /// The image's own answers at a session's license level: its captures', and its crawl at that
+    /// level.
+    fn own(&self, level: Option<&str>) -> Answers<'_> {
+        Answers {
+            help: Some(&self.help),
+            crawl: level.and_then(|l| self.crawls.get(l)),
+        }
+    }
+
+    /// The donor crawl's answers at a session's level, where its mapping is enabled.
+    fn donor(&self, level: Option<&str>) -> Option<Answers<'_>> {
+        let crawl = self.donors.get(level?)?;
+        Some(Answers {
+            help: None,
+            crawl: Some(crawl),
+        })
+    }
+
+    /// What a real switch of this image printed for `?` typed after `text` in `mode`, entered through
+    /// `context`, at the session's license `level` (`Answers::help_for`). The caret of a refused
+    /// line reads this, never a donor's answer.
     pub fn help_for(
         &self,
+        level: Option<&str>,
         mode: &str,
         context: Option<&str>,
         text: &str,
         configured: impl Fn(&str) -> bool,
     ) -> Option<&Vec<String>> {
-        if let Some(a) = self.held_as_typed(mode, context, text, &configured) {
-            return Some(a);
-        }
-        match self.read(mode, context, text, &configured) {
-            Read::Ambiguous => Some(ambiguous()),
-            Read::Line(line) if line != text => {
-                self.held_as_typed(mode, context, &line, &configured)
-            }
-            Read::Line(_) => None,
-        }
+        self.own(level).help_for(mode, context, text, &configured)
     }
 
-    /// `help_for`, else `derived_help`: what the shell takes before the books.
+    /// What the shell takes before the books: the image's own held answer, abbreviations read, else
+    /// its derived answer; then the same from the donor crawl at the session's level, in the same
+    /// mode and context. The line is read once across both (`read`), so a donor's answer never wins
+    /// over the image's for the same line; a derived answer is built from one tier's answers. A
+    /// donor's answer is never merged with the books'.
     pub fn answer(
         &self,
+        level: Option<&str>,
         mode: &str,
         context: Option<&str>,
         text: &str,
         configured: impl Fn(&str) -> bool,
     ) -> Option<Vec<String>> {
-        self.help_for(mode, context, text, &configured)
-            .cloned()
-            .or_else(|| self.derived_help(mode, context, text, &configured))
+        self.answered(level, mode, context, text, configured)
+            .map(|(_, a)| a)
     }
 
-    /// `text` with each word typed before the last space that begins exactly one keyword the held
-    /// answer for the line before it offers (`help_for`, else `derived`, through the words already
-    /// read) written as that keyword, as IOS takes a unique start of a keyword wherever one is
-    /// expected (`ip acc ?` answers as `ip access-list ?`). A word that is a keyword whole, begins
-    /// none (a value), stands where no answer is held or is followed by a held answer is left as
-    /// typed, and the words after it are read on; a word beginning two keywords or more, none of
-    /// them whole, makes the line ambiguous.
-    /// A word still being typed (no space after it) is left as typed.
-    fn read(
+    /// `answer`, with the tier that gave it.
+    pub fn answered(
         &self,
-        mode: &str,
-        context: Option<&str>,
-        text: &str,
-        configured: &dyn Fn(&str) -> bool,
-    ) -> Read {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let whole = text.ends_with(char::is_whitespace);
-        let complete = if whole {
-            words.len()
-        } else {
-            words.len().saturating_sub(1)
-        };
-        let mut out: Vec<String> = vec![];
-        for (i, w) in words.iter().enumerate() {
-            if i >= complete {
-                out.push(w.to_string());
-                continue;
-            }
-            let before = if out.is_empty() {
-                String::new()
-            } else {
-                format!("{} ", out.join(" "))
-            };
-            let held = self
-                .held_as_typed(mode, context, &before, configured)
-                .cloned()
-                .or_else(|| {
-                    derived(&before, |t| {
-                        self.held_as_typed(mode, context, t, configured)
-                    })
-                });
-            // a word the switch answered after is one it took as typed, a keyword `?` leaves out
-            // (the C9300's `ipv6 nd ra`, beside `ra-throttler` and `raguard`) or a value
-            let took = || {
-                self.held_as_typed(mode, context, &format!("{before}{w} "), configured)
-                    .is_some_and(|a| !is_refusal(a))
-            };
-            let Some(held) = held.filter(|_| !took()) else {
-                out.push(w.to_string());
-                continue;
-            };
-            let known = keywords(&held);
-            let known: Vec<&str> = known.iter().map(String::as_str).collect();
-            match crate::context::reads(w, &known) {
-                crate::context::Reads::One(k) => out.push(k.to_string()),
-                crate::context::Reads::Several => return Read::Ambiguous,
-                _ => out.push(w.to_string()),
-            }
-        }
-        let mut line = out.join(" ");
-        if whole && !line.is_empty() {
-            line.push(' ');
-        }
-        Read::Line(line)
-    }
-
-    /// `help_for` for the line as typed, its words as they stand.
-    fn held_as_typed(
-        &self,
-        mode: &str,
-        context: Option<&str>,
-        text: &str,
-        configured: &dyn Fn(&str) -> bool,
-    ) -> Option<&Vec<String>> {
-        let key = (mode.to_string(), help_key(text));
-        let crawled = (mode.to_string(), crate::context::key(text));
-        if context == Some("")
-            && let Some(a) = self.help.get(&key)
-        {
-            return Some(a);
-        }
-        match self.crawl.get(&crawled) {
-            None => self.help.get(&key),
-            Some(answers) => {
-                let (_, a) = answers.iter().find(|(c, _)| Some(c.as_str()) == context)?;
-                (!crate::context::stale(&crawled.1, configured)).then_some(a)
-            }
-        }
-    }
-
-    /// What a real switch would print for `?` after `text` where no answer for it is held: a
-    /// keyword-set command's answer after several picks, from its answers after each pick alone
-    /// (`derived`), the line read with each keyword whole (`read`) and each part held as `help_for`
-    /// holds it.
-    pub fn derived_help(
-        &self,
+        level: Option<&str>,
         mode: &str,
         context: Option<&str>,
         text: &str,
         configured: impl Fn(&str) -> bool,
-    ) -> Option<Vec<String>> {
-        let Read::Line(line) = self.read(mode, context, text, &configured) else {
-            return None;
+    ) -> Option<(Tier, Vec<String>)> {
+        let configured: &dyn Fn(&str) -> bool = &configured;
+        let own = self.own(level);
+        let donor = self.donor(level);
+        let tiers: Vec<Answers<'_>> = std::iter::once(own).chain(donor).collect();
+        let held = |a: Answers<'_>, t: &str| a.held_as_typed(mode, context, t, configured).cloned();
+        if let Some(a) = held(own, text) {
+            return Some((Tier::Own, a));
+        }
+        let line = match read(&tiers, mode, context, text, configured) {
+            Read::Line(line) => Some(line),
+            Read::Ambiguous(0) => return Some((Tier::Own, ambiguous().clone())),
+            Read::Ambiguous(_) => None,
         };
-        derived(&line, |t| self.held_as_typed(mode, context, t, &configured))
+        // the line as read, then a derived answer, each from one tier: the image's, then the donor's
+        let expanded = |a: Answers<'_>, line: &str| {
+            (line != text)
+                .then(|| held(a, line))
+                .flatten()
+                .or_else(|| derived(line, |t| a.held_as_typed(mode, context, t, configured)))
+        };
+        if let Some(a) = line.as_deref().and_then(|l| expanded(own, l)) {
+            return Some((Tier::Own, a));
+        }
+        let donor = donor?;
+        if let Some(a) = held(donor, text) {
+            return Some((Tier::Donor, a));
+        }
+        match line {
+            None => Some((Tier::Donor, ambiguous().clone())),
+            Some(l) => expanded(donor, &l).map(|a| (Tier::Donor, a)),
+        }
     }
 
     /// Whether a real switch held `line` under a block of this kind ("" at the top level).
@@ -548,6 +556,125 @@ impl Held {
             .get(&(first(header), first(line)))
             .map(String::as_str)
     }
+}
+
+impl<'a> Answers<'a> {
+    /// What a real switch printed for `?` typed after `text` in `mode`, entered through `context`
+    /// (`context::of`; none where the session's context is unknown). A capture's answer holds in
+    /// every context; a crawl's holds in the context it was asked in, and in no other: where a crawl
+    /// answered that mode and text under other contexts only, there is no held answer. A crawl's
+    /// answer that a state predicate ends (`context::STATE_PREDICATES`) is no held answer either.
+    /// The line is read with each keyword whole (`read`): a line held as typed is its own answer, an
+    /// abbreviation that begins several keywords is refused as ambiguous.
+    fn help_for(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: &dyn Fn(&str) -> bool,
+    ) -> Option<&'a Vec<String>> {
+        if let Some(a) = self.held_as_typed(mode, context, text, configured) {
+            return Some(a);
+        }
+        match read(&[*self], mode, context, text, configured) {
+            Read::Ambiguous(_) => Some(ambiguous()),
+            Read::Line(line) if line != text => {
+                self.held_as_typed(mode, context, &line, configured)
+            }
+            Read::Line(_) => None,
+        }
+    }
+
+    /// `help_for` for the line as typed, its words as they stand.
+    fn held_as_typed(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: &dyn Fn(&str) -> bool,
+    ) -> Option<&'a Vec<String>> {
+        let key = (mode.to_string(), help_key(text));
+        let crawled = (mode.to_string(), crate::context::key(text));
+        let help = self.help.and_then(|h| h.get(&key));
+        if context == Some("")
+            && let Some(a) = help
+        {
+            return Some(a);
+        }
+        match self.crawl.and_then(|c| c.get(&crawled)) {
+            None => help,
+            Some(answers) => {
+                let (_, a) = answers.iter().find(|(c, _)| Some(c.as_str()) == context)?;
+                (!crate::context::stale(&crawled.1, configured)).then_some(a)
+            }
+        }
+    }
+}
+
+/// `text` with each word typed before the last space that begins exactly one keyword the held
+/// answer for the line before it offers written as that keyword, as IOS takes a unique start of a
+/// keyword wherever one is expected (`ip acc ?` answers as `ip access-list ?`). The answer for the
+/// line before a word is the first tier's of `tiers` that holds one, as typed or derived from its
+/// own answers. A word that is a keyword whole, begins none (a value), stands where no answer is
+/// held or is followed by a held answer is left as typed, and the words after it are read on; a
+/// word beginning two keywords or more, none of them whole, makes the line ambiguous.
+/// A word still being typed (no space after it) is left as typed.
+fn read(
+    tiers: &[Answers<'_>],
+    mode: &str,
+    context: Option<&str>,
+    text: &str,
+    configured: &dyn Fn(&str) -> bool,
+) -> Read {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let whole = text.ends_with(char::is_whitespace);
+    let complete = if whole {
+        words.len()
+    } else {
+        words.len().saturating_sub(1)
+    };
+    let as_typed = |t: &str| {
+        tiers
+            .iter()
+            .find_map(|a| a.held_as_typed(mode, context, t, configured))
+    };
+    let mut out: Vec<String> = vec![];
+    for (i, w) in words.iter().enumerate() {
+        if i >= complete {
+            out.push(w.to_string());
+            continue;
+        }
+        let before = if out.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", out.join(" "))
+        };
+        let held = tiers.iter().enumerate().find_map(|(n, a)| {
+            a.held_as_typed(mode, context, &before, configured)
+                .cloned()
+                .or_else(|| derived(&before, |t| a.held_as_typed(mode, context, t, configured)))
+                .map(|h| (n, h))
+        });
+        // a word the switch answered after is one it took as typed, a keyword `?` leaves out
+        // (the C9300's `ipv6 nd ra`, beside `ra-throttler` and `raguard`) or a value
+        let took = || as_typed(&format!("{before}{w} ")).is_some_and(|a| !is_refusal(a));
+        let Some((n, held)) = held.filter(|_| !took()) else {
+            out.push(w.to_string());
+            continue;
+        };
+        let known = keywords(&held);
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
+        match crate::context::reads(w, &known) {
+            crate::context::Reads::One(k) => out.push(k.to_string()),
+            crate::context::Reads::Several => return Read::Ambiguous(n),
+            _ => out.push(w.to_string()),
+        }
+    }
+    let mut line = out.join(" ");
+    if whole && !line.is_empty() {
+        line.push(' ');
+    }
+    Read::Line(line)
 }
 
 /// A row of a `?` answer: its word, its description and the lines continuing the description.
@@ -844,6 +971,13 @@ mod tests {
         vec![s.to_string()]
     }
 
+    /// The level the tests' sessions run at, and the image's own crawl at it.
+    const L: Option<&str> = Some("network-advantage");
+
+    fn own(h: &mut Held) -> &mut Crawl {
+        h.crawls.entry(L.unwrap().to_string()).or_default()
+    }
+
     #[test]
     fn a_crawl_answer_holds_in_its_own_context_alone_and_a_capture_s_in_every_one() {
         let mut h = Held::default();
@@ -853,18 +987,18 @@ mod tests {
         h.help.insert(key("config-router", ""), answer("capture"));
         h.help
             .insert(key("privileged", "show vtp "), answer("capture"));
-        h.crawl.insert(
+        own(&mut h).insert(
             key("config-router", ""),
             vec![
                 ("router ospf".into(), answer("ospf")),
                 ("router bgp".into(), answer("bgp")),
             ],
         );
-        h.crawl.insert(
+        own(&mut h).insert(
             key("privileged", "show vtp "),
             vec![("".into(), answer("crawl"))],
         );
-        let ask = |m: &str, c: Option<&str>, t: &str| h.help_for(m, c, t, |_| false).cloned();
+        let ask = |m: &str, c: Option<&str>, t: &str| h.help_for(L, m, c, t, |_| false).cloned();
         // where no crawl asked, the capture's answer: in any context, the unknown one too
         for c in [Some(""), Some("interface vlan"), None] {
             assert_eq!(ask("config-if", c, "switchport "), Some(answer("capture")));
@@ -897,16 +1031,16 @@ mod tests {
     #[test]
     fn a_crawl_answer_ended_by_the_session_s_state_is_no_held_answer() {
         let mut h = Held::default();
-        h.crawl.insert(
+        own(&mut h).insert(
             ("config".into(), "aaa ".into()),
             vec![("".into(), answer("crawl"))],
         );
-        h.crawl.insert(
+        own(&mut h).insert(
             ("config".into(), "ip ".into()),
             vec![("".into(), answer("crawl ip"))],
         );
         let ask = |t: &str, on: bool| {
-            h.help_for("config", Some(""), t, |l| on && l == "aaa new-model")
+            h.help_for(L, "config", Some(""), t, |l| on && l == "aaa new-model")
                 .cloned()
         };
         assert_eq!(ask("aaa ", false), Some(answer("crawl")));
@@ -923,21 +1057,21 @@ mod tests {
         // a production capture's answer, and the crawl's refusal of the same line
         h.help
             .insert(key("privileged", "show vtp "), answer("capture"));
-        h.crawl.insert(
+        own(&mut h).insert(
             key("privileged", "show vtp "),
             vec![("".into(), refused.clone())],
         );
-        h.crawl.insert(
+        own(&mut h).insert(
             key("config-router", "bogus "),
             vec![("router ospf".into(), refused.clone())],
         );
         h.help.insert(key("config", "bogus "), answer("capture"));
-        h.crawl.insert(
+        own(&mut h).insert(
             key("config", "aaa authentication "),
             vec![("".into(), refused.clone())],
         );
         let ask = |m: &str, c: Option<&str>, t: &str, aaa: bool| {
-            h.help_for(m, c, t, |l| aaa && l == "aaa new-model")
+            h.help_for(L, m, c, t, |l| aaa && l == "aaa new-model")
                 .cloned()
         };
         // with no context, the capture's answer first
@@ -989,7 +1123,7 @@ mod tests {
     fn crawled(answers: &[(&str, &[&str])]) -> Held {
         let mut h = Held::default();
         for (k, rows) in answers {
-            h.crawl.insert(
+            own(&mut h).insert(
                 ("config".into(), k.to_string()),
                 vec![("".into(), rows.iter().map(|r| r.to_string()).collect())],
             );
@@ -1021,7 +1155,7 @@ mod tests {
     #[test]
     fn an_abbreviated_keyword_reaches_the_held_answer_for_the_keyword() {
         let h = crawled(&[TOP, IP, ACL]);
-        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        let ask = |t: &str| h.help_for(L, "config", Some(""), t, |_| false).cloned();
         let want = Some(ACL.1.iter().map(|r| r.to_string()).collect::<Vec<_>>());
         for typed in ["ip acc ", "IP  ACC ", "ip ac ", "ip access-list "] {
             assert_eq!(ask(typed), want, "{typed}");
@@ -1030,13 +1164,13 @@ mod tests {
         assert_eq!(ask("ip a-l "), None);
         assert_eq!(ask("ip acc"), None);
         // the derivation and the shell's order take the same reading
-        assert_eq!(h.answer("config", Some(""), "ip acc ", |_| false), want);
+        assert_eq!(h.answer(L, "config", Some(""), "ip acc ", |_| false), want);
     }
 
     #[test]
     fn a_keyword_typed_whole_wins_over_the_longer_keywords_it_begins() {
         let h = crawled(&[TOP, IP, ("ipv6 ", &["  route  Configure static routes"])]);
-        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        let ask = |t: &str| h.help_for(L, "config", Some(""), t, |_| false).cloned();
         assert_eq!(
             ask("ip "),
             Some(vec![IP.1[0].to_string(), IP.1[1].to_string()])
@@ -1063,7 +1197,7 @@ mod tests {
             ("alias filter ", &[crate::corpus::AMBIGUOUS]),
         ]);
         let ask = |t: &str| {
-            h.help_for("config", Some(""), t, |_| false)
+            h.help_for(L, "config", Some(""), t, |_| false)
                 .map(|a| refusal_for(t, a.clone()))
         };
         // at the end of the line and before other words, the whole line quoted as typed
@@ -1106,7 +1240,7 @@ mod tests {
             ("access-class 1 in ", &["  <cr>"]),
             ("vlan 10 ", &["  <cr>"]),
         ]);
-        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        let ask = |t: &str| h.help_for(L, "config", Some(""), t, |_| false).cloned();
         assert_eq!(ask("vlan 10 "), Some(vec!["  <cr>".to_string()]));
         assert_eq!(ask("vl 10 "), Some(vec!["  <cr>".to_string()]));
         assert_eq!(ask("access-class 1 i "), Some(vec!["  <cr>".to_string()]));
@@ -1133,7 +1267,7 @@ mod tests {
             ("ipv6 nd ra ", &["  dns  DNS"]),
             ("ipv6 nd ra dns ", &["  server  DNS Server"]),
         ]);
-        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        let ask = |t: &str| h.help_for(L, "config", Some(""), t, |_| false).cloned();
         assert_eq!(
             ask("ipv n ra d "),
             Some(vec!["  server  DNS Server".to_string()])
@@ -1154,14 +1288,14 @@ mod tests {
                 &["  stackwise  STACKWISE traps"],
             ),
         ]);
-        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        let ask = |t: &str| h.help_for(L, "config", Some(""), t, |_| false).cloned();
         assert_eq!(
             ask("snmp-server enable traps "),
             Some(vec!["  stackwise  STACKWISE traps".to_string()])
         );
         assert_eq!(ask("snmp-server ena traps "), None);
         assert_eq!(
-            h.answer("config", Some(""), "snmp-server ena traps ", |_| false),
+            h.answer(L, "config", Some(""), "snmp-server ena traps ", |_| false),
             None
         );
     }
@@ -1170,7 +1304,7 @@ mod tests {
     fn abbreviations_in_a_submode_are_read_against_its_context_s_answers() {
         let mut h = Held::default();
         let ospf = |a: &str| vec![("router ospf".to_string(), vec![a.to_string()])];
-        h.crawl.insert(
+        own(&mut h).insert(
             ("config-router".into(), "".into()),
             vec![
                 (
@@ -1183,11 +1317,14 @@ mod tests {
                 ("router bgp".into(), vec!["  address-family  Enter".into()]),
             ],
         );
-        h.crawl.insert(
+        own(&mut h).insert(
             ("config-router".into(), "area ".into()),
             ospf("  <0-4294967295>  OSPF area ID"),
         );
-        let ask = |c: &str, t: &str| h.help_for("config-router", Some(c), t, |_| false).cloned();
+        let ask = |c: &str, t: &str| {
+            h.help_for(L, "config-router", Some(c), t, |_| false)
+                .cloned()
+        };
         assert_eq!(
             ask("router ospf", "ar "),
             Some(vec!["  <0-4294967295>  OSPF area ID".to_string()])
@@ -1201,9 +1338,273 @@ mod tests {
     }
 
     #[test]
+    fn an_image_s_own_crawl_answers_only_at_the_session_s_level() {
+        let mut h = Held::default();
+        let key = ("config".to_string(), "ip ".to_string());
+        for (level, a) in [
+            ("network-advantage", "advantage"),
+            ("network-essentials", "essentials"),
+        ] {
+            h.crawls
+                .entry(level.into())
+                .or_default()
+                .insert(key.clone(), vec![("".into(), answer(a))]);
+        }
+        h.help
+            .insert(("privileged".into(), "show ".into()), answer("capture"));
+        let ask = |l: Option<&str>| h.help_for(l, "config", Some(""), "ip ", |_| false).cloned();
+        assert_eq!(ask(Some("network-advantage")), Some(answer("advantage")));
+        assert_eq!(ask(Some("network-essentials")), Some(answer("essentials")));
+        assert_eq!(ask(Some("lanbase")), None);
+        assert_eq!(ask(None), None);
+        // a capture's answer holds at any level, and with none
+        for l in [Some("lanbase"), None] {
+            assert_eq!(
+                h.answer(l, "privileged", Some(""), "show ", |_| false),
+                Some(answer("capture"))
+            );
+        }
+    }
+
+    const ADV: &str = "network-advantage";
+    const ESS: &str = "network-essentials";
+
+    fn row(
+        level: &str,
+        mode: &str,
+        context: &str,
+        key: &str,
+        a: &[&str],
+    ) -> crate::corpus::CrawlRow {
+        (
+            level.into(),
+            mode.into(),
+            context.into(),
+            key.into(),
+            a.iter().map(|r| r.to_string()).collect(),
+        )
+    }
+
+    const STACKWISE: &str = "snmp-server enable traps stackwise ";
+
+    /// A C9300 17.6 crawl at both levels, and a C9200 17.15 capture's `show ?` and crawl at
+    /// network-advantage.
+    fn lent() -> crate::corpus::Corpus {
+        let donor = crate::corpus::HeldTable {
+            crawl: vec![
+                row(
+                    ADV,
+                    "config",
+                    "",
+                    "",
+                    &[
+                        "  ip      Global IP configuration subcommands",
+                        "  router  Enable a routing process",
+                    ],
+                ),
+                row(ADV, "config", "", "ip ", &["  routing  Enable IP routing"]),
+                row(ADV, "config", "", "bogus ", &[crate::corpus::UNRECOGNIZED]),
+                row(
+                    ADV,
+                    "config",
+                    "",
+                    "logging ",
+                    &["  host  Set syslog server"],
+                ),
+                row(
+                    ADV,
+                    "config-router",
+                    "router ospf",
+                    "",
+                    &["  area  OSPF area parameters"],
+                ),
+                row(
+                    ADV,
+                    "privileged",
+                    "",
+                    "",
+                    &[
+                        "  show  Show running system information",
+                        "  ssh   Open a secure shell client connection",
+                    ],
+                ),
+                row(ADV, "privileged", "", "show ", &["  vlan  VTP VLAN status"]),
+                row(
+                    ADV,
+                    "config",
+                    "",
+                    STACKWISE,
+                    &["  a     A", "  b     B", "  c     C", "  <cr>  <cr>"],
+                ),
+                row(
+                    ADV,
+                    "config",
+                    "",
+                    &format!("{STACKWISE}a "),
+                    &["  b     B", "  c     C", "  <cr>  <cr>"],
+                ),
+                row(
+                    ADV,
+                    "config",
+                    "",
+                    &format!("{STACKWISE}b "),
+                    &["  a     A", "  c     C", "  <cr>  <cr>"],
+                ),
+                row(
+                    ESS,
+                    "config",
+                    "",
+                    "ip ",
+                    &["  multicast  Global IP multicast commands"],
+                ),
+            ],
+            ..Default::default()
+        };
+        let target = crate::corpus::HeldTable {
+            help: vec![(
+                "privileged".into(),
+                "show ".into(),
+                vec!["  vlan  capture".into()],
+            )],
+            crawl: vec![
+                row(ADV, "config", "", "logging ", &["  buffered  own crawl"]),
+                row(
+                    ADV,
+                    "config",
+                    "",
+                    "ip routing ",
+                    &[crate::corpus::UNRECOGNIZED],
+                ),
+            ],
+            ..Default::default()
+        };
+        crate::corpus::Corpus {
+            held: vec![
+                ("c9200".into(), "17.15".into(), target),
+                ("c9300".into(), "17.6".into(), donor),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_donor_answers_after_the_image_s_own_answers_and_before_the_books() {
+        let c = lent();
+        let on = [("c9200", "17.15", ADV)];
+        let h = Held::with_donors(&c, "Catalyst 9200", "17.15", &on);
+        let ask = |l: Option<&str>, m: &str, ctx: Option<&str>, t: &str| {
+            h.answered(l, m, ctx, t, |_| false)
+        };
+        let adv = Some(ADV);
+        // the image's capture and its own crawl, a refusal too, before the donor
+        assert_eq!(
+            ask(adv, "privileged", Some(""), "show "),
+            Some((Tier::Own, answer("  vlan  capture")))
+        );
+        assert_eq!(
+            ask(adv, "config", Some(""), "logging "),
+            Some((Tier::Own, answer("  buffered  own crawl")))
+        );
+        assert_eq!(
+            ask(adv, "config", Some(""), "ip routing "),
+            Some((Tier::Own, answer(crate::corpus::UNRECOGNIZED)))
+        );
+        // where the image holds none, the donor's, its refusals among them
+        assert_eq!(
+            ask(adv, "config", Some(""), "ip "),
+            Some((Tier::Donor, answer("  routing  Enable IP routing")))
+        );
+        assert_eq!(
+            ask(adv, "config", Some(""), "bogus "),
+            Some((Tier::Donor, answer(crate::corpus::UNRECOGNIZED)))
+        );
+        // in the context the donor asked in only
+        assert_eq!(
+            ask(adv, "config-router", Some("router ospf"), ""),
+            Some((Tier::Donor, answer("  area  OSPF area parameters")))
+        );
+        for ctx in [Some("router bgp"), Some(""), None] {
+            assert_eq!(ask(adv, "config-router", ctx, ""), None, "{ctx:?}");
+        }
+        // a line neither holds is the books'
+        assert_eq!(ask(adv, "config", Some(""), "vtp "), None);
+        // another level's mapping is off, and a session with no level has no donor
+        assert_eq!(ask(Some(ESS), "config", Some(""), "ip "), None);
+        assert_eq!(ask(None, "config", Some(""), "ip "), None);
+        // at a level whose mapping is on, the donor's answer at that level
+        let both = Held::with_donors(
+            &c,
+            "Catalyst 9200",
+            "17.15",
+            &[on[0], ("c9200", "17.15", ESS)],
+        );
+        assert_eq!(
+            both.answer(Some(ESS), "config", Some(""), "ip ", |_| false),
+            Some(answer("  multicast  Global IP multicast commands"))
+        );
+        // shipped, every mapping is off: the books answer
+        let shipped = Held::from_corpus(&c, "Catalyst 9200", "17.15");
+        assert!(shipped.donors.is_empty());
+        assert_eq!(
+            shipped.answer(adv, "config", Some(""), "ip ", |_| false),
+            None
+        );
+        // the caret's lookup never reads a donor
+        assert_eq!(h.help_for(adv, "config", Some(""), "ip ", |_| false), None);
+    }
+
+    #[test]
+    fn a_line_read_through_a_donor_s_answer_takes_the_image_s_answer_for_it() {
+        let c = lent();
+        let h = Held::with_donors(&c, "Catalyst 9200", "17.15", &[("c9200", "17.15", ADV)]);
+        // the image holds `show ?` and no answer before it; the donor holds both
+        for typed in ["show ", "sh ", "SH  "] {
+            assert_eq!(
+                h.answered(Some(ADV), "privileged", Some(""), typed, |_| false),
+                Some((Tier::Own, answer("  vlan  capture"))),
+                "{typed:?}"
+            );
+        }
+        // a line read through the donor's answer that neither holds is the books'
+        assert_eq!(
+            h.answered(Some(ADV), "privileged", Some(""), "ss ", |_| false),
+            None
+        );
+    }
+
+    #[test]
+    fn a_donor_s_answers_read_abbreviations_and_derive_several_picks() {
+        let c = lent();
+        let h = Held::with_donors(&c, "Catalyst 9200", "17.15", &[("c9200", "17.15", ADV)]);
+        let ask = |t: &str| h.answered(Some(ADV), "config", Some(""), t, |_| false);
+        assert_eq!(
+            ask("i "),
+            Some((Tier::Donor, answer("  routing  Enable IP routing")))
+        );
+        assert_eq!(
+            ask("ro"),
+            None,
+            "a word still being typed is left to the books"
+        );
+        let derived = ask(&format!("{STACKWISE}a b ")).unwrap();
+        assert_eq!(derived.0, Tier::Donor);
+        assert_eq!(keywords(&derived.1), ["c"]);
+        assert_eq!(derived.1.last().map(String::as_str), Some("  <cr>  <cr>"));
+        // the same lines with the mapping off
+        let off = Held::from_corpus(&c, "Catalyst 9200", "17.15");
+        for t in ["i ", &format!("{STACKWISE}a b ")] {
+            assert_eq!(
+                off.answer(Some(ADV), "config", Some(""), t, |_| false),
+                None,
+                "{t}"
+            );
+        }
+    }
+
+    #[test]
     fn a_crawl_answer_is_found_whatever_address_was_typed() {
         let mut h = Held::default();
-        h.crawl.insert(
+        own(&mut h).insert(
             (
                 "config".into(),
                 crate::context::key("arp 10.1.1.1 0011.2233.4455 "),
@@ -1215,13 +1616,13 @@ mod tests {
             "ARP  10.1.1.1  0011.2233.4455 ",
         ] {
             assert_eq!(
-                h.help_for("config", Some(""), typed, |_| false).cloned(),
+                h.help_for(L, "config", Some(""), typed, |_| false).cloned(),
                 Some(answer("arpa")),
                 "{typed}"
             );
         }
         assert_eq!(
-            h.help_for("config", Some(""), "arp 10.1.1.1 ", |_| false),
+            h.help_for(L, "config", Some(""), "arp 10.1.1.1 ", |_| false),
             None
         );
     }
@@ -1296,9 +1697,10 @@ mod tests {
         );
     }
 
-    /// Leave-one-out over the crawl logs under `VSWITCH_CRAWLS` (`<book>-<release>/crawl/crawl.log`):
-    /// every held answer `derived` can give with that answer itself set aside, compared with what the
-    /// switch printed. `--nocapture` prints the counts and up to three keys per mismatch class.
+    /// Leave-one-out over the crawl logs under `VSWITCH_CRAWLS` (each crawl folder with a `level`
+    /// file): every held answer `derived` can give with that answer itself set aside, compared with
+    /// what the switch printed. `--nocapture` prints the counts and up to three keys per mismatch
+    /// class.
     #[test]
     #[ignore = "an audit: reads the crawl logs VSWITCH_CRAWLS names"]
     fn derived_answers_against_the_held_ones() {
@@ -1415,7 +1817,9 @@ mod tests {
             }
             let mut held = Held::default();
             for ((m, c, k), a) in &first {
-                held.crawl
+                held.crawls
+                    .entry(f.level.clone())
+                    .or_default()
                     .entry((m.clone(), k.clone()))
                     .or_default()
                     .push((c.clone(), a.clone()));
@@ -1525,7 +1929,7 @@ mod tests {
                     tested += 1;
                     let want = refusal_for(&typed, a.clone());
                     let got = held
-                        .answer(m, Some(c), &typed, |_| false)
+                        .answer(Some(&f.level), m, Some(c), &typed, |_| false)
                         .map(|g| refusal_for(&typed, g));
                     if got.as_ref() == Some(&want) {
                         exact += 1;

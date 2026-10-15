@@ -25,9 +25,11 @@ pub struct Source {
     pub running: Vec<File>,
     pub logs: Vec<File>,
     pub stacks: Vec<File>,
-    /// each folder's `crawl/crawl.log`, the `?` probes of a crawl of the switch: read for the help
-    /// it held, and for nothing else
-    pub crawls: Vec<File>,
+    /// each crawl folder's `crawl.log`, the `?` probes of a crawl of the switch, at the level its
+    /// `level` file names: read for the help it held, and for nothing else
+    pub crawls: Vec<CrawlLog>,
+    /// each crawl folder, as `<book>-<release>/<folder>`, holding a `crawl.log` and no level: not read
+    pub unleveled: Vec<String>,
     /// the site's own designs and scripts, beside the captures folder (`../designs`): read only for
     /// the names they give
     pub designs: Vec<String>,
@@ -66,6 +68,7 @@ impl Source {
             }
         }
         src.crawls = Source::read_crawls(dir);
+        src.unleveled = Source::unleveled_crawls(dir);
         if let Ok(designs) = std::fs::read_dir(dir.join("../designs")) {
             for f in designs.flatten() {
                 if let Ok(text) = std::fs::read_to_string(f.path()) {
@@ -73,12 +76,7 @@ impl Source {
                 }
             }
         }
-        for list in [
-            &mut src.running,
-            &mut src.logs,
-            &mut src.stacks,
-            &mut src.crawls,
-        ] {
+        for list in [&mut src.running, &mut src.logs, &mut src.stacks] {
             list.sort_by(|a, b| {
                 (&a.book, &a.release, &a.name).cmp(&(&b.book, &b.release, &b.name))
             });
@@ -86,24 +84,35 @@ impl Source {
         Ok(src)
     }
 
-    /// Every `<book>-<release>/crawl/crawl.log` under `dir`, and no other file of a crawl's folder.
-    pub fn read_crawls(dir: &Path) -> Vec<File> {
+    /// The `crawl.log` of every crawl folder under `dir` whose `level` file names its level, sorted
+    /// by book, release and folder; no other file of a crawl's folder is read.
+    pub fn read_crawls(dir: &Path) -> Vec<CrawlLog> {
         let mut out = vec![];
-        for d in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let folder = d.file_name().to_string_lossy().to_string();
-            let Some((book, release)) = folder.split_once('-') else {
+        for (book, release, folder, path) in crawl_folders(dir) {
+            let Some(level) = level_of(&path) else {
                 continue;
             };
-            if let Ok(text) = std::fs::read_to_string(d.path().join("crawl").join("crawl.log")) {
-                out.push(File {
-                    book: book.into(),
-                    release: release.into(),
-                    name: "crawl.log".into(),
+            if let Ok(text) = std::fs::read_to_string(path.join("crawl.log")) {
+                out.push(CrawlLog {
+                    book,
+                    release,
+                    folder,
+                    level,
                     text,
                 });
             }
         }
         out
+    }
+
+    /// Every crawl folder under `dir` holding a `crawl.log` but no level, as
+    /// `<book>-<release>/<folder>`.
+    pub fn unleveled_crawls(dir: &Path) -> Vec<String> {
+        crawl_folders(dir)
+            .into_iter()
+            .filter(|(.., path)| path.join("crawl.log").is_file() && level_of(path).is_none())
+            .map(|(book, release, folder, _)| format!("{book}-{release}/{folder}"))
+            .collect()
     }
 
     /// The captures compiled into a build that names a captures folder.
@@ -125,6 +134,7 @@ impl Source {
             stacks: files(crate::grammars::LIVE_STACKS),
             // a crawl's log is not embedded in the binary: read from the folder it was built against
             crawls: Source::read_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
+            unleveled: Source::unleveled_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             designs: std::fs::read_dir(concat!(env!("VSWITCH_CAPTURES_DIR"), "/../designs"))
                 .into_iter()
                 .flatten()
@@ -133,6 +143,49 @@ impl Source {
                 .collect(),
         }
     }
+}
+
+/// A crawl's log and the license level of the switch it crawled.
+#[derive(Clone, Debug)]
+pub struct CrawlLog {
+    pub book: String,
+    pub release: String,
+    /// `crawl`, or `crawl-<name>` beside it for the same image at another level
+    pub folder: String,
+    pub level: String,
+    pub text: String,
+}
+
+/// (book, release, folder name, path) of each folder named `crawl` or `crawl-<name>` under a
+/// `<book>-<release>` folder of `dir`, sorted.
+fn crawl_folders(dir: &Path) -> Vec<(String, String, String, std::path::PathBuf)> {
+    let mut out = vec![];
+    for d in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let image = d.file_name().to_string_lossy().to_string();
+        let Some((book, release)) = image.split_once('-') else {
+            continue;
+        };
+        for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
+            let folder = f.file_name().to_string_lossy().to_string();
+            if (folder == "crawl" || folder.starts_with("crawl-")) && f.path().is_dir() {
+                out.push((book.to_string(), release.to_string(), folder, f.path()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The first line of a crawl folder's `level` file: a license level, lowercase letters, digits and
+/// `-`; anything else is no level.
+fn level_of(folder: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(folder.join("level")).ok()?;
+    let level = text.lines().next()?.trim().to_string();
+    let word = !level.is_empty()
+        && level
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    word.then_some(level)
 }
 
 /// What the captures of one book at one release held (`live::Held`).
@@ -147,14 +200,17 @@ pub struct HeldTable {
     pub after: Vec<(String, String)>,
     /// (mode, `help_key` of the line before `?`, the answer)
     pub help: Vec<(String, String, Vec<String>)>,
-    /// (mode, context, `context::key` of the line before `?`, the answer or refusal) from a crawl,
-    /// which asked in each submode as each of its entering lines reached it; absent from a corpus
-    /// without one
+    /// (license level, mode, context, `context::key` of the line before `?`, the answer or refusal)
+    /// from a crawl at that level, which asked in each submode as each of its entering lines reached
+    /// it; absent from a corpus without one
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub crawl: Vec<(String, String, String, Vec<String>)>,
+    pub crawl: Vec<CrawlRow>,
     /// the captures read, by name
     pub captures: Vec<String>,
 }
+
+/// A crawl's answer as the corpus holds it: (level, mode, context, key, answer).
+pub type CrawlRow = (String, String, String, String, Vec<String>);
 
 /// Commands by number, and which pairs real switches printed in one order only (`show::Orders`).
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -270,14 +326,16 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
             }
         }
     }
-    let mut crawl: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    let mut crawl: BTreeMap<(String, String, String, String), Vec<String>> = BTreeMap::new();
     for f in src
         .crawls
         .iter()
         .filter(|f| f.book == book && f.release == release)
     {
         for (mode, context, key, answer) in crawled_help(&f.text) {
-            crawl.entry((mode, context, key)).or_insert(answer);
+            crawl
+                .entry((f.level.clone(), mode, context, key))
+                .or_insert(answer);
         }
     }
     HeldTable {
@@ -288,7 +346,7 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
         help: help.into_iter().map(|((m, k), a)| (m, k, a)).collect(),
         crawl: crawl
             .into_iter()
-            .map(|((m, c, k), a)| (m, c, k, a))
+            .map(|((l, m, c, k), a)| (l, m, c, k, a))
             .collect(),
         captures,
     }
@@ -591,13 +649,17 @@ fn nvram(src: &Source, book: &str) -> Option<u64> {
 /// Every table but the command forms, which need an engine on these tables (`with_forms`).
 pub fn build(src: &Source) -> Corpus {
     let mut c = Corpus::default();
-    let keys: BTreeSet<(String, String)> = src
+    let mut keys: BTreeSet<(String, String)> = src
         .running
         .iter()
         .chain(&src.logs)
-        .chain(&src.crawls)
         .map(|f| (f.book.clone(), f.release.clone()))
         .collect();
+    keys.extend(
+        src.crawls
+            .iter()
+            .map(|f| (f.book.clone(), f.release.clone())),
+    );
     for (book, release) in &keys {
         c.held.push((
             book.clone(),
@@ -1163,7 +1225,7 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
             .retain(|(_, k, a)| !deny.hits(k) && !a.iter().any(|r| deny.hits(r)));
         // a crawl's key and context hold no address however it was typed: one that does slipped
         // past `context::values` and goes, as a capture's site words do
-        t.crawl.retain(|(_, c, k, a)| {
+        t.crawl.retain(|(_, _, c, k, a)| {
             !deny.hits(k)
                 && !deny.hits(c)
                 && !crate::context::holds_address(k)
@@ -1206,7 +1268,7 @@ pub fn leaks(c: &Corpus, deny: &Deny) -> Vec<String> {
         .held
         .iter()
         .flat_map(|(_, _, t)| &t.crawl)
-        .flat_map(|(_, ctx, k, _)| [ctx, k])
+        .flat_map(|(_, _, ctx, k, _)| [ctx, k])
         .filter(|s| crate::context::holds_address(s))
         .cloned()
         .collect();
@@ -1468,26 +1530,57 @@ mod tests {
     fn a_crawl_log_under_crawl_reaches_the_corpus_and_no_other_file_of_its_folder_does() {
         let dir = std::env::temp_dir().join(format!("vswitch-crawl-test-{}", std::process::id()));
         let folder = dir.join("c9300-17.6");
-        std::fs::create_dir_all(folder.join("crawl")).unwrap();
+        for f in [
+            "crawl",
+            "crawl-essentials",
+            "crawl-old",
+            "crawled",
+            "crawl-empty",
+        ] {
+            std::fs::create_dir_all(folder.join(f)).unwrap();
+        }
         let put = |name: &str, text: &str| std::fs::write(folder.join(name), text).unwrap();
         put("crawl/crawl.log", CRAWL);
+        put("crawl/level", "network-advantage\nset by hand\n");
         put(
             "crawl/notes.log",
             "Switch#show version\nnot a session of the crawl\n",
         );
         put("crawl/state.json", "{}");
         put(
+            "crawl-essentials/crawl.log",
+            "Switch#configure terminal\nSwitch(config)#ip ?\n  routing  Enable IP routing\nSwitch(config)#end\n",
+        );
+        put("crawl-essentials/level", "network-essentials\n");
+        // no level file, a level that is no level word, and a folder not named for a crawl
+        put("crawl-old/crawl.log", CRAWL);
+        put("crawl-empty/crawl.log", CRAWL);
+        put("crawl-empty/level", "\n");
+        put("crawled/crawl.log", CRAWL);
+        put("crawled/level", "network-advantage\n");
+        put(
             "lab-show.log",
             "lab#show vtp ?\n  status  VTP status\nlab#\n",
         );
         let src = Source::read(&dir).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(src.crawls.len(), 1);
+        let read: Vec<(&str, &str, &str, &str)> = src
+            .crawls
+            .iter()
+            .map(|f| (&f.book[..], &f.release[..], &f.folder[..], &f.level[..]))
+            .collect();
         assert_eq!(
-            (&src.crawls[0].book[..], &src.crawls[0].release[..]),
-            ("c9300", "17.6")
+            read,
+            [
+                ("c9300", "17.6", "crawl", "network-advantage"),
+                ("c9300", "17.6", "crawl-essentials", "network-essentials"),
+            ]
         );
         assert_eq!(src.crawls[0].text, CRAWL);
+        assert_eq!(
+            src.unleveled,
+            ["c9300-17.6/crawl-empty", "c9300-17.6/crawl-old"]
+        );
         let logs: Vec<&str> = src.logs.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(logs, ["lab-show.log"]);
         let built = build(&src);
@@ -1496,19 +1589,22 @@ mod tests {
             .iter()
             .find(|(b, r, _)| b == "c9300" && r == "17.6")
             .unwrap();
-        let held: Vec<(&str, &str, &str, usize)> = table
+        let held: Vec<(&str, &str, &str, &str, usize)> = table
             .crawl
             .iter()
-            .map(|(m, c, k, a)| (m.as_str(), c.as_str(), k.as_str(), a.len()))
+            .map(|(l, m, c, k, a)| (l.as_str(), m.as_str(), c.as_str(), k.as_str(), a.len()))
             .collect();
-        // the repeated row stays; `do-exec show ?` is privileged EXEC's `show ?`; a refusal is held
+        // the repeated row stays; `do-exec show ?` is privileged EXEC's `show ?`; a refusal is held;
+        // each crawl's answers under its own level
+        let adv = "network-advantage";
         assert_eq!(
             held,
             [
-                ("config", "", "", 3),
-                ("config", "", "bogus ", 1),
-                ("config-router", "router ospf", "", 1),
-                ("privileged", "", "show ", 1),
+                (adv, "config", "", "", 3),
+                (adv, "config", "", "bogus ", 1),
+                (adv, "config-router", "router ospf", "", 1),
+                (adv, "privileged", "", "show ", 1),
+                ("network-essentials", "config", "", "ip ", 1),
             ]
         );
         assert_eq!(table.help.len(), 1);
@@ -1544,12 +1640,14 @@ mod tests {
             HeldTable {
                 crawl: vec![
                     (
+                        "network-advantage".into(),
                         "config".into(),
                         "".into(),
                         "ip ".into(),
                         vec!["  routing  ok".into()],
                     ),
                     (
+                        "network-advantage".into(),
                         "config".into(),
                         "".into(),
                         "snmp ".into(),
@@ -1560,7 +1658,7 @@ mod tests {
             },
         ));
         let kept = filtered(c, &deny);
-        let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.2.as_str()).collect();
+        let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.3.as_str()).collect();
         assert_eq!(keys, ["ip "]);
         assert!(leaks(&kept, &deny).is_empty());
     }
@@ -1691,7 +1789,15 @@ mod tests {
     #[test]
     fn a_crawl_key_or_context_holding_an_address_is_dropped_and_counted_a_leak() {
         let deny = Deny::from_tokens(BTreeSet::new());
-        let entry = |c: &str, k: &str| ("config".to_string(), c.to_string(), k.to_string(), vec![]);
+        let entry = |c: &str, k: &str| {
+            (
+                "lanbase".to_string(),
+                "config".to_string(),
+                c.to_string(),
+                k.to_string(),
+                vec![],
+            )
+        };
         let table = HeldTable {
             crawl: vec![
                 entry("", "ip "),
@@ -1709,7 +1815,7 @@ mod tests {
         };
         assert_eq!(leaks(&c, &deny).len(), 4);
         let kept = filtered(c, &deny);
-        let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.2.as_str()).collect();
+        let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.3.as_str()).collect();
         assert_eq!(keys, ["ip ", "ipv6 route «ipv6»/«number» "]);
         assert!(leaks(&kept, &deny).is_empty());
     }
@@ -1725,6 +1831,7 @@ mod tests {
         assert_eq!(Corpus::from_gzip(&plain.to_gzip()).unwrap(), plain);
         let mut with = plain.clone();
         with.held[0].2.crawl.push((
+            "network-advantage".into(),
             "config".into(),
             "router bgp".into(),
             "".into(),

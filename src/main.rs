@@ -21,6 +21,7 @@ mod generate;
 mod grammars;
 mod lab;
 mod library;
+mod license;
 mod lint;
 mod live;
 mod platform;
@@ -1935,7 +1936,7 @@ fn run(args: &[String]) -> Result<bool, String> {
                         .help
                         .iter()
                         .map(|(_, _, a)| a)
-                        .chain(t.crawl.iter().map(|(_, _, _, a)| a));
+                        .chain(t.crawl.iter().map(|(.., a)| a));
                     for a in answers {
                         for r in a {
                             if let Some(w) = deny.hit(r) {
@@ -1948,6 +1949,12 @@ fn run(args: &[String]) -> Result<bool, String> {
                     println!("{n} {w}");
                 }
                 return Ok(true);
+            }
+            for f in &src.crawls {
+                println!("{}-{}/{}: {}", f.book, f.release, f.folder, f.level);
+            }
+            for f in &src.unleveled {
+                println!("{f}: no level file, not read");
             }
             let built = corpus::with_forms(corpus::build(&src), &src)?;
             let crawled = |c: &corpus::Corpus| c.held.iter().map(|(_, _, t)| t.crawl.len()).sum();

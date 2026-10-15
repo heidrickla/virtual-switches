@@ -1462,13 +1462,24 @@ impl<'a> Session<'a> {
         self.device.global.iter().any(|e| e.text.trim() == line)
     }
 
-    /// What a real switch printed for `?` after `text` in `mode` and the current context, where the
-    /// session's state leaves that answer true.
+    /// The session's license level: its running configuration's `license boot level`, else its
+    /// book's default (`license::of`); it picks which crawls answer `?`.
+    fn level(&self) -> Option<String> {
+        let book = crate::grammars::book_of(&self.engine.grammar.platform)?;
+        crate::license::of(book, self.device.global.iter().map(|e| e.text.as_str()))
+    }
+
+    /// What a real switch of this image printed for `?` after `text` in `mode` and the current
+    /// context, where the session's state leaves that answer true.
     fn held_help(&self, mode: &str, text: &str) -> Option<&Vec<String>> {
         let context = self.context();
-        self.engine
-            .held
-            .help_for(mode, context.as_deref(), text, |l| self.running_has(l))
+        self.engine.held.help_for(
+            self.level().as_deref(),
+            mode,
+            context.as_deref(),
+            text,
+            |l| self.running_has(l),
+        )
     }
 
     /// What may follow the whole tokens `done` at `mode`, and whether the line is complete there; at
@@ -1533,11 +1544,13 @@ impl<'a> Session<'a> {
             return vec!["% Unrecognized command".into()];
         }
         // a held answer, abbreviations read as their keywords; else a keyword-set command after
-        // several picks, from what it offered after each alone
-        if let Some(lines) = self
-            .engine
-            .held
-            .answer(mode, context, text, |l| self.running_has(l))
+        // several picks, from what it offered after each alone; the image's own first, then a donor's
+        if let Some(lines) =
+            self.engine
+                .held
+                .answer(self.level().as_deref(), mode, context, text, |l| {
+                    self.running_has(l)
+                })
         {
             return lines;
         }
@@ -3514,20 +3527,146 @@ mod tests {
         transcript(sections)
     }
 
-    /// A C9300 at 17.6 whose books are set aside for what `crawl()` held.
+    const ADVANTAGE: &str = "network-advantage";
+    const LICENSE: &str = "license boot level network-advantage addon dna-advantage";
+
+    /// A C9300 at 17.6 whose books are set aside for what `crawl()` held, at network-advantage.
     fn crawled() -> Engine {
         let r = crate::release::Release::parse("17.6").unwrap();
         let grammar = crate::grammars::grammar("c9300", r).unwrap();
-        let table = crate::corpus::HeldTable {
-            crawl: crate::corpus::crawled_help(&crawl()),
-            ..Default::default()
-        };
         let c = crate::corpus::Corpus {
-            held: vec![("c9300".into(), "17.6".into(), table)],
+            held: vec![("c9300".into(), "17.6".into(), crawled_table())],
             ..Default::default()
         };
         let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
         Engine::with_held(grammar, held)
+    }
+
+    /// `crawl()`'s answers at network-advantage, as the corpus holds them.
+    fn crawled_table() -> crate::corpus::HeldTable {
+        crate::corpus::HeldTable {
+            crawl: crate::corpus::crawled_help(&crawl())
+                .into_iter()
+                .map(|(m, c, k, a)| (ADVANTAGE.to_string(), m, c, k, a))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_session_s_level_is_its_license_line_else_its_book_s_default() {
+        let at = |book: &str, release: &str, lines: &[&str]| {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar(book, r).unwrap());
+            let s = configured(&e, lines);
+            s.level()
+        };
+        assert_eq!(
+            at("c9300", "17.6", &[]).as_deref(),
+            Some("network-advantage")
+        );
+        assert_eq!(
+            at("c9300", "17.6", &[LICENSE]).as_deref(),
+            Some("network-advantage")
+        );
+        assert_eq!(
+            at(
+                "c9200",
+                "17.15",
+                &["license boot level network-essentials addon dna-essentials"]
+            )
+            .as_deref(),
+            Some("network-essentials")
+        );
+        assert_eq!(
+            at("c9400", "17.5", &[]).as_deref(),
+            Some("network-advantage")
+        );
+        assert_eq!(
+            at("ie3300", "17.6", &[]).as_deref(),
+            Some("network-essentials")
+        );
+        assert_eq!(at("c2960x", "15.2(7)E", &[]).as_deref(), Some("lanbase"));
+        assert_eq!(at("c2960", "15.0(2)SE", &[]).as_deref(), Some("lanbase"));
+    }
+
+    #[test]
+    fn an_image_s_own_crawl_answers_at_its_level_alone() {
+        let (e, b) = (crawled(), books_17_6());
+        let books = configured(&b, &[]).help("alias ");
+        // a fresh session states no level and runs network-advantage, as stated does
+        for lines in [&[][..], &[LICENSE][..]] {
+            let held = configured(&e, lines).help("alias ");
+            assert_eq!(held[0].split_whitespace().next(), Some("exec"), "{lines:?}");
+            assert_ne!(held, books);
+        }
+        // another level: the books
+        let essentials = "license boot level network-essentials addon dna-essentials";
+        assert_eq!(configured(&e, &[essentials]).help("alias "), books);
+        let in_ospf = |lines: &[&str]| {
+            let mut all = lines.to_vec();
+            all.push("router ospf 1");
+            configured(&e, &all).help("")
+        };
+        assert_eq!(in_ospf(&[]), in_ospf(&[LICENSE]));
+        assert_ne!(in_ospf(&[essentials]), in_ospf(&[]));
+    }
+
+    /// A C9200 at 17.15 whose donor is `crawl()`'s C9300 17.6 crawl at network-advantage, with that
+    /// mapping on where `on`.
+    fn lent(on: bool) -> Engine {
+        let donor = crawled_table();
+        let c = crate::corpus::Corpus {
+            held: vec![
+                ("c9200".into(), "17.15".into(), Default::default()),
+                ("c9300".into(), "17.6".into(), donor),
+            ],
+            ..Default::default()
+        };
+        let r = crate::release::Release::parse("17.15").unwrap();
+        let grammar = crate::grammars::grammar("c9200", r).unwrap();
+        let enabled: &[(&str, &str, &str)] = if on {
+            &[("c9200", "17.15", ADVANTAGE)]
+        } else {
+            &[]
+        };
+        let held = crate::live::Held::with_donors(&c, &grammar.platform, &grammar.release, enabled);
+        Engine::with_held(grammar, held)
+    }
+
+    #[test]
+    fn a_donor_crawl_answers_a_switch_at_its_level_where_its_mapping_is_on() {
+        let (on, off) = (lent(true), lent(false));
+        let ask = |e: &Engine, lines: &[&str], typed: &str| configured(e, lines).help(typed);
+        let held = ask(&on, &[LICENSE], "alias ");
+        assert_eq!(held[0].split_whitespace().next(), Some("exec"));
+        assert_ne!(held, ask(&off, &[LICENSE], "alias "));
+        // an abbreviation read against the donor's answers
+        let aaa = ask(&on, &[LICENSE], "aa ");
+        assert_eq!(aaa[0].split_whitespace().next(), Some("new-model"));
+        assert_ne!(aaa, ask(&off, &[LICENSE], "aa "));
+        // in the donor's context only
+        let ospf = ask(&on, &[LICENSE, "router ospf 1"], "");
+        assert_eq!(ospf[0].split_whitespace().next(), Some("area"));
+        assert_eq!(
+            ask(&on, &[LICENSE, "router rip"], ""),
+            ask(&off, &[LICENSE, "router rip"], "")
+        );
+        // a fresh session runs network-advantage; at another level, the books
+        assert_eq!(ask(&on, &[], "alias "), held);
+        let essentials = ["license boot level network-essentials addon dna-essentials"];
+        assert_eq!(
+            ask(&on, &essentials, "alias "),
+            ask(&off, &essentials, "alias ")
+        );
+        // a donor's answer makes no line taken: Enter reads the books as before
+        for line in ["alias exec x show version", "bogus line"] {
+            assert_eq!(
+                configured(&on, &[LICENSE]).type_line(line),
+                configured(&off, &[LICENSE]).type_line(line),
+                "{line}"
+            );
+        }
     }
 
     fn books_17_6() -> Engine {
@@ -4088,6 +4227,303 @@ mod tests {
                 for x in ex {
                     println!("    {x}");
                 }
+            }
+        }
+    }
+
+    /// A hardware stack for an audit's session of each book.
+    fn audit_stack(book: &str) -> crate::platform::Stack {
+        let named = match book {
+            "c2960" => "WS-C2960G-8TC-L",
+            "c2960x" => "WS-C2960X-48FPD-L",
+            "c9200" => "C9200-48P",
+            "c9400" => "1=C9400-LC-48T,3=C9400-SUP-1XL",
+            _ => "C9300-48P",
+        };
+        crate::platform::parse_stack(named).unwrap()
+    }
+
+    /// A session of `e` in `mode` (EXEC or privileged EXEC) at `level`, stated by a license line
+    /// where the book has no default of that level.
+    fn audit_session<'a>(e: &'a Engine, book: &str, level: &str, mode: &str) -> Session<'a> {
+        let mut s = Session::new(e, Device::new(audit_stack(book)));
+        s.type_line("enable");
+        if crate::license::default_for(book) != Some(level) {
+            for line in [
+                "configure terminal",
+                &format!(
+                    "license boot level {level} addon dna-{}",
+                    level.trim_start_matches("network-")
+                ),
+                "end",
+            ] {
+                let (out, r) = s.type_line(line);
+                assert_eq!(r, Result::Ok, "{book} {line}: {out:?}");
+            }
+        }
+        if mode == "exec" {
+            s.type_line("disable");
+        }
+        assert_eq!(s.mode(), mode);
+        s
+    }
+
+    /// The committed corpus with the crawls under `VSWITCH_CRAWLS` compiled into it.
+    fn with_crawls(dir: &str) -> crate::corpus::Corpus {
+        let mut c = crate::corpus::get().clone();
+        let src = crate::corpus::Source {
+            crawls: crate::corpus::Source::read_crawls(std::path::Path::new(dir)),
+            ..Default::default()
+        };
+        for f in &src.crawls {
+            println!(
+                "crawl {}-{}/{} at {}: {} bytes",
+                f.book,
+                f.release,
+                f.folder,
+                f.level,
+                f.text.len()
+            );
+        }
+        for (b, r, t) in crate::corpus::build(&src).held {
+            let mut keys: BTreeMap<&str, usize> = BTreeMap::new();
+            for e in &t.crawl {
+                *keys.entry(e.0.as_str()).or_default() += 1;
+            }
+            println!("crawl {b}-{r} keys held by level: {keys:?}");
+            match c.held.iter_mut().find(|(cb, cr, _)| *cb == b && *cr == r) {
+                Some((.., held)) => held.crawl = t.crawl,
+                None => c.held.push((b, r, t)),
+            }
+        }
+        c
+    }
+
+    /// An answer's rows, each its word and description with continuation lines joined and spacing
+    /// collapsed, as a console of any width prints them; headers and blank lines left out.
+    fn audit_rows(answer: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for l in answer {
+            let indent = l.len() - l.trim_start_matches(' ').len();
+            let words = l.split_whitespace().collect::<Vec<_>>().join(" ");
+            if words.is_empty() || indent < 2 {
+                if indent == 0 && !words.is_empty() && !words.ends_with(':') {
+                    out.push(words);
+                }
+                continue;
+            }
+            match out.last_mut() {
+                Some(last) if indent > 2 => {
+                    last.push(' ');
+                    last.push_str(&words);
+                }
+                _ => out.push(words),
+            }
+        }
+        out
+    }
+
+    /// Keywords both answers offer, and how many each offers.
+    fn overlap(truth: &[String], got: &[String]) -> (usize, usize, usize) {
+        let t: BTreeSet<String> = crate::live::keywords(truth).into_iter().collect();
+        let g: BTreeSet<String> = crate::live::keywords(got).into_iter().collect();
+        (t.intersection(&g).count(), t.len(), g.len())
+    }
+
+    /// Masked truth: each `?` answer the committed corpus holds from an image's captures, asked of the
+    /// full resolver with that image's capture answers set aside and its donor mapping on at the
+    /// image's level (the captures' `license boot level`, else the book's default), and of the books
+    /// alone; with the crawls under `VSWITCH_CRAWLS`. A Catalyst 9000 image at another level is also
+    /// asked at network-advantage, as a level mismatch.
+    #[test]
+    #[ignore = "an audit: reads the crawl logs VSWITCH_CRAWLS names"]
+    fn donor_answers_against_the_captures_answers() {
+        let Ok(dir) = std::env::var("VSWITCH_CRAWLS") else {
+            return;
+        };
+        let c = with_crawls(&dir);
+        for (book, release, table) in &crate::corpus::get().held {
+            if table.help.is_empty() {
+                continue;
+            }
+            let top = table
+                .lines
+                .iter()
+                .filter(|(k, _)| k.is_empty())
+                .map(|(_, l)| l.as_str());
+            let Some(level) = crate::license::of(book, top) else {
+                println!("{book} {release}: no level");
+                continue;
+            };
+            let r = crate::release::Release::parse(release).unwrap();
+            let grammar = crate::grammars::grammar(book, r).unwrap();
+            let mut books_held =
+                crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+            books_held.help.clear();
+            books_held.crawls.clear();
+            let books = Engine::with_held(grammar.clone(), books_held);
+            let mut runs = vec![(level.clone(), "")];
+            let mismatch = "network-advantage";
+            let crawled = |b: &str, r: &str, l: &str| {
+                c.held
+                    .iter()
+                    .any(|(cb, cr, t)| cb == b && cr == r && t.crawl.iter().any(|e| e.0 == l))
+            };
+            let lent = crate::license::donor(book, release, &level)
+                .is_some_and(|d| crawled(d.0, d.1, d.2));
+            if !lent && !crawled(book, release, &level) {
+                println!("{book} {release} at {level}: no donor at this level");
+            }
+            if level != mismatch && crate::license::donor(book, release, mismatch).is_some() {
+                runs.push((mismatch.to_string(), " (level mismatch)"));
+            }
+            for (run_level, label) in runs {
+                let on = [(book.as_str(), release.as_str(), run_level.as_str())];
+                let mut held =
+                    crate::live::Held::with_donors(&c, &grammar.platform, &grammar.release, &on);
+                held.help.clear();
+                let lent = Engine::with_held(grammar.clone(), held);
+                let donor = crate::license::donor(book, release, &run_level)
+                    .map_or("none".to_string(), |d| format!("{}-{} {}", d.0, d.1, d.2));
+                let (mut exact, mut b_exact, mut keys) = (0, 0, 0);
+                let (mut row_hit, mut b_row_hit, mut row_n) = (0, 0, 0);
+                let (mut hit, mut t_n, mut g_n) = (0, 0, 0);
+                let (mut b_hit, mut b_t, mut b_g) = (0, 0, 0);
+                let mut tiers: BTreeMap<&str, usize> = BTreeMap::new();
+                let mut misses = vec![];
+                let mut differs = vec![];
+                for (mode, key, truth) in &table.help {
+                    let s = audit_session(&lent, book, &run_level, mode);
+                    let b = audit_session(&books, book, &run_level, mode);
+                    let got = s.help(key);
+                    let plain = b.help(key);
+                    let tier =
+                        match lent
+                            .held
+                            .answered(Some(&run_level), mode, Some(""), key, |_| false)
+                        {
+                            Some((crate::live::Tier::Own, _)) => "own crawl",
+                            Some((crate::live::Tier::Donor, a)) if crate::live::is_refusal(&a) => {
+                                misses.push(format!("{mode} {key:?}: donor refuses {:?}", a[0]));
+                                "donor"
+                            }
+                            Some((crate::live::Tier::Donor, _)) => "donor",
+                            None => {
+                                misses.push(format!("{mode} {key:?}: no donor answer"));
+                                "books"
+                            }
+                        };
+                    *tiers.entry(tier).or_default() += 1;
+                    keys += 1;
+                    let (want, rows) = (audit_rows(truth), audit_rows(&got));
+                    let b_rows = audit_rows(&plain);
+                    exact += usize::from(rows == want);
+                    b_exact += usize::from(b_rows == want);
+                    row_hit += want.iter().filter(|r| rows.contains(r)).count();
+                    b_row_hit += want.iter().filter(|r| b_rows.contains(r)).count();
+                    row_n += want.len();
+                    if rows != want && differs.len() < 3 {
+                        let at = rows.iter().zip(&want).position(|(g, t)| g != t);
+                        differs.push(format!(
+                            "{mode} {key:?}: {} rows vs {}, first difference {:?}",
+                            rows.len(),
+                            want.len(),
+                            at.map(|i| (&rows[i], &want[i]))
+                        ));
+                    }
+                    let (h, t, g) = overlap(truth, &got);
+                    (hit, t_n, g_n) = (hit + h, t_n + t, g_n + g);
+                    let (h, t, g) = overlap(truth, &plain);
+                    (b_hit, b_t, b_g) = (b_hit + h, b_t + t, b_g + g);
+                }
+                let pct = |a: usize, b: usize| {
+                    if b == 0 {
+                        "-".to_string()
+                    } else {
+                        format!("{:.0}%", 100.0 * a as f64 / b as f64)
+                    }
+                };
+                println!(
+                    "{book} {release} at {run_level}{label}, context '': donor {donor}; {keys} keys, answered by {tiers:?}"
+                );
+                println!(
+                    "  resolver: {exact} of {keys} answers row for row, {row_hit} of {row_n} rows; keyword recall {} precision {} ({hit} of {t_n} truth, {g_n} offered)",
+                    pct(hit, t_n),
+                    pct(hit, g_n)
+                );
+                println!(
+                    "  books:    {b_exact} of {keys} answers row for row, {b_row_hit} of {row_n} rows; keyword recall {} precision {} ({b_hit} of {b_t} truth, {b_g} offered)",
+                    pct(b_hit, b_t),
+                    pct(b_hit, b_g)
+                );
+                for m in misses.iter().chain(&differs) {
+                    println!("    {m}");
+                }
+            }
+        }
+    }
+
+    /// Enter on a donor's own image: each keyword its crawl offers at the root of global
+    /// configuration and privileged EXEC, typed alone there through the shell, counted by whether the
+    /// shell takes it, answers `% Incomplete command` or refuses it with `% Invalid input`.
+    #[test]
+    #[ignore = "an audit: reads the crawl logs VSWITCH_CRAWLS names"]
+    fn a_donor_s_root_keywords_typed_on_its_own_image() {
+        let Ok(dir) = std::env::var("VSWITCH_CRAWLS") else {
+            return;
+        };
+        let donors: BTreeSet<crate::license::Image> =
+            crate::license::DONORS.iter().map(|d| d.2).collect();
+        for f in crate::corpus::Source::read_crawls(std::path::Path::new(&dir)) {
+            if !donors.contains(&(f.book.as_str(), f.release.as_str(), f.level.as_str())) {
+                continue;
+            }
+            let r = crate::release::Release::parse(&f.release).unwrap();
+            let e = Engine::new(crate::grammars::grammar(&f.book, r).unwrap());
+            let stack = match f.book.as_str() {
+                "c2960" => "WS-C2960G-8TC-L",
+                _ => "C9300-24T",
+            };
+            let mut roots: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (m, c, k, a) in crate::corpus::crawled_help(&f.text) {
+                if c.is_empty() && k.is_empty() && matches!(m.as_str(), "config" | "privileged") {
+                    roots.entry(m).or_insert_with(|| crate::live::keywords(&a));
+                }
+            }
+            for (mode, words) in roots {
+                let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
+                let mut refused = vec![];
+                for w in &words {
+                    let mut s = Session::new(
+                        &e,
+                        Device::new(crate::platform::parse_stack(stack).unwrap()),
+                    );
+                    s.type_line("enable");
+                    if mode == "config" {
+                        s.type_line("configure terminal");
+                    }
+                    let (out, r) = s.type_line(w);
+                    let has = |p: &str| out.iter().any(|l| l.contains(p));
+                    let class = if has("% Invalid input") {
+                        refused.push(w.clone());
+                        "refused, % Invalid input"
+                    } else if has("% Incomplete command") {
+                        "% Incomplete command"
+                    } else if r == Result::Ok {
+                        "taken"
+                    } else {
+                        "other error"
+                    };
+                    *tally.entry(class).or_default() += 1;
+                }
+                println!(
+                    "{}-{} {} {mode}: {} root keywords: {tally:?}",
+                    f.book,
+                    f.release,
+                    f.level,
+                    words.len()
+                );
+                println!("  first refused: {:?}", &refused[..refused.len().min(30)]);
             }
         }
     }
