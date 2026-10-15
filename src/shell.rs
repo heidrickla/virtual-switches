@@ -1532,18 +1532,12 @@ impl<'a> Session<'a> {
         {
             return vec!["% Unrecognized command".into()];
         }
-        let held = self
-            .engine
-            .held
-            .help_for(mode, context, text, |l| self.running_has(l));
-        if let Some(lines) = held {
-            return lines.clone();
-        }
-        // a keyword-set command after several picks, from what it offered after each alone
+        // a held answer, abbreviations read as their keywords; else a keyword-set command after
+        // several picks, from what it offered after each alone
         if let Some(lines) = self
             .engine
             .held
-            .derived_help(mode, context, text, |l| self.running_has(l))
+            .answer(mode, context, text, |l| self.running_has(l))
         {
             return lines;
         }
@@ -3385,6 +3379,14 @@ mod tests {
                 ],
             ),
             (
+                "Switch(config)#alias ?",
+                &[
+                    "  exec          Exec (prompt) mode",
+                    "  filter        Filter mode",
+                    "  filter-group  Filter group mode",
+                ],
+            ),
+            (
                 "Switch(config)#snmp-server enable traps stackwise ?",
                 &[
                     "  member-upgrade-notification  Enable STACKWISE member to be reloaded for upgrade trap",
@@ -3462,6 +3464,10 @@ mod tests {
             (
                 "Switch(config-router)# ?",
                 &["  area  OSPF area parameters"],
+            ),
+            (
+                "Switch(config-router)#area ?",
+                &["  <0-4294967295>  OSPF area ID as a decimal value"],
             ),
             ("Switch(config-router)#exit", &[]),
             ("Switch(config)#router bgp 65000", &[]),
@@ -3696,9 +3702,34 @@ mod tests {
             "member-upgrade-notification port-change ",
             "port-change member-upgrade-notification ",
             "PORT-CHANGE  member-upgrade-notification ",
+            // a pick abbreviated as the answer before it reads it
+            "member-upgrade-notification port ",
+            "port-c member-up ",
         ] {
             assert_eq!(s.help(&format!("{STACKWISE}{picks}")), want, "{picks}");
         }
+    }
+
+    #[test]
+    fn an_abbreviated_keyword_takes_the_held_answer_for_it_in_the_session_s_context() {
+        let e = crawled();
+        let in_ospf = configured(&e, &["router ospf 1"]);
+        for typed in ["ar ", "AR  ", "area "] {
+            assert_eq!(
+                in_ospf.help(typed),
+                ["  <0-4294967295>  OSPF area ID as a decimal value"],
+                "{typed}"
+            );
+        }
+        // BGP's `?` offers no keyword `ar` begins and its `area ?` is not held: the books answer
+        let books = configured(&books_17_6(), &["router bgp 65000"]).help("ar ");
+        assert_eq!(configured(&e, &["router bgp 65000"]).help("ar "), books);
+        // the start of two keywords is refused, quoting the line typed
+        let s = configured(&e, &[]);
+        assert_eq!(
+            s.help("alias  fil "),
+            ["% Ambiguous command:  \"alias  fil \""]
+        );
     }
 
     #[test]
@@ -3726,8 +3757,6 @@ mod tests {
             "new-master ring-redundant ",
             // `new-member ?` was never asked
             "new-master new-member ",
-            // an abbreviated pick is not looked up
-            "member-upgrade-notification port ",
         ] {
             let typed = format!("{STACKWISE}{picks}");
             assert_eq!(s.help(&typed), books.help(&typed), "{picks}");
@@ -3985,5 +4014,81 @@ mod tests {
         assert_ne!(s.type_line("d show running-config").1, Result::Ok);
         // a caret after an abbreviated `do-exec` stands under the refused word
         assert_eq!(caret_at(&s.type_line("do-ex shw run").0), 23);
+    }
+
+    /// Whether the books' keywords could stand in for a held answer's where none is held: over the
+    /// crawl logs under `VSWITCH_CRAWLS`, each held answer in global configuration and privileged EXEC
+    /// with no context, each keyword row cut to its shortest unique start among the answer's keyword
+    /// rows, read against the keywords the books offer after the same line (`context::reads`).
+    #[test]
+    #[ignore = "an audit: reads the crawl logs VSWITCH_CRAWLS names"]
+    fn the_books_keywords_against_the_held_ones() {
+        use crate::context::{Reads, reads};
+        let Ok(dir) = std::env::var("VSWITCH_CRAWLS") else {
+            return;
+        };
+        for f in crate::corpus::Source::read_crawls(std::path::Path::new(&dir)) {
+            let (book, stack) = match f.book.as_str() {
+                "c2960" => ("c2960", "WS-C2960X-48FPD-L"),
+                _ => ("c9300", "C9300-48P"),
+            };
+            let r = crate::release::Release::parse(&f.release).unwrap();
+            let e = Engine::new(crate::grammars::grammar(book, r).unwrap());
+            let mut s = Session::new(
+                &e,
+                Device::new(crate::platform::parse_stack(stack).unwrap()),
+            );
+            s.type_line("enable");
+            let mut tally: BTreeMap<&str, (usize, Vec<String>)> = BTreeMap::new();
+            let mut seen = BTreeSet::new();
+            for (m, c, k, a) in crate::corpus::crawled_help(&f.text) {
+                if !c.is_empty()
+                    || !matches!(m.as_str(), "config" | "privileged")
+                    || !k.ends_with(' ') && !k.is_empty()
+                    || !seen.insert((m.clone(), k.clone()))
+                {
+                    continue;
+                }
+                let held: Vec<String> = crate::live::keywords(&a);
+                let toks = cli::tokens(&k);
+                let books: Vec<String> = s
+                    .offered_at(&m, &toks)
+                    .0
+                    .into_iter()
+                    .filter(|o| o.kind != Offered::Placeholder)
+                    .map(|o| o.shown)
+                    .collect();
+                let held_ref: Vec<&str> = held.iter().map(String::as_str).collect();
+                let books_ref: Vec<&str> = books.iter().map(String::as_str).collect();
+                for w in &held {
+                    let Some(p) = (1..=w.len())
+                        .filter(|&n| w.is_char_boundary(n))
+                        .map(|n| &w[..n])
+                        .find(|p| matches!(reads(p, &held_ref), Reads::One(_)) || *p == w.as_str())
+                    else {
+                        continue;
+                    };
+                    let class = match reads(p, &books_ref) {
+                        Reads::One(x) if x.eq_ignore_ascii_case(w) => "the same keyword",
+                        Reads::Exact if p.eq_ignore_ascii_case(w) => "the same keyword",
+                        Reads::One(_) | Reads::Exact => "another keyword",
+                        Reads::Several => "ambiguous in the books",
+                        Reads::None => "no keyword in the books",
+                    };
+                    let t = tally.entry(class).or_default();
+                    t.0 += 1;
+                    if t.1.len() < 4 && class != "the same keyword" {
+                        t.1.push(format!("{m} {k:?} {p:?} for {w:?}"));
+                    }
+                }
+            }
+            println!("{}-{}", f.book, f.release);
+            for (class, (n, ex)) in tally {
+                println!("  {class}: {n}");
+                for x in ex {
+                    println!("    {x}");
+                }
+            }
+        }
     }
 }

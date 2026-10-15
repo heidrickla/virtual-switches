@@ -61,6 +61,21 @@ pub fn refusal_for(typed: &str, answer: Vec<String>) -> Vec<String> {
     }
 }
 
+/// A line typed before `?` as the held answers read it (`Held::read`).
+#[derive(Debug, PartialEq, Eq)]
+enum Read {
+    /// the line, each abbreviated keyword written whole
+    Line(String),
+    /// a word begins two keywords or more and is neither
+    Ambiguous,
+}
+
+/// The held answer for an ambiguous line, which `refusal_for` quotes as typed.
+fn ambiguous() -> &'static Vec<String> {
+    static A: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    A.get_or_init(|| vec![crate::corpus::AMBIGUOUS.to_string()])
+}
+
 /// Keyword descriptions by (`help_mode`, `help_key` of the line before `?`, keyword).
 pub type Described = BTreeMap<(String, String, String), String>;
 
@@ -345,12 +360,113 @@ impl Held {
     /// every context; a crawl's holds in the context it was asked in, and in no other: where a crawl
     /// answered that mode and text under other contexts only, there is no held answer. A crawl's
     /// answer that a state predicate ends (`context::STATE_PREDICATES`) is no held answer either.
+    /// The line is read with each keyword whole (`read`): a line held as typed is its own answer, an
+    /// abbreviation that begins several keywords is refused as ambiguous.
     pub fn help_for(
         &self,
         mode: &str,
         context: Option<&str>,
         text: &str,
         configured: impl Fn(&str) -> bool,
+    ) -> Option<&Vec<String>> {
+        if let Some(a) = self.held_as_typed(mode, context, text, &configured) {
+            return Some(a);
+        }
+        match self.read(mode, context, text, &configured) {
+            Read::Ambiguous => Some(ambiguous()),
+            Read::Line(line) if line != text => {
+                self.held_as_typed(mode, context, &line, &configured)
+            }
+            Read::Line(_) => None,
+        }
+    }
+
+    /// `help_for`, else `derived_help`: what the shell takes before the books.
+    pub fn answer(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: impl Fn(&str) -> bool,
+    ) -> Option<Vec<String>> {
+        self.help_for(mode, context, text, &configured)
+            .cloned()
+            .or_else(|| self.derived_help(mode, context, text, &configured))
+    }
+
+    /// `text` with each word typed before the last space that begins exactly one keyword the held
+    /// answer for the line before it offers (`help_for`, else `derived`, through the words already
+    /// read) written as that keyword, as IOS takes a unique start of a keyword wherever one is
+    /// expected (`ip acc ?` answers as `ip access-list ?`). A word that is a keyword whole, begins
+    /// none (a value), stands where no answer is held or is followed by a held answer is left as
+    /// typed, and the words after it are read on; a word beginning two keywords or more, none of
+    /// them whole, makes the line ambiguous.
+    /// A word still being typed (no space after it) is left as typed.
+    fn read(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: &dyn Fn(&str) -> bool,
+    ) -> Read {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let whole = text.ends_with(char::is_whitespace);
+        let complete = if whole {
+            words.len()
+        } else {
+            words.len().saturating_sub(1)
+        };
+        let mut out: Vec<String> = vec![];
+        for (i, w) in words.iter().enumerate() {
+            if i >= complete {
+                out.push(w.to_string());
+                continue;
+            }
+            let before = if out.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", out.join(" "))
+            };
+            let held = self
+                .held_as_typed(mode, context, &before, configured)
+                .cloned()
+                .or_else(|| {
+                    derived(&before, |t| {
+                        self.held_as_typed(mode, context, t, configured)
+                    })
+                });
+            // a word the switch answered after is one it took as typed, a keyword `?` leaves out
+            // (the C9300's `ipv6 nd ra`, beside `ra-throttler` and `raguard`) or a value
+            let took = || {
+                self.held_as_typed(mode, context, &format!("{before}{w} "), configured)
+                    .is_some_and(|a| !is_refusal(a))
+            };
+            let Some(held) = held.filter(|_| !took()) else {
+                out.push(w.to_string());
+                continue;
+            };
+            let known = keywords(&held);
+            let known: Vec<&str> = known.iter().map(String::as_str).collect();
+            match crate::context::reads(w, &known) {
+                crate::context::Reads::One(k) => out.push(k.to_string()),
+                crate::context::Reads::Several => return Read::Ambiguous,
+                _ => out.push(w.to_string()),
+            }
+        }
+        let mut line = out.join(" ");
+        if whole && !line.is_empty() {
+            line.push(' ');
+        }
+        Read::Line(line)
+    }
+
+    /// `help_for` for the line as typed, its words as they stand.
+    fn held_as_typed(
+        &self,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: &dyn Fn(&str) -> bool,
     ) -> Option<&Vec<String>> {
         let key = (mode.to_string(), help_key(text));
         let crawled = (mode.to_string(), crate::context::key(text));
@@ -370,7 +486,8 @@ impl Held {
 
     /// What a real switch would print for `?` after `text` where no answer for it is held: a
     /// keyword-set command's answer after several picks, from its answers after each pick alone
-    /// (`derived`), each part held as `help_for` holds it.
+    /// (`derived`), the line read with each keyword whole (`read`) and each part held as `help_for`
+    /// holds it.
     pub fn derived_help(
         &self,
         mode: &str,
@@ -378,7 +495,10 @@ impl Held {
         text: &str,
         configured: impl Fn(&str) -> bool,
     ) -> Option<Vec<String>> {
-        derived(text, |t| self.help_for(mode, context, t, &configured))
+        let Read::Line(line) = self.read(mode, context, text, &configured) else {
+            return None;
+        };
+        derived(&line, |t| self.held_as_typed(mode, context, t, &configured))
     }
 
     /// Whether a real switch held `line` under a block of this kind ("" at the top level).
@@ -476,6 +596,16 @@ fn keyword(word: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || "_./:-<>".contains(c));
     !(word == "|" || word.starts_with('<') || caps)
+}
+
+/// The keywords a `?` answer offers, in its order (`keyword`); a refusal offers none.
+pub fn keywords(answer: &[String]) -> Vec<String> {
+    rows(answer)
+        .iter()
+        .map(|r| r.word)
+        .filter(|w| keyword(w))
+        .map(str::to_string)
+        .collect()
 }
 
 /// The words an answer offers, `<cr>` left out.
@@ -855,6 +985,221 @@ mod tests {
         }
     }
 
+    /// A crawl's answers in global configuration with no context, as (key, rows).
+    fn crawled(answers: &[(&str, &[&str])]) -> Held {
+        let mut h = Held::default();
+        for (k, rows) in answers {
+            h.crawl.insert(
+                ("config".into(), k.to_string()),
+                vec![("".into(), rows.iter().map(|r| r.to_string()).collect())],
+            );
+        }
+        h
+    }
+
+    const TOP: (&str, &[&str]) = (
+        "",
+        &[
+            "  interface  Select an interface to configure",
+            "  ip         Global IP configuration subcommands",
+            "  ipv6       Global IPv6 configuration commands",
+            "  vlan       Vlan commands",
+        ],
+    );
+    const IP: (&str, &[&str]) = (
+        "ip ",
+        &["  access-list  Named access-list", "  address      Address"],
+    );
+    const ACL: (&str, &[&str]) = (
+        "ip access-list ",
+        &[
+            "  extended  Extended Access List",
+            "  standard  Standard Access List",
+        ],
+    );
+
+    #[test]
+    fn an_abbreviated_keyword_reaches_the_held_answer_for_the_keyword() {
+        let h = crawled(&[TOP, IP, ACL]);
+        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        let want = Some(ACL.1.iter().map(|r| r.to_string()).collect::<Vec<_>>());
+        for typed in ["ip acc ", "IP  ACC ", "ip ac ", "ip access-list "] {
+            assert_eq!(ask(typed), want, "{typed}");
+        }
+        // a word that begins no keyword, and a word still being typed, are left as they are
+        assert_eq!(ask("ip a-l "), None);
+        assert_eq!(ask("ip acc"), None);
+        // the derivation and the shell's order take the same reading
+        assert_eq!(h.answer("config", Some(""), "ip acc ", |_| false), want);
+    }
+
+    #[test]
+    fn a_keyword_typed_whole_wins_over_the_longer_keywords_it_begins() {
+        let h = crawled(&[TOP, IP, ("ipv6 ", &["  route  Configure static routes"])]);
+        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        assert_eq!(
+            ask("ip "),
+            Some(vec![IP.1[0].to_string(), IP.1[1].to_string()])
+        );
+        assert_eq!(
+            ask("ipv "),
+            Some(vec!["  route  Configure static routes".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_start_of_several_keywords_is_refused_as_the_switch_refuses_it() {
+        let h = crawled(&[
+            TOP,
+            IP,
+            (
+                "alias ",
+                &[
+                    "  exec          Exec (prompt) mode",
+                    "  filter        Filter",
+                    "  filter-group  Filter group",
+                ],
+            ),
+            ("alias filter ", &[crate::corpus::AMBIGUOUS]),
+        ]);
+        let ask = |t: &str| {
+            h.help_for("config", Some(""), t, |_| false)
+                .map(|a| refusal_for(t, a.clone()))
+        };
+        // at the end of the line and before other words, the whole line quoted as typed
+        for typed in ["i ", "i access-list ", "alias fil ", "Alias  Fil  x "] {
+            assert_eq!(
+                ask(typed),
+                Some(vec![format!("% Ambiguous command:  \"{typed}\"")]),
+                "{typed}"
+            );
+        }
+        // a keyword typed whole that begins another is the switch's held answer for it
+        assert_eq!(
+            ask("alias filter "),
+            Some(vec!["% Ambiguous command:  \"alias filter \"".to_string()])
+        );
+        assert_eq!(ask("alias filter-g "), None);
+    }
+
+    #[test]
+    fn a_value_is_left_as_typed_and_the_words_after_it_are_read() {
+        let h = crawled(&[
+            TOP,
+            (
+                "vlan ",
+                &[
+                    "  <1-4094>    VLAN ID",
+                    "  access-map  Create vlan access-map",
+                ],
+            ),
+            (
+                "access-class ",
+                &[
+                    "  <1-199>  IP access list",
+                    "  WORD     Access-list name",
+                    "  in       Filter incoming connections",
+                    "  out      Filter outgoing connections",
+                ],
+            ),
+            ("access-class 1 ", &["  in   Filter incoming connections"]),
+            ("access-class 1 in ", &["  <cr>"]),
+            ("vlan 10 ", &["  <cr>"]),
+        ]);
+        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        assert_eq!(ask("vlan 10 "), Some(vec!["  <cr>".to_string()]));
+        assert_eq!(ask("vl 10 "), Some(vec!["  <cr>".to_string()]));
+        assert_eq!(ask("access-class 1 i "), Some(vec!["  <cr>".to_string()]));
+        // a name that begins no keyword is a value; nothing is held after it
+        assert_eq!(ask("access-class acl1 "), None);
+    }
+
+    #[test]
+    fn a_word_the_switch_answered_after_is_taken_as_typed() {
+        // the C9300's `ipv6 nd ?` leaves out `ra`, which it answers after
+        let h = crawled(&[
+            TOP,
+            (
+                "ipv6 ",
+                &["  nd  IPv6 interface Neighbor Discovery subcommands"],
+            ),
+            (
+                "ipv6 nd ",
+                &[
+                    "  ra-throttler  Configure RA throttler on the interface",
+                    "  raguard       Configure RA guard on the interface",
+                ],
+            ),
+            ("ipv6 nd ra ", &["  dns  DNS"]),
+            ("ipv6 nd ra dns ", &["  server  DNS Server"]),
+        ]);
+        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        assert_eq!(
+            ask("ipv n ra d "),
+            Some(vec!["  server  DNS Server".to_string()])
+        );
+        assert_eq!(
+            ask("ipv6 nd r ").map(|a| refusal_for("ipv6 nd r ", a)),
+            Some(vec!["% Ambiguous command:  \"ipv6 nd r \"".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_word_where_no_answer_is_held_leaves_the_rest_of_the_line_as_typed() {
+        // `snmp-server ?` is not held: its next word cannot be read, nor anything after it
+        let h = crawled(&[
+            TOP,
+            (
+                "snmp-server enable traps ",
+                &["  stackwise  STACKWISE traps"],
+            ),
+        ]);
+        let ask = |t: &str| h.help_for("config", Some(""), t, |_| false).cloned();
+        assert_eq!(
+            ask("snmp-server enable traps "),
+            Some(vec!["  stackwise  STACKWISE traps".to_string()])
+        );
+        assert_eq!(ask("snmp-server ena traps "), None);
+        assert_eq!(
+            h.answer("config", Some(""), "snmp-server ena traps ", |_| false),
+            None
+        );
+    }
+
+    #[test]
+    fn abbreviations_in_a_submode_are_read_against_its_context_s_answers() {
+        let mut h = Held::default();
+        let ospf = |a: &str| vec![("router ospf".to_string(), vec![a.to_string()])];
+        h.crawl.insert(
+            ("config-router".into(), "".into()),
+            vec![
+                (
+                    "router ospf".into(),
+                    vec![
+                        "  area       OSPF area parameters".into(),
+                        "  auto-cost  Calculate OSPF interface cost".into(),
+                    ],
+                ),
+                ("router bgp".into(), vec!["  address-family  Enter".into()]),
+            ],
+        );
+        h.crawl.insert(
+            ("config-router".into(), "area ".into()),
+            ospf("  <0-4294967295>  OSPF area ID"),
+        );
+        let ask = |c: &str, t: &str| h.help_for("config-router", Some(c), t, |_| false).cloned();
+        assert_eq!(
+            ask("router ospf", "ar "),
+            Some(vec!["  <0-4294967295>  OSPF area ID".to_string()])
+        );
+        // `a` begins both of OSPF's keywords; under BGP `ar` begins none and nothing is held
+        assert_eq!(
+            ask("router ospf", "a ").map(|a| refusal_for("a ", a)),
+            Some(vec!["% Ambiguous command:  \"a \"".to_string()])
+        );
+        assert_eq!(ask("router bgp", "ar "), None);
+    }
+
     #[test]
     fn a_crawl_answer_is_found_whatever_address_was_typed() {
         let mut h = Held::default();
@@ -1042,6 +1387,179 @@ mod tests {
                 for (class, ex) in classes {
                     println!("  {class}: {}", ex.len());
                     for x in ex.iter().filter(|x| !x.is_empty()) {
+                        println!("    {x}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Over the crawl logs under `VSWITCH_CRAWLS`: every held answer whose key has two keywords or
+    /// more (each a keyword row of the held answer for the line before it, in the same mode and
+    /// context), asked through `Held::answer` with each keyword cut to its shortest unique start
+    /// among those rows, and again to three characters where those are unique, compared with the
+    /// held answer as the switch would print it for the line typed. Also counts the words the crawl
+    /// itself typed as the start of a keyword, and the keys with a word whose line before it holds
+    /// no answer in that context.
+    #[test]
+    #[ignore = "an audit: reads the crawl logs VSWITCH_CRAWLS names"]
+    fn abbreviated_keywords_against_the_held_answers() {
+        use crate::context::{Reads, reads};
+        let Ok(dir) = std::env::var("VSWITCH_CRAWLS") else {
+            return;
+        };
+        for f in crate::corpus::Source::read_crawls(std::path::Path::new(&dir)) {
+            let mut first: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+            for (m, c, k, a) in crate::corpus::crawled_help(&f.text) {
+                first.entry((m, c, k)).or_insert(a);
+            }
+            let mut held = Held::default();
+            for ((m, c, k), a) in &first {
+                held.crawl
+                    .entry((m.clone(), k.clone()))
+                    .or_default()
+                    .push((c.clone(), a.clone()));
+            }
+            let contexts_of: BTreeMap<(&str, &str), usize> =
+                first.keys().fold(BTreeMap::new(), |mut acc, (m, _, k)| {
+                    *acc.entry((m.as_str(), k.as_str())).or_default() += 1;
+                    acc
+                });
+            let name = format!("{}-{}", f.book, f.release);
+            // the keyword rows of the held answer before each word, none where none is held
+            let parents = |m: &str, c: &str, words: &[&str]| -> Vec<Option<Vec<String>>> {
+                (0..words.len())
+                    .map(|i| {
+                        let before = if i == 0 {
+                            String::new()
+                        } else {
+                            format!("{} ", words[..i].join(" "))
+                        };
+                        first.get(&(m.to_string(), c.to_string(), before)).map(|a| {
+                            rows(a)
+                                .iter()
+                                .map(|r| r.word.to_string())
+                                .filter(|w| keyword(w))
+                                .collect()
+                        })
+                    })
+                    .collect()
+            };
+            // the crawl's own abbreviations, and keys below a line no answer is held for
+            let (mut typed_short, mut deep, mut orphaned, mut elsewhere) = (0, 0, 0, 0);
+            let mut short_examples: Vec<String> = vec![];
+            for ((m, c, k), a) in &first {
+                let words: Vec<&str> = k.split_whitespace().collect();
+                if words.len() < 2 {
+                    continue;
+                }
+                deep += 1;
+                let ps = parents(m, c, &words);
+                let missing: Vec<usize> = (1..words.len()).filter(|&i| ps[i].is_none()).collect();
+                if let Some(&i) = missing.first() {
+                    orphaned += 1;
+                    let before = format!("{} ", words[..i].join(" "));
+                    if contexts_of.contains_key(&(m.as_str(), before.as_str())) {
+                        elsewhere += 1;
+                    }
+                }
+                for (i, w) in words.iter().enumerate() {
+                    let Some(known) = &ps[i] else { continue };
+                    let known: Vec<&str> = known.iter().map(String::as_str).collect();
+                    if !matches!(reads(w, &known), Reads::Exact | Reads::None) {
+                        typed_short += 1;
+                        if short_examples.len() < 5 {
+                            short_examples
+                                .push(format!("{m} [{c}] {k:?} word {w:?}: {:?}", a.first()));
+                        }
+                    }
+                }
+            }
+            println!(
+                "{name}: {} keys, {deep} of two words or more; {orphaned} with a word whose line before it holds no answer in its context ({elsewhere} held in another context); {typed_short} words the crawl typed as a keyword's start",
+                first.len()
+            );
+            for x in short_examples {
+                println!("    {x}");
+            }
+            for three in [false, true] {
+                let (mut tested, mut exact) = (0, 0);
+                let mut classes: BTreeMap<&str, (usize, Vec<String>)> = BTreeMap::new();
+                for ((m, c, k), a) in &first {
+                    let words: Vec<&str> = k.split_whitespace().collect();
+                    let whole = k.ends_with(' ');
+                    let ps = parents(m, c, &words);
+                    let mut keywords = 0;
+                    let mut cut: Vec<String> = vec![];
+                    for (i, w) in words.iter().enumerate() {
+                        let known: Vec<&str> = ps[i]
+                            .as_ref()
+                            .map(|k| k.iter().map(String::as_str).collect())
+                            .unwrap_or_default();
+                        let last = i + 1 == words.len() && !whole;
+                        if last || reads(w, &known) != Reads::Exact {
+                            cut.push(w.to_string());
+                            continue;
+                        }
+                        keywords += 1;
+                        let unique = |p: &str| matches!(reads(p, &known), Reads::One(x) if x.eq_ignore_ascii_case(w));
+                        let short = if three {
+                            (w.len() > 3 && w.is_char_boundary(3) && unique(&w[..3]))
+                                .then(|| w[..3].to_string())
+                        } else {
+                            (1..w.len())
+                                .filter(|&n| w.is_char_boundary(n))
+                                .map(|n| &w[..n])
+                                .find(|p| unique(p))
+                                .map(str::to_string)
+                        };
+                        cut.push(short.unwrap_or_else(|| w.to_string()));
+                    }
+                    let mut typed = cut.join(" ");
+                    if whole {
+                        typed.push(' ');
+                    }
+                    if keywords < 2 || typed == *k {
+                        continue;
+                    }
+                    tested += 1;
+                    let want = refusal_for(&typed, a.clone());
+                    let got = held
+                        .answer(m, Some(c), &typed, |_| false)
+                        .map(|g| refusal_for(&typed, g));
+                    if got.as_ref() == Some(&want) {
+                        exact += 1;
+                        continue;
+                    }
+                    let class = match &got {
+                        None => "no held answer: the books answer",
+                        Some(g) if is_refusal(g) && !is_refusal(&want) => {
+                            "refused where the switch answered"
+                        }
+                        Some(_) if is_refusal(&want) => "the switch refused",
+                        Some(g) if rows(g).len() == rows(&want).len() => "same rows, other text",
+                        Some(_) => "other rows",
+                    };
+                    let e = classes.entry(class).or_default();
+                    e.0 += 1;
+                    if e.1.len() < 4 {
+                        e.1.push(format!(
+                            "{m} [{c}] {typed:?} for {k:?}: got {:?}",
+                            got.as_ref().and_then(|g| g.first())
+                        ));
+                    }
+                }
+                println!(
+                    "{name} {}: {tested} tested, {exact} exact",
+                    if three {
+                        "three characters"
+                    } else {
+                        "shortest unique start"
+                    }
+                );
+                for (class, (n, ex)) in classes {
+                    println!("  {class}: {n}");
+                    for x in ex {
                         println!("    {x}");
                     }
                 }

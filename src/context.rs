@@ -321,17 +321,45 @@ pub fn reopens(outer: &str, line: &str) -> bool {
     global_block(outer) && global_block(line)
 }
 
+/// How a typed word reads against the keywords offered where it is typed, case ignored.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reads<'k> {
+    /// one of them, whole
+    Exact,
+    /// the start of just this one
+    One(&'k str),
+    /// the start of two or more
+    Several,
+    /// the start of none
+    None,
+}
+
+/// How `word` reads against `known` (`Reads`).
+pub fn reads<'k>(word: &str, known: &[&'k str]) -> Reads<'k> {
+    let w = word.to_lowercase();
+    if known.iter().any(|k| k.eq_ignore_ascii_case(&w)) {
+        return Reads::Exact;
+    }
+    let mut starts: Vec<&'k str> = known
+        .iter()
+        .copied()
+        .filter(|k| k.to_lowercase().starts_with(w.as_str()))
+        .collect();
+    starts.sort_by_key(|k| k.to_lowercase());
+    starts.dedup_by_key(|k| k.to_lowercase());
+    match starts[..] {
+        [] => Reads::None,
+        [k] => Reads::One(k),
+        _ => Reads::Several,
+    }
+}
+
 /// A word as IOS reads an abbreviation of one of `known`: itself when it is one, the one it begins
 /// when it is two letters or more and begins just one, else as typed.
 fn expand(word: &str, known: &[&str]) -> String {
     let w = word.to_lowercase();
-    if known.contains(&w.as_str()) || w.len() < 2 {
-        return w;
-    }
-    let starts: std::collections::BTreeSet<&&str> =
-        known.iter().filter(|k| k.starts_with(w.as_str())).collect();
-    match starts.into_iter().collect::<Vec<_>>()[..] {
-        [k] => k.to_string(),
+    match reads(&w, known) {
+        Reads::One(k) if w.len() >= 2 => k.to_string(),
         _ => w,
     }
 }
