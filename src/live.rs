@@ -200,15 +200,16 @@ impl After {
 
 /// The site values the corpus characterized, each standing for any value of its kind.
 #[cfg(test)]
-pub const PLACES: [&str; 5] = ["«ipv4»", "«mac»", "«number»", "«word»", "«text»"];
+pub const PLACES: [&str; 6] = ["«ipv4»", "«ipv6»", "«mac»", "«number»", "«word»", "«text»"];
 
 fn fitted(s: &str) -> bool {
     s.contains('«')
 }
 
 /// Whether `text` is `pattern` with each characterized value filled in by a value of its kind:
-/// `«ipv4»` a dotted address, `«mac»` a dotted MAC address, `«number»` digits (alone, or inside a
-/// word between the same text as the pattern's), `«word»` any word, `«text»` the rest of the line.
+/// `«ipv4»` a dotted address, `«ipv6»` an IPv6 address, `«mac»` a dotted MAC address, `«number»`
+/// digits (alone, or inside a word between the same text as the pattern's), `«word»` any word,
+/// `«text»` the rest of the line.
 /// A pattern with none is the text itself.
 pub fn fits(pattern: &str, text: &str) -> bool {
     if !fitted(pattern) {
@@ -239,6 +240,7 @@ fn fits_word(p: &str, g: &str) -> bool {
                     .iter()
                     .all(|o| !o.is_empty() && o.len() <= 3 && o.parse::<u8>().is_ok())
         }
+        "«ipv6»" => g.contains(':') && g.parse::<std::net::Ipv6Addr>().is_ok(),
         "«mac»" => {
             let parts: Vec<&str> = g.split('.').collect();
             parts.len() == 3

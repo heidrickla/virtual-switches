@@ -6,34 +6,110 @@
 
 use crate::live::{fits, help_key};
 
-/// Keyword sequences after which the next word is an object's name, not a keyword.
+/// Keyword sequences after which the next word is an object's name, not a keyword. Each keyword may
+/// be abbreviated as IOS reads a unique start among the ones a sequence continues with there.
 const NAMED: &[&[&str]] = &[
     &["policy-map"],
     &["policy-map", "type", "control", "subscriber"],
+    &["policy-map", "type", "queueing"],
+    &["policy-map", "type", "inspect"],
     &["class-map"],
     &["class-map", "match-any"],
     &["class-map", "match-all"],
+    &["class-map", "type", "control", "subscriber", "match-any"],
+    &["class-map", "type", "control", "subscriber", "match-all"],
     &["class"],
+    &["table-map"],
     &["key", "chain"],
+    &["mka", "policy"],
     &["ip", "access-list", "standard"],
     &["ip", "access-list", "extended"],
+    &["ip", "access-list", "role-based"],
+    &["ip", "access-list", "fqdn"],
     &["ipv6", "access-list"],
     &["mac", "access-list", "extended"],
+    &["object-group", "network"],
+    &["object-group", "service"],
     &["route-map"],
     &["radius", "server"],
     &["tacacs", "server"],
+    &["aaa", "group", "server", "radius"],
+    &["aaa", "group", "server", "tacacs+"],
     &["ip", "dhcp", "pool"],
+    &["ip", "dhcp", "class"],
     &["ipv6", "dhcp", "pool"],
+    &["ipv6", "dhcp", "guard", "policy"],
+    &["ipv6", "nd", "inspection", "policy"],
+    &["ipv6", "nd", "raguard", "policy"],
+    &["ipv6", "source-guard", "policy"],
+    &["device-tracking", "policy"],
     &["event", "manager", "applet"],
     &["crypto", "pki", "trustpoint"],
+    &["crypto", "pki", "certificate", "map"],
+    &["crypto", "pki", "certificate", "chain"],
     &["vlan", "access-map"],
     &["template"],
+    &["service-template"],
+    &["bfd-template", "single-hop"],
+    &["bfd-template", "multi-hop"],
     &["fallback", "profile"],
+    &["profile"],
+    &["username"],
+    &["dot1x", "credentials"],
+    &["macro", "name"],
+    &["time-range"],
+    &["sampler"],
+    &["stack-power", "stack"],
+    &["maintenance", "template"],
+    &["app-hosting", "appid"],
+    &["location", "geo-location", "identifier"],
+    &["location", "civic-location", "identifier"],
+    &["l2vpn", "xconnect", "context"],
+    &["ip", "explicit-path", "name"],
     &["vrf", "definition"],
     &["ip", "vrf"],
     &["flow", "exporter"],
     &["flow", "record"],
     &["flow", "monitor"],
+];
+
+/// Lines that open a block of their own from global configuration, whichever block's submode they
+/// are typed in: IOS leaves that block for global configuration first. The shell's frame stack and
+/// the crawl's `Stack` both read this table (`reopens`). A sequence with a name count takes exactly
+/// that many words after it, so `ip vrf forwarding RED` (an interface's line) opens nothing.
+const GLOBAL_BLOCKS: &[(&[&str], Option<usize>)] = &[
+    (&["interface"], None),
+    (&["vlan"], None),
+    (&["line"], None),
+    (&["router"], None),
+    (&["vrf", "definition"], Some(1)),
+    (&["ip", "vrf"], Some(1)),
+    (&["route-map"], None),
+    (&["class-map"], None),
+    (&["policy-map"], None),
+    (&["ip", "access-list"], None),
+];
+
+/// Keywords of an `address-family` line; any other word is a value (a VRF's name, an AS number).
+const FAMILY_WORDS: &[&str] = &[
+    "ipv4",
+    "ipv6",
+    "l2vpn",
+    "vpnv4",
+    "vpnv6",
+    "nsap",
+    "rtfilter",
+    "link-state",
+    "mvpn",
+    "unicast",
+    "multicast",
+    "labeled-unicast",
+    "mdt",
+    "flowspec",
+    "evpn",
+    "vpls",
+    "vrf",
+    "autonomous-system",
 ];
 
 /// First words an entering line may abbreviate (`int`, `router`), as IOS reads a unique start.
@@ -113,23 +189,132 @@ pub fn stale(key: &str, configured: impl Fn(&str) -> bool) -> bool {
         .any(|(start, line)| key.starts_with(start) && configured(line))
 }
 
-/// A crawl's help key: the line typed before `?` as `help_key` has it, with each address and MAC
-/// address characterized, so a site address typed at the console finds the lab's answer and no address
-/// is stored.
+/// A crawl's help key: the line typed before `?` as `help_key` has it, each address in it
+/// characterized (`values`), so a site address typed at the console finds the lab's answer and no
+/// address is stored.
 pub fn key(text: &str) -> String {
     help_key(text)
         .split(' ')
-        .map(|w| {
-            if fits("«ipv4»", w) {
-                "«ipv4»"
-            } else if fits("«mac»", w) {
-                "«mac»"
-            } else {
-                w
-            }
-        })
+        .map(values)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The placeholder for a whole address: `«ipv4»` (a mask too), `«ipv6»` (full or compressed) or
+/// `«mac»` (dotted, colon or hyphen form).
+fn address(run: &str) -> Option<&'static str> {
+    let mac = |sep: char| {
+        let parts: Vec<&str> = run.split(sep).collect();
+        parts.len() == 6
+            && parts
+                .iter()
+                .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    if fits("«ipv4»", run) {
+        Some("«ipv4»")
+    } else if fits("«mac»", run) || mac(':') || mac('-') {
+        Some("«mac»")
+    } else if run.contains(':') && run.parse::<std::net::Ipv6Addr>().is_ok() {
+        Some("«ipv6»")
+    } else {
+        None
+    }
+}
+
+/// The runs of a word an address could be made of: hex digits, `.` and `:`.
+fn runs(word: &str) -> Vec<(usize, usize)> {
+    let mut out = vec![];
+    let mut start = None;
+    for (i, c) in word
+        .char_indices()
+        .chain(std::iter::once((word.len(), ' ')))
+    {
+        let part = c.is_ascii_hexdigit() || c == '.' || c == ':';
+        match (part, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                out.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A word with each address in it characterized, whole or inside a longer word (`tftp://10.1.1.1/x`),
+/// a prefix length after one as `«number»` (`2001:db8::/32` is `«ipv6»/«number»`). One normalization
+/// for help keys and entering lines.
+pub fn values(word: &str) -> String {
+    if let Some(p) = address(word) {
+        return p.to_string();
+    }
+    let mut out = String::with_capacity(word.len());
+    let mut at = 0;
+    for (s, e) in runs(word) {
+        let Some(p) = address(&word[s..e]) else {
+            continue;
+        };
+        out.push_str(&word[at..s]);
+        out.push_str(p);
+        at = e;
+        let rest = &word[e..];
+        let digits = rest
+            .strip_prefix('/')
+            .map_or(0, |r| r.chars().take_while(char::is_ascii_digit).count());
+        if digits > 0 {
+            out.push_str("/«number»");
+            at = e + 1 + digits;
+        }
+    }
+    out.push_str(&word[at..]);
+    out
+}
+
+/// Whether `text` still holds an address of any kind: a dotted quad (a mask or not), an IPv6
+/// address or a MAC address, whole or inside a word. Compiling a corpus drops a crawl's key or
+/// context that does.
+pub fn holds_address(text: &str) -> bool {
+    text.split_whitespace().any(|w| {
+        runs(w).into_iter().any(|(s, e)| {
+            let r = &w[s..e];
+            let quad = r.split('.').count() == 4
+                && r.split('.')
+                    .all(|o| (1..=3).contains(&o.len()) && o.chars().all(|c| c.is_ascii_digit()));
+            quad || address(r).is_some()
+        }) || address(w).is_some()
+    })
+}
+
+/// Whether `line` opens a block from global configuration whatever submode it is typed in
+/// (`GLOBAL_BLOCKS`), its keywords abbreviable.
+pub fn global_block(line: &str) -> bool {
+    let toks: Vec<&str> = line.split_whitespace().collect();
+    GLOBAL_BLOCKS.iter().any(|(seq, names)| {
+        toks.len() > seq.len()
+            && names.is_none_or(|n| toks.len() == seq.len() + n)
+            && seq.iter().enumerate().all(|(i, k)| {
+                // a first word among every entering line's (`class` is not `class-map`), a later
+                // one among the table's
+                let here: Vec<&str> = if i == 0 {
+                    FIRST.to_vec()
+                } else {
+                    GLOBAL_BLOCKS
+                        .iter()
+                        .filter(|(s, _)| s.len() > i && s[..i] == seq[..i])
+                        .map(|(s, _)| s[i])
+                        .collect()
+                };
+                expand(toks[i], &here) == *k
+            })
+    })
+}
+
+/// Whether `line`, typed in a submode entered by `outer` from global configuration, leaves that
+/// submode for global configuration and opens its own block: both open global blocks. The shell's
+/// frame stack and the crawl's `Stack` decide it here alike.
+pub fn reopens(outer: &str, line: &str) -> bool {
+    global_block(outer) && global_block(line)
 }
 
 /// A word as IOS reads an abbreviation of one of `known`: itself when it is one, the one it begins
@@ -139,9 +324,10 @@ fn expand(word: &str, known: &[&str]) -> String {
     if known.contains(&w.as_str()) || w.len() < 2 {
         return w;
     }
-    let mut starts = known.iter().filter(|k| k.starts_with(w.as_str()));
-    match (starts.next(), starts.next()) {
-        (Some(k), None) => k.to_string(),
+    let starts: std::collections::BTreeSet<&&str> =
+        known.iter().filter(|k| k.starts_with(w.as_str())).collect();
+    match starts.into_iter().collect::<Vec<_>>()[..] {
+        [k] => k.to_string(),
         _ => w,
     }
 }
@@ -219,7 +405,8 @@ fn router_segment(rest: &[&str]) -> String {
     }
 }
 
-/// `address-family` and its keywords, a VRF's name and an AS number left out.
+/// `address-family` and its keywords, each expanded from its abbreviation (`uni`, `vr`) before the
+/// values are told apart: a VRF's name, an AS number and any word no keyword begins are left out.
 fn family_segment(rest: &[&str]) -> String {
     let mut out = vec!["address-family".to_string()];
     let mut skip = false;
@@ -227,8 +414,9 @@ fn family_segment(rest: &[&str]) -> String {
         if std::mem::take(&mut skip) {
             continue;
         }
-        let w = w.to_lowercase();
-        if w.chars().all(|c| c.is_ascii_digit()) || fits("«ipv4»", &w) {
+        let w = expand(w, FAMILY_WORDS);
+        if !FAMILY_WORDS.contains(&w.as_str()) {
+            // a value, or an abbreviation IOS would refuse as ambiguous: neither names a context
             continue;
         }
         skip = w == "vrf";
@@ -238,24 +426,35 @@ fn family_segment(rest: &[&str]) -> String {
 }
 
 /// Any other entering line, its object names and numbers characterized (`policy-map «word»`,
-/// `track «number» interface «word» line-protocol`).
+/// `track «number» interface «word» line-protocol`). A keyword of a `NAMED` sequence is expanded from
+/// its abbreviation before the word after the sequence is taken as a name.
 fn generic_segment(toks: &[&str]) -> String {
     let mut out: Vec<String> = vec![];
     for (i, t) in toks.iter().enumerate() {
         let lower = t.to_lowercase();
         let before: Vec<&str> = out.iter().map(String::as_str).collect();
-        let continues = NAMED
+        let here: Vec<&str> = NAMED
             .iter()
-            .any(|e| e.len() > i && e[..i] == before[..] && e[i] == lower);
+            .filter(|e| e.len() > i && e[..i] == before[..])
+            .map(|e| e[i])
+            .collect();
+        let word = expand(t, &here);
+        let continues = here.contains(&word.as_str());
         let named = !continues && NAMED.iter().any(|e| e.len() == i && e[..] == before[..]);
-        out.push(if named {
+        out.push(if continues {
+            word
+        } else if named {
             "«word»".into()
         } else if lower.chars().all(|c| c.is_ascii_digit()) {
             "«number»".into()
-        } else if fits("«ipv4»", &lower) {
-            "«ipv4»".into()
-        } else if fits("«mac»", &lower) {
-            "«mac»".into()
+        } else if values(&lower) != lower {
+            // an address or prefix as its placeholder; a word holding one is a name
+            let v = values(&lower);
+            if v.split('/').all(|p| p.starts_with('«') && p.ends_with('»')) {
+                v
+            } else {
+                "«word»".into()
+            }
         } else if interface_like(t) {
             "«word»".into()
         } else if t.chars().next().is_some_and(|c| c.is_ascii_lowercase())
@@ -319,9 +518,6 @@ fn is_exec(mode: &str) -> bool {
     matches!(mode, "exec" | "privileged")
 }
 
-/// Words that open a block of their own, which a session may type inside another one of them.
-const SIBLINGS: &[&str] = &["interface", "router", "line", "vlan"];
-
 impl Stack {
     /// The context of a prompt in `mode`: empty in EXEC, none when the stack does not end in that
     /// mode (a session that began inside a submode).
@@ -371,10 +567,13 @@ impl Stack {
             while self.frames.last().is_some_and(|(m, _)| m != next) {
                 self.frames.pop();
             }
-        } else if SIBLINGS.contains(&expand(&first, FIRST).as_str()) && self.frames.len() > 1 {
-            // a block of its own opens from global configuration, whichever submode it is typed in
+        } else if self.frames.len() > 1 && reopens(&self.frames[1].1, command) {
+            // a block of its own opens from global configuration, whichever submode it is typed in;
+            // a global line that enters nothing leaves the prompt in global configuration
             self.frames.truncate(1);
-            self.frames.push((next.to_string(), command.to_string()));
+            if next != "config" {
+                self.frames.push((next.to_string(), command.to_string()));
+            }
         } else if next == mode {
             // an ordinary line of the mode
         } else if let Some(i) = self.frames.iter().rposition(|(m, _)| m == next) {
@@ -616,6 +815,297 @@ mod tests {
         s.advance("config", "router bogus", true, Some("config"));
         s.advance("config", "ip ?", false, Some("config"));
         assert_eq!(s.context("config").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn one_table_says_which_lines_open_a_block_from_global_configuration() {
+        for line in [
+            "interface Vlan10",
+            "int gi1/0/1",
+            "vlan 10",
+            "line vty 0 4",
+            "router ospf 1",
+            "vrf definition RED",
+            "ip vrf RED",
+            "route-map B deny 20",
+            "class-map match-all B",
+            "policy-map B",
+            "ip access-list standard B",
+            "ip access-l ext B",
+        ] {
+            assert!(global_block(line), "{line}");
+        }
+        for line in [
+            "ip vrf forwarding RED",
+            "vrf forwarding RED",
+            "class class-default",
+            "ip address 10.1.1.1 255.255.255.0",
+            "key chain TEST",
+            "interface",
+            "service-policy input B",
+        ] {
+            assert!(!global_block(line), "{line}");
+        }
+        assert!(reopens("policy-map A", "policy-map B"));
+        assert!(!reopens("key chain A", "policy-map B"));
+        assert!(!reopens("interface Vlan10", "ip vrf forwarding RED"));
+    }
+
+    #[test]
+    fn blocks_of_one_kind_typed_back_to_back_each_take_their_own_context() {
+        let got = walk(&[
+            ("privileged", "configure terminal", Some("config")),
+            ("config", "policy-map A", Some("config-pmap")),
+            ("config-pmap", "class class-default", Some("config-pmap-c")),
+            ("config-pmap-c", "policy-map B", Some("config-pmap")),
+            ("config-pmap", " ?", Some("config-pmap")),
+            (
+                "config-pmap",
+                "route-map A permit 10",
+                Some("config-route-map"),
+            ),
+            (
+                "config-route-map",
+                "route-map B deny 20",
+                Some("config-route-map"),
+            ),
+            ("config-route-map", " ?", Some("config-route-map")),
+            (
+                "config-route-map",
+                "ip access-list extended A",
+                Some("config-ext-nacl"),
+            ),
+            (
+                "config-ext-nacl",
+                "ip access-list standard B",
+                Some("config-std-nacl"),
+            ),
+            ("config-std-nacl", " ?", Some("config-std-nacl")),
+            (
+                "config-std-nacl",
+                "class-map match-any A",
+                Some("config-cmap"),
+            ),
+            ("config-cmap", "class-map match-all B", Some("config-cmap")),
+            ("config-cmap", " ?", Some("config-cmap")),
+            // a global line that enters nothing leaves the block for global configuration
+            (
+                "config-cmap",
+                "ip access-list logging interval 10",
+                Some("config"),
+            ),
+            ("config", " ?", Some("config")),
+            ("config", "interface Vlan10", Some("config-if")),
+            ("config-if", "ip vrf forwarding RED", Some("config-if")),
+            ("config-if", " ?", Some("config-if")),
+        ]);
+        let at = |i: usize| got[i].as_deref();
+        assert_eq!(at(4), Some("policy-map «word»"));
+        assert_eq!(at(7), Some("route-map «word» deny «number»"));
+        assert_eq!(at(10), Some("ip access-list standard «word»"));
+        assert_eq!(at(13), Some("class-map match-all «word»"));
+        assert_eq!(at(15), Some(""));
+        assert_eq!(at(18), Some("interface vlan"));
+    }
+
+    #[test]
+    fn an_address_is_characterized_whole_inside_a_word_and_with_its_prefix_length() {
+        for (word, want) in [
+            ("10.1.1.1", "«ipv4»"),
+            ("255.255.255.0", "«ipv4»"),
+            ("10.0.0.0/8", "«ipv4»/«number»"),
+            ("2001:0db8:0000:0000:0000:0000:0000:0001", "«ipv6»"),
+            ("2001:db8::1", "«ipv6»"),
+            ("fe80::1", "«ipv6»"),
+            ("::", "«ipv6»"),
+            ("2001:db8:1::/48", "«ipv6»/«number»"),
+            ("::ffff:10.1.1.1", "«ipv6»"),
+            ("0011.2233.4455", "«mac»"),
+            ("00:11:22:33:44:55", "«mac»"),
+            ("00-11-22-33-44-55", "«mac»"),
+            ("tftp://10.1.1.1/file", "tftp://«ipv4»/file"),
+            ("[2001:db8::1]:80", "[«ipv6»]:80"),
+            // not addresses: a keyword, an AS number pair, a release, hex words
+            ("access-list", "access-list"),
+            ("65000:1", "65000:1"),
+            ("17.6.4", "17.6.4"),
+            ("deadbeef", "deadbeef"),
+        ] {
+            assert_eq!(values(word), want, "{word}");
+        }
+        assert_eq!(
+            key("ipv6 route 2001:DB8::/32 "),
+            "ipv6 route «ipv6»/«number» "
+        );
+        assert_eq!(key("ipv6 address FE80::1 "), "ipv6 address «ipv6» ");
+        for held in [
+            "ipv6 route 2001:db8::/32",
+            "copy tftp://10.1.1.1/x",
+            "arp 10.1.1.1",
+        ] {
+            assert!(holds_address(held), "{held}");
+            assert!(!holds_address(&key(held)), "{held}");
+        }
+        assert!(holds_address("ip route 999.1.1.1"));
+        assert!(!holds_address(
+            "router bgp «number» > address-family ipv4 vrf"
+        ));
+        assert!(!holds_address("route-target 65000:1"));
+    }
+
+    #[test]
+    fn an_entering_line_s_keywords_are_expanded_before_its_values_are_left_out() {
+        for (a, b) in [
+            ("address-family ipv4 vr PROD", "address-family ipv4 vrf RED"),
+            ("address-family ipv4 uni", "address-family ipv4 unicast"),
+            (
+                "addr ipv4 uni vr prod",
+                "address-family ipv4 unicast vrf RED",
+            ),
+            (
+                "address-family ipv4 vrf PROD autonomous-system 10",
+                "address-family ipv4 vrf RED auto 1",
+            ),
+            ("ip access-list ext voice", "ip access-list extended TEST"),
+            ("ip acc stan voice", "ip access-list standard TEST-STD"),
+            ("class-map match-any voice", "class-map match-any TEST"),
+            ("ip dhcp pool lab", "ip dhcp pool TEST"),
+            ("key ch corp", "key chain TEST"),
+            ("username test", "username admin"),
+        ] {
+            assert_eq!(segment(a), segment(b), "{a} / {b}");
+        }
+        assert_eq!(
+            segment("address-family ipv4 vr PROD"),
+            "address-family ipv4 vrf"
+        );
+        assert_eq!(
+            segment("addr ipv4 uni vr prod"),
+            "address-family ipv4 unicast vrf"
+        );
+        assert_eq!(
+            segment("ip access-list ext voice"),
+            "ip access-list extended «word»"
+        );
+        assert_eq!(segment("icmp-echo 2001:db8::1"), "icmp-echo «ipv6»");
+        assert_eq!(segment("username test"), "username «word»");
+    }
+
+    /// Every entering line of the two crawls' plans (`crawl/plan.json`, C9300 17.6 and C2960G 15.0)
+    /// gives a context without a lab name, number or address.
+    #[test]
+    fn the_crawl_plans_entering_lines_leave_no_lab_value_in_a_context() {
+        let lines = [
+            "interface GigabitEthernet1/0/5",
+            "interface Vlan10",
+            "interface Loopback0",
+            "interface Port-channel1",
+            "interface Tunnel0",
+            "interface GigabitEthernet0/0",
+            "interface AppGigabitEthernet1/0/1",
+            "interface GigabitEthernet1/0/6.201",
+            "interface range GigabitEthernet1/0/7 - 8",
+            "line con 0",
+            "line vty 0 4",
+            "ip access-list extended TEST",
+            "ip access-list standard TEST-STD",
+            "ipv6 access-list TEST6",
+            "mac access-list extended TESTMAC",
+            "ip access-list role-based TESTRB",
+            "ip access-list fqdn TESTFQ",
+            "router ospf 1",
+            "router bgp 65000",
+            "address-family ipv4",
+            "address-family l2vpn evpn",
+            "router eigrp 1",
+            "router eigrp NAMED",
+            "address-family ipv4 autonomous-system 1",
+            "router rip",
+            "router isis",
+            "router ospfv3 1",
+            "ipv6 router ospf 1",
+            "router lisp",
+            "vlan 10",
+            "vlan configuration 10",
+            "spanning-tree mst configuration",
+            "vlan access-map TESTMAP 10",
+            "route-map TEST permit 10",
+            "class-map match-any TEST",
+            "policy-map TEST",
+            "class class-default",
+            "police 1000000",
+            "table-map TESTTM",
+            "key chain TEST",
+            "key 1",
+            "key chain TESTMS macsec",
+            "mka policy TESTMKA",
+            "ip dhcp pool TEST",
+            "ip dhcp class TESTCLS",
+            "ipv6 dhcp pool TEST6",
+            "crypto pki trustpoint TEST",
+            "crypto pki certificate map TESTMAP 10",
+            "ip ssh pubkey-chain",
+            "username test",
+            "vrf definition TESTVRF",
+            "ip vrf TESTVRF2",
+            "track 1 interface GigabitEthernet1/0/5 line-protocol",
+            "ip sla 10",
+            "icmp-echo 10.1.1.1",
+            "flow record TESTREC",
+            "flow exporter TESTEXP",
+            "flow monitor TESTMON",
+            "sampler TESTSAMP",
+            "monitor session 1 type erspan-source",
+            "destination",
+            "monitor session 2 type erspan-destination",
+            "source",
+            "event manager applet TEST",
+            "ip igmp profile 10",
+            "object-group network TESTNG",
+            "object-group service TESTSG",
+            "device-tracking policy TESTDT",
+            "ipv6 nd inspection policy TESTND",
+            "ipv6 dhcp guard policy TESTDG",
+            "ipv6 source-guard policy TESTSRC",
+            "radius server TESTRAD",
+            "tacacs server TESTTAC",
+            "call-home",
+            "profile TESTPROF",
+            "template TESTTPL",
+            "service-template TESTST",
+            "bfd-template single-hop TESTBFD",
+            "redundancy",
+            "main-cpu",
+            "stack-power stack TESTSP",
+            "stack-power switch 1",
+            "transceiver type all",
+            "maintenance template TESTMT",
+            "app-hosting appid TESTAPP",
+            "network-policy profile 60",
+            "fallback profile TESTFB",
+            "class-map type control subscriber match-all TESTCC",
+            "policy-map type control subscriber TESTPC",
+            "location civic-location identifier 1",
+            "location geo-location identifier TESTGEO",
+            "l2vpn xconnect context TESTXC",
+            "et-analytics",
+            "ip explicit-path name TESTEP enable",
+            "archive",
+            "telemetry ietf subscription 1",
+            "interface GigabitEthernet0/3",
+            "interface range GigabitEthernet0/5 - 6",
+        ];
+        for line in lines {
+            let s = segment(line);
+            let lab = s.split_whitespace().any(|w| {
+                !w.starts_with('«')
+                    && (w.contains("test")
+                        || w.chars()
+                            .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                            && !matches!(w, "ipv4" | "ipv6" | "l2vpn" | "ospfv3"))
+            });
+            assert!(!lab && !holds_address(&s), "{line}: {s}");
+        }
     }
 
     #[test]

@@ -295,24 +295,34 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
 
 /// The `?` answers a crawl's log holds, as (mode, context, key, answer): the mode its prompt showed
 /// and the context its entering lines give it, or privileged EXEC for a line typed after `do-exec`,
-/// which runs the rest of the line there. A refused probe and one asked where the context is unknown
-/// are left out.
+/// which runs the rest of the line there. Only a complete exchange is an answer: `swcon crawl` writes
+/// a probe to the log once the switch has printed its answer and the prompt again, and leaves a probe
+/// that timed out, left the mode or met a question out, so a probe is complete when another prompt
+/// follows it. The last probe of a log read while the crawl writes it may be cut short and is left
+/// out. A refused probe, one asked where the context is unknown and one whose answer holds a pager's
+/// `--More--`, a control character (an erase's backspaces) or undecodable bytes are left out.
 pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<String>)> {
     let Some((_, exchanges)) = crate::capture::exchanges(text) else {
         return vec![];
     };
+    let residue = |l: &str| {
+        l.contains("--More--")
+            || l.contains('\u{fffd}')
+            || l.chars().any(|c| c.is_control() && c != '\t')
+    };
+    let complete = exchanges.len().saturating_sub(1);
     let mut out = vec![];
-    for e in exchanges {
+    for e in exchanges.into_iter().take(complete) {
         let Some(before) = e.command.strip_suffix('?') else {
             continue;
         };
-        if e.output.iter().any(|l| l.starts_with('%')) {
+        if e.output.iter().any(|l| l.starts_with('%') || residue(l)) || residue(&e.command) {
             continue;
         }
         let exec = before
             .trim_start()
             .split_once(char::is_whitespace)
-            .filter(|(w, _)| w.eq_ignore_ascii_case("do-exec") && crate::cli::is_config(&e.mode))
+            .filter(|(w, _)| crate::cli::names_do_exec(w) && crate::cli::is_config(&e.mode))
             .map(|(_, rest)| rest);
         let (mode, context, typed) = match exec {
             Some(rest) => ("privileged".to_string(), String::new(), rest),
@@ -1035,8 +1045,15 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
         t.after = after.into_iter().collect();
         t.help
             .retain(|(_, k, a)| !deny.hits(k) && !a.iter().any(|r| deny.hits(r)));
-        t.crawl
-            .retain(|(_, _, k, a)| !deny.hits(k) && !a.iter().any(|r| deny.hits(r)));
+        // a crawl's key and context hold no address however it was typed: one that does slipped
+        // past `context::values` and goes, as a capture's site words do
+        t.crawl.retain(|(_, c, k, a)| {
+            !deny.hits(k)
+                && !deny.hits(c)
+                && !crate::context::holds_address(k)
+                && !crate::context::holds_address(c)
+                && !a.iter().any(|r| deny.hits(r))
+        });
         let n = t.captures.len();
         t.captures = (1..=n)
             .map(|i| format!("{book} {release} capture {i}"))
@@ -1065,10 +1082,18 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
     c
 }
 
-/// Every string in the corpus that still holds a site word (none, for a corpus `filtered` wrote).
+/// Every string in the corpus that still holds a site word, and every crawl key or context that
+/// holds an address (none, for a corpus `filtered` wrote).
 pub fn leaks(c: &Corpus, deny: &Deny) -> Vec<String> {
     let json = serde_json::to_value(c).expect("the corpus serializes");
-    let mut out = vec![];
+    let mut out: Vec<String> = c
+        .held
+        .iter()
+        .flat_map(|(_, _, t)| &t.crawl)
+        .flat_map(|(_, ctx, k, _)| [ctx, k])
+        .filter(|s| crate::context::holds_address(s))
+        .cloned()
+        .collect();
     fn walk(v: &serde_json::Value, deny: &Deny, out: &mut Vec<String>) {
         match v {
             serde_json::Value::String(s) if deny.hits(s) => out.push(s.clone()),
@@ -1420,6 +1445,96 @@ mod tests {
         let kept = filtered(c, &deny);
         let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.2.as_str()).collect();
         assert_eq!(keys, ["ip "]);
+        assert!(leaks(&kept, &deny).is_empty());
+    }
+
+    #[test]
+    fn only_a_crawl_s_complete_exchanges_are_held() {
+        let log = [
+            "Switch#configure terminal",
+            "Enter configuration commands, one per line.  End with CNTL/Z.",
+            "Switch(config)#ip ?",
+            "  routing  Enable IP routing",
+            // the switch printed nothing, and the next prompt shows the probe was answered
+            "Switch(config)#banner motd x ?",
+            "Switch(config)#vtp ?",
+            "  mode  Set the mode",
+            " --More-- \u{8}\u{8}\u{8}\u{8}\u{8}\u{8}\u{8}\u{8}",
+            "Switch(config)#snmp-server ?",
+            "  host  Specify hosts\u{8}\u{8}\u{8} \u{8}",
+            "Switch(config)#\u{8}\u{8}lldp ?",
+            "  run  Enable LLDP",
+            "Switch(config)#cdp ?",
+            "  advertise-v2  CDP sends version-2 advertisements",
+            "Switch(config)#bogus ?",
+            "% Unrecognized command",
+            "Switch(config)#spanning-tree ?",
+            "  mode  Spanning tree operating mode",
+            // the log was read while this answer was being written
+            "  portfast  Spanning tree portfast",
+        ]
+        .join("\n");
+        let held: Vec<(String, Vec<String>)> = crawled_help(&log)
+            .into_iter()
+            .map(|(_, _, k, a)| (k, a))
+            .collect();
+        assert_eq!(
+            held,
+            [
+                (
+                    "ip ".to_string(),
+                    vec!["  routing  Enable IP routing".to_string()]
+                ),
+                ("banner motd x ".to_string(), vec![]),
+                (
+                    "cdp ".to_string(),
+                    vec!["  advertise-v2  CDP sends version-2 advertisements".to_string()]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crawl_s_abbreviated_do_exec_line_is_privileged_exec_help() {
+        let log = "Switch#configure terminal\nSwitch(config)#do-ex show ?\n  vlan  VTP VLAN status\nSwitch(config)#do-e show vtp ?\n  status  VTP status\nSwitch(config)#do ?\n  LINE  Exec Command\nSwitch(config)#end\n";
+        let held: Vec<(String, String, String)> = crawled_help(log)
+            .into_iter()
+            .map(|(m, c, k, _)| (m, c, k))
+            .collect();
+        let row = |m: &str, k: &str| (m.to_string(), String::new(), k.to_string());
+        assert_eq!(
+            held,
+            [
+                row("privileged", "show "),
+                row("privileged", "show vtp "),
+                row("config", "do "),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crawl_key_or_context_holding_an_address_is_dropped_and_counted_a_leak() {
+        let deny = Deny::from_tokens(BTreeSet::new());
+        let entry = |c: &str, k: &str| ("config".to_string(), c.to_string(), k.to_string(), vec![]);
+        let table = HeldTable {
+            crawl: vec![
+                entry("", "ip "),
+                entry("", "ipv6 route 2001:db8::/32 "),
+                entry("", "copy tftp://10.1.1.1/x "),
+                entry("ip sla «number» > icmp-echo 10.1.1.1", ""),
+                entry("", "arp 0011.2233.4455 "),
+                entry("", &crate::context::key("ipv6 route 2001:db8::/32 ")),
+            ],
+            ..Default::default()
+        };
+        let c = Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        assert_eq!(leaks(&c, &deny).len(), 4);
+        let kept = filtered(c, &deny);
+        let keys: Vec<&str> = kept.held[0].2.crawl.iter().map(|e| e.2.as_str()).collect();
+        assert_eq!(keys, ["ip ", "ipv6 route «ipv6»/«number» "]);
         assert!(leaks(&kept, &deny).is_empty());
     }
 

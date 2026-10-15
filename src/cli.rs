@@ -640,6 +640,15 @@ fn keywords_in(n: &Node, out: &mut Vec<String>) {
     }
 }
 
+/// Whether a configuration line's first word names `do-exec` as IOS reads a keyword: the whole word
+/// or a start of it three characters or more (`do-`), which no other configuration keyword begins
+/// (the C9300 17.6 and C2960G 15.0 crawls' `?` list `do-exec`, `dot1x` and
+/// `downward-compatible-config`). `do` is its own hidden command.
+pub fn names_do_exec(word: &str) -> bool {
+    let w = word.to_ascii_lowercase();
+    w.len() >= 3 && "do-exec".starts_with(w.as_str())
+}
+
 /// Global configuration or one of its submodes (`is_submode`).
 pub fn is_config(mode: &str) -> bool {
     mode == "config" || is_submode(mode)

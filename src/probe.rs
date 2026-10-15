@@ -47,6 +47,8 @@ const UNSAFE: &[&str] = &[
     "delete",
     "format",
     "do",
+    // runs EXEC as `do` does, typed whole or as any start of three characters or more
+    "do-exec",
 ];
 
 /// Commands whose `no` or `default` form cuts the session though the command does not.
@@ -924,6 +926,13 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn do_exec_whole_or_abbreviated_is_refused_as_do_is() {
+        let script = "do reload\ndo-exec reload\ndo-ex reload\nDO-E show version\ndo- write\ndot1x system-auth-control\n";
+        let r: Vec<usize> = refused(script, &vlan54()).iter().map(|r| r.0).collect();
+        assert_eq!(r, [1, 2, 3, 4, 5]);
     }
 
     #[test]

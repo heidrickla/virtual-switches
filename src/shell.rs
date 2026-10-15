@@ -1061,18 +1061,16 @@ impl<'a> Session<'a> {
         out
     }
 
-    /// Where the command of a configuration line `do-exec <command>` starts: IOS XE 17 and the
-    /// 2960's 15.0 list `do-exec` in configuration modes and hide `do`.
+    /// Where the command of a configuration line `do-exec <command>` starts, `do-exec` typed whole or
+    /// abbreviated (`cli::names_do_exec`): IOS XE 17 and the 2960's 15.0 list `do-exec` in
+    /// configuration modes and hide `do`.
     fn do_exec_at(&self, line: &str) -> Option<usize> {
         if !cli::is_config(self.mode()) {
             return None;
         }
         let toks = cli::tokens(line);
         let first = toks.first()?;
-        first
-            .text
-            .eq_ignore_ascii_case("do-exec")
-            .then(|| toks.get(1).map_or(line.len(), |t| t.at))
+        cli::names_do_exec(&first.text).then(|| toks.get(1).map_or(line.len(), |t| t.at))
     }
 
     fn run(&mut self, mode: &str, line: &str, p: &Parse) -> (Vec<String>, Result) {
@@ -1160,11 +1158,12 @@ impl<'a> Session<'a> {
         // after `vlan 10`, `interface port-channel 5` in an interface), though a guide lists it there
         if enters.as_deref().is_some_and(cli::is_config)
             && self.frames.len() > 3
-            && headers(p).first().is_some_and(|h| top_block(h))
-            && self.frames[3]
-                .blocks
-                .first()
-                .is_some_and(|&b| top_block(&self.device.blocks[b].header))
+            && headers(p).first().is_some_and(|h| {
+                self.frames[3]
+                    .blocks
+                    .first()
+                    .is_some_and(|&b| crate::context::reopens(&self.device.blocks[b].header, h))
+            })
             && matches!(self.parse("config", line), Outcome::Ok(_))
         {
             self.frames.truncate(3);
@@ -1427,14 +1426,13 @@ impl<'a> Session<'a> {
         }
     }
 
-    /// The text after a configuration line's `do` or `do-exec` and a space, which EXEC reads: `?`
-    /// and Tab answer it as the privileged prompt would.
+    /// The text after a configuration line's `do` or `do-exec` (whole or abbreviated) and a space,
+    /// which EXEC reads: `?` and Tab answer it as the privileged prompt would.
     fn after_do<'t>(&self, text: &'t str) -> Option<&'t str> {
         let toks = cli::tokens(text);
         let first = toks.first()?;
         let spaced = text.len() > first.at + first.text.len();
-        let exec =
-            first.text.eq_ignore_ascii_case("do") || first.text.eq_ignore_ascii_case("do-exec");
+        let exec = first.text.eq_ignore_ascii_case("do") || cli::names_do_exec(&first.text);
         (cli::is_config(self.mode()) && exec && spaced)
             .then(|| &text[toks.get(1).map_or(text.len(), |t| t.at)..])
     }
@@ -1547,13 +1545,16 @@ impl<'a> Session<'a> {
         let unknown = vec!["% Unrecognized command".to_string()];
         if !whole {
             let typed = toks.last().map_or(String::new(), |t| t.text.to_lowercase());
-            let words: BTreeSet<String> = offered
+            let mut words: BTreeSet<String> = offered
                 .into_iter()
                 .filter(|o| {
                     o.kind != Offered::Placeholder && o.shown.to_lowercase().starts_with(&typed)
                 })
                 .map(|o| o.shown)
                 .collect();
+            if do_exec_begins(mode, done, &typed) {
+                words.insert("do-exec".into());
+            }
             if words.is_empty() {
                 return unknown;
             }
@@ -1656,11 +1657,15 @@ impl<'a> Session<'a> {
         let last = toks.last()?;
         let (offered, _) = self.offered_at(mode, &toks[..toks.len() - 1]);
         let typed = last.text.to_lowercase();
-        let kws: Vec<&String> = offered
+        let do_exec = "do-exec".to_string();
+        let mut kws: Vec<&String> = offered
             .iter()
             .filter(|o| o.kind == Offered::Keyword && o.shown.to_lowercase().starts_with(&typed))
             .map(|o| &o.shown)
             .collect();
+        if do_exec_begins(mode, &toks[..toks.len() - 1], &typed) && !kws.contains(&&do_exec) {
+            kws.push(&do_exec);
+        }
         let head = &text[..last.at];
         let pick = kws
             .iter()
@@ -1875,22 +1880,10 @@ fn wrapped(head: &str, help: &str, limit: usize) -> Vec<String> {
     out
 }
 
-/// Whether a block is one IOS opens from global configuration whatever mode it is typed in.
-fn top_block(header: &str) -> bool {
-    [
-        "interface ",
-        "vlan ",
-        "line ",
-        "router ",
-        "vrf definition ",
-        "ip vrf ",
-        "route-map ",
-        "class-map ",
-        "policy-map ",
-        "ip access-list ",
-    ]
-    .iter()
-    .any(|k| header.starts_with(k))
+/// Whether `do-exec` is among the words a configuration line's first word, typed as `typed`, begins:
+/// `?` lists it and Tab completes it, as IOS does every keyword of the mode.
+fn do_exec_begins(mode: &str, done: &[cli::Tok], typed: &str) -> bool {
+    cli::is_config(mode) && done.is_empty() && "do-exec".starts_with(typed)
 }
 
 /// The blocks a submode-entering line opens: `interface TwentyFiveGigE1/0/1`, `vlan 459`, one per
@@ -3645,5 +3638,125 @@ mod tests {
         s.type_line("configure terminal");
         s.type_line("router ospf 1");
         assert_eq!(s.help("do-exec show "), held);
+    }
+
+    /// The shell's contexts for `script` typed from privileged EXEC, and the corpus's for the session
+    /// log the same typing makes, a `?` probe after each line.
+    fn contexts_both_ways(e: &Engine, script: &[&str]) -> (Vec<String>, Vec<Option<String>>) {
+        let stack = crate::platform::parse_stack("C9300-48P").unwrap();
+        let mut s = Session::new(e, Device::new(stack));
+        s.type_line("enable");
+        let mut log = vec![];
+        let mut shell = vec![];
+        for line in script {
+            log.push(format!("{}{line}", s.prompt()));
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+            log.extend(out);
+            log.push(format!("{} ?", s.prompt()));
+            log.push("  answer".into());
+            shell.push(s.context().expect("a context"));
+        }
+        log.push(format!("{}end", s.prompt()));
+        let (_, ex) = crate::capture::exchanges(&log.join("\n")).unwrap();
+        let corpus = ex
+            .iter()
+            .filter(|e| e.command.ends_with('?'))
+            .map(|e| e.context.clone())
+            .collect();
+        (shell, corpus)
+    }
+
+    #[test]
+    fn blocks_of_one_kind_typed_back_to_back_take_the_same_context_in_the_shell_and_the_corpus() {
+        let script = [
+            "configure terminal",
+            "policy-map TESTA",
+            "policy-map TESTB",
+            "class class-default",
+            "policy-map TESTC",
+            "route-map TESTA permit 10",
+            "route-map TESTB deny 20",
+            "ip access-list extended TESTA",
+            "ip access-list extended TESTB",
+            "ip access-list standard TESTC",
+            "class-map match-any TESTA",
+            "class-map match-all TESTB",
+            "interface Vlan10",
+            "ip vrf forwarding TESTV",
+            "end",
+        ];
+        let (shell, corpus) = contexts_both_ways(&books_17_6(), &script);
+        let want = [
+            "",
+            "policy-map «word»",
+            "policy-map «word»",
+            "policy-map «word» > class «word»",
+            "policy-map «word»",
+            "route-map «word» permit «number»",
+            "route-map «word» deny «number»",
+            "ip access-list extended «word»",
+            "ip access-list extended «word»",
+            "ip access-list standard «word»",
+            "class-map match-any «word»",
+            "class-map match-all «word»",
+            "interface vlan",
+            "interface vlan",
+            "",
+        ];
+        assert_eq!(shell, want);
+        let corpus: Vec<Option<&str>> = corpus.iter().map(|c| c.as_deref()).collect();
+        let shell: Vec<Option<&str>> = shell.iter().map(|c| Some(c.as_str())).collect();
+        assert_eq!(corpus, shell);
+    }
+
+    #[test]
+    fn do_exec_abbreviated_runs_answers_and_completes_as_do_exec() {
+        let e = c9300();
+        let mut s = configured(&e, &["interface Vlan10", "exit"]);
+        let whole = s.type_line("do-exec show running-config | include interface Vlan10");
+        assert_eq!(whole.0, ["interface Vlan10"]);
+        for typed in ["do-", "do-e", "DO-EX", "do-exe"] {
+            assert_eq!(
+                s.type_line(&format!(
+                    "{typed} show running-config | include interface Vlan10"
+                )),
+                whole,
+                "{typed}"
+            );
+            assert_eq!(
+                s.help(&format!("{typed} show vlan ")),
+                s.help("do-exec show vlan ")
+            );
+            assert_eq!(
+                s.complete(&format!("{typed} sh")).as_deref(),
+                Some(format!("{typed} show ").as_str())
+            );
+            assert_eq!(s.complete(typed).as_deref(), Some("do-exec "), "{typed}");
+            assert_eq!(
+                s.type_line(typed),
+                (
+                    vec!["% Incomplete command.".to_string(), String::new()],
+                    Result::Error
+                )
+            );
+        }
+        assert_eq!(s.mode(), "config");
+        // `?` right after the word lists `do-exec` among the words it begins
+        assert_eq!(s.help("do-"), ["do-exec", ""]);
+        assert!(
+            s.help("do")[0].split("  ").any(|w| w == "do-exec"),
+            "{:?}",
+            s.help("do")
+        );
+        // `do` is its own command, and `d` begins too many words to be either
+        assert_eq!(s.complete("do").as_deref(), Some("do "));
+        assert_eq!(
+            s.type_line("do show running-config | include interface Vlan10"),
+            whole
+        );
+        assert_ne!(s.type_line("d show running-config").1, Result::Ok);
+        // a caret after an abbreviated `do-exec` stands under the refused word
+        assert_eq!(caret_at(&s.type_line("do-ex shw run").0), 23);
     }
 }
