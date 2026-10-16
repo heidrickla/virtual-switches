@@ -564,11 +564,17 @@ fn interface_order(header: &str, d: &Device) -> (u8, usize) {
     (5, 0)
 }
 
+/// The size `Current configuration` names: each line from the first `!` through `end` with its
+/// newline, plus one (the lab C9300, 17.6.4: the whole configuration and one interface's).
+fn config_bytes(body: &[String]) -> usize {
+    body.iter().map(|l| l.len() + 1).sum::<usize>() + 1
+}
+
 /// The running configuration as `show running-config` prints it, a blank line after `end` (the lab
 /// C9300, 17.6.4).
 pub fn running_config(d: &Device) -> Vec<String> {
     let body = configuration(d);
-    let bytes: usize = body.iter().map(|l| l.len() + 1).sum();
+    let bytes = config_bytes(&body);
     let mut out = vec![
         "Building configuration...".to_string(),
         String::new(),
@@ -595,6 +601,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
     let starts = |text: &str, list: &[&str]| list.iter().any(|a| text.starts_with(a));
     // a VTP server or client keeps the VLANs and its VTP settings in vlan.dat
     let in_config = d.vlans_in_running_config();
+    let off = d.global_value("vtp mode ") == Some("off");
     let kept: Vec<_> = d
         .global
         .iter()
@@ -602,11 +609,20 @@ pub fn configuration(d: &Device) -> Vec<String> {
         // `vtp version` prints whatever the mode (six C9200s at 17.9 and 17.12 print `vtp version
         // 1` with no `vtp mode` line)
         .filter(|e| in_config || !e.text.starts_with("vtp ") || e.text.starts_with("vtp version "))
+        // VTP mode off prints no `vtp version` line (the lab C9300, 17.6.4, at versions 1 and 3)
+        .filter(|e| !(off && e.text.starts_with("vtp version ")))
         .filter(|e| !d.held_top.contains(&e.text))
         .collect();
     // banners print after the global lines that follow the interfaces, before the line blocks
     let (banners, kept): (Vec<_>, Vec<_>) =
         kept.into_iter().partition(|e| e.key.starts_with("banner "));
+    // IOS XE 17.6 writes `vlan filter` after the `vlan access-map` blocks, before the VLANs (the lab
+    // C9300, 17.6.4); other releases keep it among the global lines before them (inferred)
+    let late_filter = !d.stack.classic()
+        && crate::release::Release::parse(&d.release).is_some_and(|r| r.config_version() == "17.6");
+    let (filters, kept): (Vec<_>, Vec<_>) = kept
+        .into_iter()
+        .partition(|e| late_filter && e.text.starts_with("vlan filter "));
     // each section's lines in IOS's order whatever order they were typed in (`service` lines before
     // `hostname`)
     let top = top_order(d);
@@ -662,11 +678,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
         }
         // a VLAN with no name ends its line with a space (the lab C9300, 17.6.4; 15 captures at
         // 15.2, 17.6 and 17.15); a named one does not
-        if b.lines.is_empty()
-            && b.header
-                .strip_prefix("vlan ")
-                .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit()))
-        {
+        if b.lines.is_empty() && vlan_ids_of(&b.header).is_some() {
             body.push(format!("{} ", b.header));
         } else {
             body.push(b.header.clone());
@@ -698,12 +710,12 @@ pub fn configuration(d: &Device) -> Vec<String> {
         body.push(e.text.clone());
     }
     body.push("!".into());
-    let mut vlans: Vec<&Block> = d
+    let vlans: Vec<&Block> = d
         .blocks
         .iter()
         .filter(|b| in_config && vlan_ids_of(&b.header).is_some())
         .collect();
-    vlans.sort_by_key(|b| first_vlan(&b.header));
+    let vlans = vlan_units(&vlans);
     // IOS lists every interface the stack has, those never configured as an empty block
     let unconfigured: Vec<Block> = d
         .stack
@@ -769,7 +781,16 @@ pub fn configuration(d: &Device) -> Vec<String> {
             .iter()
             .position(|p| b.header.starts_with(p))
     });
-    for b in pre.iter().chain(&vlans) {
+    for b in &pre {
+        block(&mut body, b);
+    }
+    for e in &filters {
+        body.push(e.text.clone());
+    }
+    if !filters.is_empty() {
+        body.push("!".into());
+    }
+    for b in &vlans {
         block(&mut body, b);
     }
     for e in &after_vlans {
@@ -817,8 +838,66 @@ pub fn configuration(d: &Device) -> Vec<String> {
         body.push("!".into());
     }
     place_held(d, &mut body);
+    vtp_together(&mut body);
     body.push("end".into());
     separate(d, body)
+}
+
+/// The VLAN blocks as the running configuration prints them: the VLANs with no line under them on
+/// one line, their list compressed (`vlan 10,100-141 `, the lab C9300, 17.6.4; `vlan 65-66 ` on an IE
+/// 3000), and each named VLAN its own block, in order of their first VLAN (where a named VLAN falls
+/// inside the list, inferred).
+fn vlan_units(vlans: &[&Block]) -> Vec<Block> {
+    let bare: std::collections::BTreeSet<u32> = vlans
+        .iter()
+        .filter(|b| b.lines.is_empty())
+        .filter_map(|b| vlan_ids_of(&b.header))
+        .flat_map(crate::generate::vlan_ids)
+        .collect();
+    let mut units: Vec<Block> = vlans
+        .iter()
+        .filter(|b| !b.lines.is_empty())
+        .map(|b| (*b).clone())
+        .collect();
+    if !bare.is_empty() {
+        let v: Vec<u32> = bare.into_iter().collect();
+        let mut parts = vec![];
+        let mut i = 0;
+        while i < v.len() {
+            let mut j = i;
+            while j + 1 < v.len() && v[j + 1] == v[j] + 1 {
+                j += 1;
+            }
+            parts.push(if j > i {
+                format!("{}-{}", v[i], v[j])
+            } else {
+                v[i].to_string()
+            });
+            i = j + 1;
+        }
+        units.push(Block {
+            header: format!("vlan {}", parts.join(",")),
+            lines: vec![],
+        });
+    }
+    units.sort_by_key(|b| first_vlan(&b.header));
+    units
+}
+
+/// The VTP lines together where the first of them prints, in the order IOS writes them whatever
+/// order they were typed in: `vtp domain` before `vtp mode` (the lab C9300, 17.6.4, with `vtp mode
+/// off` loaded and the domain typed), then `vtp version` and `vtp password` (inferred).
+fn vtp_together(body: &mut Vec<String>) {
+    const ORDER: [&str; 4] = ["vtp domain ", "vtp mode ", "vtp version ", "vtp password "];
+    let rank = |t: &str| ORDER.iter().position(|p| t.starts_with(p));
+    let Some(first) = body.iter().position(|l| rank(l).is_some()) else {
+        return;
+    };
+    let mut lines: Vec<String> = body.iter().filter(|l| rank(l).is_some()).cloned().collect();
+    lines.sort_by_key(|l| rank(l));
+    // no VTP line stands before the first, so its place holds once they are taken out
+    body.retain(|l| rank(l).is_none());
+    body.splice(first..first, lines);
 }
 
 /// IOS writes the `spanning-tree vlan` lines in VLAN order whatever order they were typed in (the lab
@@ -971,7 +1050,7 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                     body.push(want);
                 }
                 body.push("end".into());
-                let bytes: usize = body.iter().map(|l| l.len() + 1).sum();
+                let bytes = config_bytes(&body);
                 let mut out = vec![
                     "Building configuration...".to_string(),
                     String::new(),
@@ -1023,6 +1102,8 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 "show ip interface brief" => ip_interface_brief(d),
                 "show power inline" => power_inline(d),
                 "show vtp status" => vtp_status(d),
+                "show vtp counters" => vtp_counters(d),
+                "show vtp password" => vtp_password(d),
                 // the configuration saved or booted from, as NVRAM keeps it (`startup`); a switch
                 // with none answers as IOS does with its NVRAM erased
                 "show startup-config" => match &s.saved {
@@ -1414,20 +1495,32 @@ pub fn interfaces_trunk(d: &Device) -> Vec<String> {
     interfaces_trunk_with(d, &|_: &str, _: u32| true)
 }
 
+/// The ports that trunk, as `show interfaces trunk` lists them: a port-channel for its bundled
+/// members, never a suspended LACP member.
+pub(crate) fn trunking_ports(d: &Device) -> Vec<String> {
+    ports(d)
+        .into_iter()
+        .filter(|p| {
+            let link = up(d, p).or_else(|| bundle(d, p).map(|(_, l)| l));
+            let member = !p.starts_with("Port-channel") && link.is_some_and(|l| l.bundled);
+            // a suspended LACP member does not trunk (the lab C9300, 17.6.4)
+            link.is_some_and(|l| l.trunk) && !member && !suspended(d, p)
+        })
+        .collect()
+}
+
 /// `show interfaces trunk` with spanning tree's state: the last list keeps the VLANs a port forwards
 /// in (`forwards`), `none` on a port blocked in all of them (the lab C9300, 17.6.4).
 pub fn interfaces_trunk_with(d: &Device, forwards: &dyn Fn(&str, u32) -> bool) -> Vec<String> {
     let mut defined = defined_vlans(d);
     defined.insert(1);
-    let mut rows: Vec<(String, Vec<&str>)> = vec![];
-    for p in ports(d) {
-        let link = up(d, &p).or_else(|| bundle(d, &p).map(|(_, l)| l));
-        let member = !p.starts_with("Port-channel") && link.is_some_and(|l| l.bundled);
-        // a suspended LACP member does not trunk (the lab C9300, 17.6.4)
-        if link.is_some_and(|l| l.trunk) && !member && !suspended(d, &p) {
-            rows.push((p.clone(), config_of(d, &p)));
-        }
-    }
+    let rows: Vec<(String, Vec<&str>)> = trunking_ports(d)
+        .into_iter()
+        .map(|p| {
+            let c = config_of(d, &p);
+            (p, c)
+        })
+        .collect();
     if rows.is_empty() {
         return vec![];
     }
@@ -2112,49 +2205,10 @@ pub fn etherchannel_summary(d: &Device) -> Vec<String> {
     out
 }
 
-/// `show vtp status` under VTP version 1 or 2, laid out as the cores and c2960x 15.2(7)E capture 8 print it: the
-/// VTP lines vlan.dat keeps (default version 1, mode Server, pruning off), traps from `snmp-server
-/// enable traps vtp`, the updater the lowest-numbered VLAN interface with an address, and the VLANs
-/// counted with 1 and 1002-1005, Device ID the base MAC address. A virtual switch has no change
-/// history or vlan.dat digest: the MD5 digest comes from the domain and VLANs, and the database reads
-/// as never modified.
-pub fn vtp_status(d: &Device) -> Vec<String> {
-    let global = |prefix: &str| {
-        d.global
-            .iter()
-            .find_map(|e| e.text.strip_prefix(prefix))
-            .map(str::to_string)
-    };
-    let has = |line: &str| d.global.iter().any(|e| e.text == line);
-    let version = global("vtp version ").unwrap_or_else(|| "1".into());
-    // version 3 prints a layout of its own (a primary server, a block per feature) that no capture
-    // shows: every captured switch runs version 1
-    if version == "3" {
-        return vec![
-            "% vswitch has no output model for 'show vtp status' under VTP version 3 yet".into(),
-        ];
-    }
-    let domain = global("vtp domain ").unwrap_or_default();
-    let mode = match global("vtp mode ").as_deref() {
-        Some("client") => "Client",
-        Some("transparent") => "Transparent",
-        Some("off") => "Off",
-        _ => "Server",
-    };
-    let on = |b: bool| if b { "Enabled" } else { "Disabled" };
-    // IOS XE from 17.6 adds the operational state (both C9200Ls; the cores at 17.5 do not); pruning
-    // runs only on a server or client
-    let pruning = has("vtp pruning");
-    let pruning_line = match crate::release::Release::parse(&d.release) {
-        Some(r) if !r.classic() && r >= crate::release::Release::parse("17.6").expect("17.6") => {
-            let runs = pruning && matches!(mode, "Server" | "Client");
-            format!("{} (Operationally {})", on(pruning), on(runs))
-        }
-        _ => on(pruning).to_string(),
-    };
-    let traps = has("snmp-server enable traps vtp") || has("snmp-server enable traps");
-    // the lowest-numbered VLAN interface with an address, else the first layer 3 interface with
-    // one (the lab C9300, 17.6.4: Lo0 while Vlan10 waited on DHCP)
+/// The VTP updater: the lowest-numbered VLAN interface with an address, else the first layer 3
+/// interface with one (the lab C9300, 17.6.4: Lo0 while Vlan10 waited on DHCP), as its short name,
+/// its address and why IOS chose it.
+pub fn vtp_updater(d: &Device) -> Option<(String, String, &'static str)> {
     let address = |b: &Block| {
         b.lines
             .iter()
@@ -2164,8 +2218,7 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
             .filter(|ip| ip.contains('.'))
             .map(str::to_string)
     };
-    let updater = d
-        .blocks
+    d.blocks
         .iter()
         .filter_map(|b| {
             let n: u32 = b.header.strip_prefix("interface Vlan")?.parse().ok()?;
@@ -2188,39 +2241,102 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
                 let name = b.header.strip_prefix("interface ")?;
                 Some((short(name), address(b)?, "first layer3 interface found"))
             })
-        });
+        })
+}
+
+/// `show vtp status` as the lab C9300 (17.6.4), the lab C2960G (15.0(2)SE11) and the cores print it,
+/// with the index of the MD5 digest's first row where the layout prints one (its two rows left
+/// blank). Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1,
+/// server and pruning off by default), traps from `snmp-server enable traps vtp`; the VLANs are
+/// counted with 1 and 1002-1005, Device ID is the base MAC address, and the revision and the last
+/// change are the VLAN database's own (`Device::vtp`).
+pub fn vtp_layout(d: &Device) -> (Vec<String>, Option<usize>) {
+    let has = |line: &str| d.global.iter().any(|e| e.text == line);
+    let (version, mode, domain) = d.vtp_settings();
+    let mode = match mode.as_str() {
+        "client" => "Client",
+        "transparent" => "Transparent",
+        "off" => "Off",
+        _ => "Server",
+    };
+    let on = |b: bool| if b { "Enabled" } else { "Disabled" };
+    // IOS XE from 17.6 adds the operational state (both C9200Ls; the cores at 17.5 do not); pruning
+    // runs only on a server or client
+    let pruning = has("vtp pruning");
+    let pruning_line = match crate::release::Release::parse(&d.release) {
+        Some(r) if !r.classic() && r >= crate::release::Release::parse("17.6").expect("17.6") => {
+            let runs = pruning && matches!(mode, "Server" | "Client");
+            format!("{} (Operationally {})", on(pruning), on(runs))
+        }
+        _ => on(pruning).to_string(),
+    };
+    let traps = has("snmp-server enable traps vtp") || has("snmp-server enable traps");
     let mut vlans = defined_vlans(d);
     vlans.extend([1, 1002, 1003, 1004, 1005]);
-    // FNV-1a over a seed and a text, for the values a real switch holds and vswitch does not
-    let hash = |seed: u64, text: &str| {
-        text.bytes().fold(0xcbf2_9ce4_8422_2325 ^ seed, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        })
-    };
-    // the base MAC address, as `show version` names it (13 captures that print both agree)
-    let device_id = d.mac.to_string();
-    let database = format!("{domain} {vlans:?}");
-    let digest: Vec<String> = [hash(1, &database), hash(2, &database)]
-        .iter()
-        .flat_map(|h| h.to_be_bytes())
-        .map(|b| format!("0x{b:02X}"))
-        .collect();
-    // IOS ends both digest lines with a space
-    let gap = " ";
     let field = |name: &str, v: &str| format!("{name:<32}: {v}");
     let feature = |name: &str, v: &str| format!("{name:<34}: {v}");
+    // the base MAC address, as `show version` names it (13 captures that print both agree)
     let mut out = vec![
         field("VTP Version capable", "1 to 3"),
         field("VTP version running", &version),
         field("VTP Domain Name", &domain),
         field("VTP Pruning Mode", &pruning_line),
         field("VTP Traps Generation", on(traps)),
-        field("Device ID", &device_id),
-        "Configuration last modified by 0.0.0.0 at 0-0-00 00:00:00".into(),
-        match &updater {
+        field("Device ID", &d.mac.to_string()),
+    ];
+    let keeps = matches!(mode, "Server" | "Client");
+    if version == "3" {
+        // a block per feature; MST and the unknown feature stay transparent, and an off or
+        // transparent VLAN feature prints no revision (the lab C9300, 17.6.4). A client prints a
+        // server's lines (inferred): no capture holds one
+        out.push(String::new());
+        out.push("Feature VLAN:".into());
+        out.push("--------------".into());
+        out.push(feature("VTP Operating Mode", mode));
+        out.push(feature(
+            "Number of existing VLANs",
+            &vlans.len().to_string(),
+        ));
+        let extended = vlans.iter().filter(|&&v| v > 1005).count();
+        out.push(feature(
+            "Number of existing extended VLANs",
+            &extended.to_string(),
+        ));
+        out.push(feature("Maximum VLANs supported locally", "4096"));
+        // no primary server, which vswitch does not model: the primary's ID is zero and the digest
+        // empty
+        if keeps {
+            out.push(feature(
+                "Configuration Revision",
+                &d.vtp.revision.to_string(),
+            ));
+            out.push(feature("Primary ID", "0000.0000.0000"));
+            out.push(feature("Primary Description", ""));
+            out.push(feature("MD5 digest", ""));
+        }
+        for other in ["MST", "UNKNOWN"] {
+            out.push(String::new());
+            out.push(String::new());
+            out.push(format!("Feature {other}:"));
+            out.push("--------------".into());
+            out.push(feature("VTP Operating Mode", "Transparent"));
+        }
+        out.push(String::new());
+        return (out, None);
+    }
+    out.push(format!(
+        "Configuration last modified by {} at {}",
+        d.vtp.modified_by, d.vtp.modified_at
+    ));
+    // a transparent switch updates no one (c9200 17.15 capture 27), nor one with VTP off (the lab
+    // C9300, 17.6.4)
+    if keeps {
+        out.push(match vtp_updater(d) {
             Some((n, ip, why)) => format!("Local updater ID is {ip} on interface {n} ({why})"),
             None => "Local updater ID is 0.0.0.0 (no valid interface found)".into(),
-        },
+        });
+    }
+    out.extend([
         String::new(),
         "Feature VLAN:".into(),
         "--------------".into(),
@@ -2236,16 +2352,65 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
             },
         ),
         feature("Number of existing VLANs", &vlans.len().to_string()),
-        feature("Configuration Revision", "0"),
-        feature("MD5 digest", &format!("{}{gap}", digest[..8].join(" "))),
-        format!("{:36}{}{gap}", "", digest[8..].join(" ")),
-    ];
-    // a transparent switch updates no one (c9200 17.15 capture 27), nor one with VTP off (the lab
-    // C9300, 17.6.4)
-    if matches!(mode, "Transparent" | "Off") {
-        out.remove(7);
+        feature("Configuration Revision", &d.vtp.revision.to_string()),
+    ]);
+    // the digest's two rows, each ending with a space on every platform
+    let at = out.len();
+    out.push(feature("MD5 digest", ""));
+    out.push(String::new());
+    (out, Some(at))
+}
+
+/// `show vtp status`. Under VTP versions 1 and 2 it prints the MD5 digest, whose input Cisco never
+/// published and which no reconstruction reproduced against the lab's: those forms answer the
+/// no-output-model line.
+pub fn vtp_status(d: &Device) -> Vec<String> {
+    match vtp_layout(d) {
+        (lines, None) => lines,
+        (_, Some(_)) => vec!["% vswitch has no output model for 'show vtp status' yet".into()],
+    }
+}
+
+/// `show vtp counters` as the lab C9300 (17.6.4) printed it: no advertisement sent or received, as
+/// vswitch exchanges none (inferred for a lab of VTP servers), and a pruning row per trunking port.
+pub fn vtp_counters(d: &Device) -> Vec<String> {
+    let mut out: Vec<String> = [
+        "Summary advertisements received    : 0",
+        "Subset advertisements received     : 0",
+        "Request advertisements received    : 0",
+        "Summary advertisements transmitted : 0",
+        "Subset advertisements transmitted  : 0",
+        "Request advertisements transmitted : 0",
+        "Number of config revision errors   : 0",
+        "Number of config digest errors     : 0",
+        "Number of V1 summary errors        : 0",
+    ]
+    .iter()
+    .map(|l| l.to_string())
+    .collect();
+    out.insert(0, "VTP statistics:".into());
+    out.extend([
+        String::new(),
+        String::new(),
+        "VTP pruning statistics:".into(),
+        String::new(),
+        "Trunk            Join Transmitted Join Received    Summary advts received from".into(),
+        format!("{:51}non-pruning-capable device", ""),
+        "---------------- ---------------- ---------------- ---------------------------".into(),
+    ]);
+    for p in trunking_ports(d) {
+        out.push(format!("{:<20}{:<17}{:<17}{:<9}", short(&p), 0, 0, 0));
     }
     out
+}
+
+/// `show vtp password`: the lab C9300's answer (17.6.4) with none set; a password's form no switch
+/// has shown.
+pub fn vtp_password(d: &Device) -> Vec<String> {
+    if d.global_value("vtp password ").is_some() {
+        return vec!["% vswitch has no output model for 'show vtp password' yet".into()];
+    }
+    vec!["The VTP password is not configured.".into()]
 }
 
 /// `show ip interface brief`, laid out as the 9300 command reference's example: the VLAN interfaces,
@@ -2318,22 +2483,6 @@ pub fn ip_interface_brief(d: &Device) -> Vec<String> {
         let port_bare = d.stack.physical().contains(&n)
             && Some(n.as_str()) != d.stack.management()
             && !c.iter().any(|l| l.starts_with("ip address "));
-        // an address typed at the console reads `manual`, DHCP's too while no server answers (the
-        // lab C9300, 17.6.4); one in a configuration loaded, `DHCP`
-        let method = if d.manual.contains(&header) && c.iter().any(|l| l.starts_with("ip address "))
-        {
-            "manual"
-        } else if c.iter().any(|l| l.starts_with("ip address dhcp")) {
-            "DHCP"
-        } else if !loopback_bare
-            && !port_bare
-            && c.iter()
-                .any(|l| l.starts_with("ip address ") || *l == "no ip address")
-        {
-            "NVRAM"
-        } else {
-            "unset"
-        };
         // a VLAN interface is up while its VLAN exists and a running switch port carries it
         // (autostate, 9300 configuration guide)
         let vlan_up = n
@@ -2367,6 +2516,31 @@ pub fn ip_interface_brief(d: &Device) -> Vec<String> {
             ("up", "down")
         } else {
             ("down", "down")
+        };
+        // an address typed at the console reads `manual`, and so does `no ip address` typed after
+        // it; DHCP's reads `manual` while the interface is down and `DHCP` once it is up, with or
+        // without a lease (the lab C9300, 17.6.4: Vlan1 shut, then up; up with its protocol down,
+        // inferred). One in a configuration loaded reads `DHCP` or NVRAM, and the factory default's
+        // `no ip address` `unset`
+        let typed = d.manual.contains(&header);
+        let dhcp = c.iter().any(|l| l.starts_with("ip address dhcp"));
+        let addressed = c
+            .iter()
+            .any(|l| l.starts_with("ip address ") || *l == "no ip address");
+        let method = if typed && dhcp {
+            if (status, protocol) == ("up", "up") {
+                "DHCP"
+            } else {
+                "manual"
+            }
+        } else if typed && addressed {
+            "manual"
+        } else if dhcp {
+            "DHCP"
+        } else if !loopback_bare && !port_bare && !d.factory && addressed {
+            "NVRAM"
+        } else {
+            "unset"
         };
         out.push(row(&n, ip, "YES", method, status, protocol));
     }
@@ -2817,19 +2991,315 @@ mod tests {
         );
     }
 
+    /// A C9300 at 17.6 typed `lines` at the console at `clock`, its base MAC 0011.2233.4401.
+    fn vtp_switch<'e>(e: &'e cli::Engine, lines: &[&str]) -> shell::Session<'e> {
+        let mut s = typed(e, "C9300-24T", &[]);
+        s.device.mac = crate::stp::Mac::parse("0011.2233.4401").unwrap();
+        s.clock = Some(1_792_175_417);
+        for l in ["configure terminal"].iter().chain(lines).chain(&["end"]) {
+            let (o, r) = s.type_line(l);
+            assert_eq!(r, shell::Result::Ok, "{l}: {o:?}");
+        }
+        s
+    }
+
     #[test]
-    fn show_vtp_status_has_no_layout_under_vtp_version_3() {
-        let e = engine("c9300", "17.15");
-        let s = typed(&e, "C9300-24T", &["vtp domain LAB", "vtp version 3"]);
+    fn a_vtp_server_counts_a_revision_per_vlan_change_and_stamps_it() {
+        let e = engine("c9300", "17.6");
+        let s = vtp_switch(&e, &["vtp domain LAB", "vlan 140", "exit"]);
+        let (lines, digest) = vtp_layout(&s.device);
+        assert_eq!(
+            lines[..9],
+            [
+                "VTP Version capable             : 1 to 3",
+                "VTP version running             : 1",
+                "VTP Domain Name                 : LAB",
+                "VTP Pruning Mode                : Disabled (Operationally Disabled)",
+                "VTP Traps Generation            : Disabled",
+                "Device ID                       : 0011.2233.4401",
+                "Configuration last modified by 0.0.0.0 at 10-16-26 18:30:17",
+                "Local updater ID is 0.0.0.0 (no valid interface found)",
+                "",
+            ]
+        );
+        assert!(lines.contains(&"Configuration Revision            : 1".to_string()));
+        assert!(lines.contains(&"Number of existing VLANs          : 6".to_string()));
+        // the digest's input is unpublished: the command answers the no-output-model line
+        assert_eq!(digest, Some(lines.len() - 2));
         assert_eq!(
             vtp_status(&s.device),
-            ["% vswitch has no output model for 'show vtp status' under VTP version 3 yet"]
+            ["% vswitch has no output model for 'show vtp status' yet"]
         );
-        let s = typed(&e, "C9300-24T", &["vtp domain LAB", "vtp version 2"]);
+        // a VLAN named in its submode is one change; the server keeps its VLANs out of the running
+        // configuration
+        let mut s = s;
+        for l in ["configure terminal", "vlan 141", "name X", "exit", "end"] {
+            s.type_line(l);
+        }
+        assert_eq!(s.device.vtp.revision, 2);
+        let run = running_config(&s.device);
+        assert!(
+            !run.iter()
+                .any(|l| l.starts_with("vlan ") || l.starts_with("vtp "))
+        );
+        // a new domain starts again at 0, and so does transparent mode, where a change counts nothing
+        for l in ["configure terminal", "vtp domain LAB2", "end"] {
+            s.type_line(l);
+        }
+        assert_eq!(s.device.vtp.revision, 0);
+        for l in [
+            "configure terminal",
+            "vtp mode transparent",
+            "vlan 142",
+            "exit",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert_eq!(s.device.vtp.revision, 0);
+        let (lines, _) = vtp_layout(&s.device);
+        assert!(!lines.iter().any(|l| l.starts_with("Local updater")));
+    }
+
+    #[test]
+    fn vtp_version_3_prints_a_block_per_feature_and_mode_off_its_vlans_on_one_line() {
+        let e = engine("c9300", "17.6");
+        let s = vtp_switch(
+            &e,
+            &["vtp domain LAB", "vtp version 3", "vlan 10,20-22", "exit"],
+        );
+        let status = vtp_status(&s.device);
         assert_eq!(
-            vtp_status(&s.device)[1],
-            "VTP version running             : 2"
+            status[6..],
+            [
+                "",
+                "Feature VLAN:",
+                "--------------",
+                "VTP Operating Mode                : Server",
+                "Number of existing VLANs          : 9",
+                "Number of existing extended VLANs : 0",
+                "Maximum VLANs supported locally   : 4096",
+                "Configuration Revision            : 0",
+                "Primary ID                        : 0000.0000.0000",
+                "Primary Description               : ",
+                "MD5 digest                        : ",
+                "",
+                "",
+                "Feature MST:",
+                "--------------",
+                "VTP Operating Mode                : Transparent",
+                "",
+                "",
+                "Feature UNKNOWN:",
+                "--------------",
+                "VTP Operating Mode                : Transparent",
+                "",
+            ]
         );
+        let mut s = s;
+        for l in [
+            "configure terminal",
+            "vtp mode off",
+            "vlan 23",
+            "name NAMED",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        let status = vtp_status(&s.device);
+        assert_eq!(status[9], "VTP Operating Mode                : Off");
+        assert_eq!(status[12], "Maximum VLANs supported locally   : 4096");
+        assert_eq!(status[13], "");
+        // mode off prints the domain, the mode and the VLANs, no `vtp version`; unnamed VLANs share
+        // one line ending in a space
+        let run = running_config(&s.device);
+        let vtp: Vec<&String> = run
+            .iter()
+            .filter(|l| l.starts_with("vtp ") || l.starts_with("vlan "))
+            .collect();
+        assert_eq!(
+            vtp,
+            [
+                "vtp domain LAB",
+                "vtp mode off",
+                "vlan 10,20-22 ",
+                "vlan 23"
+            ]
+        );
+    }
+
+    #[test]
+    fn vtp_counters_list_each_trunk_and_the_password_answers_as_measured() {
+        let e = engine("c9300", "17.6");
+        let s = vtp_switch(&e, &[]);
+        let c = vtp_counters(&s.device);
+        assert_eq!(c[0], "VTP statistics:");
+        assert_eq!(c[9], "Number of V1 summary errors        : 0");
+        assert_eq!(
+            c[14],
+            "Trunk            Join Transmitted Join Received    Summary advts received from"
+        );
+        assert_eq!(c.len(), 17);
+        assert_eq!(
+            vtp_password(&s.device),
+            ["The VTP password is not configured."]
+        );
+        let s = vtp_switch(&e, &["vtp password secret1"]);
+        assert_eq!(
+            vtp_password(&s.device),
+            ["% vswitch has no output model for 'show vtp password' yet"]
+        );
+    }
+
+    #[test]
+    fn a_c9300_at_17_6_boots_its_factory_default_and_reads_its_addresses_as_measured() {
+        let e = engine("c9300", "17.6");
+        let mut s = shell::Session::new(
+            &e,
+            device::Device::new(platform::parse_stack("C9300-24T").unwrap()),
+        );
+        s.factory_default();
+        assert_eq!(s.prompt(), "Switch>");
+        s.type_line("enable");
+        assert_eq!(
+            s.type_line("show startup-config").0,
+            ["startup-config is not present"]
+        );
+        let run = running_config(&s.device);
+        for l in [
+            "spanning-tree mode rapid-pvst",
+            "spanning-tree extend system-id",
+            "license boot level network-advantage addon dna-advantage",
+        ] {
+            assert!(run.contains(&l.to_string()), "{l}: {run:?}");
+        }
+        assert_eq!(
+            block_of(&run, "interface Vlan1"),
+            ["interface Vlan1", " no ip address", " shutdown"]
+        );
+        // the factory's `no ip address` reads unset
+        let brief = ip_interface_brief(&s.device);
+        assert!(row(&brief, "Vlan1").contains(" YES unset  administratively down down"));
+        assert!(row(&brief, "GigabitEthernet0/0").contains(" YES unset "));
+        let (vtp, _) = vtp_layout(&s.device);
+        assert!(vtp.contains(&"Number of existing VLANs          : 5".to_string()));
+        // DHCP typed on a shut interface reads manual, DHCP once it is up; `no ip address` after it
+        // stays manual
+        for l in [
+            "configure terminal",
+            "interface Vlan1",
+            "ip address dhcp",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert_eq!(
+            block_of(&running_config(&s.device), "interface Vlan1"),
+            ["interface Vlan1", " ip address dhcp", " shutdown"]
+        );
+        assert!(row(&ip_interface_brief(&s.device), "Vlan1").contains(" YES manual "));
+        s.device.links.insert(
+            "GigabitEthernet1/0/1".into(),
+            device::Link {
+                peer: "host".into(),
+                optic: None,
+                speed: None,
+                half: false,
+                trunk: false,
+                bundled: false,
+            },
+        );
+        for l in [
+            "configure terminal",
+            "interface Vlan1",
+            "no shutdown",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert!(row(&ip_interface_brief(&s.device), "Vlan1").starts_with(
+            "Vlan1                  unassigned      YES DHCP   up                    up"
+        ));
+        for l in [
+            "configure terminal",
+            "interface Vlan1",
+            "no ip address",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert!(row(&ip_interface_brief(&s.device), "Vlan1").contains(" YES manual "));
+        // a boot level typed takes effect at the next boot: it is said, not stored
+        s.type_line("configure terminal");
+        assert_eq!(
+            s.type_line("license boot level network-essentials addon dna-essentials")
+                .0,
+            ["% use 'write' command to make license boot config take effect on next boot"]
+        );
+        s.type_line("end");
+        assert!(
+            !running_config(&s.device)
+                .iter()
+                .any(|l| l.contains("network-essentials"))
+        );
+        // no capture holds another release's default: a 17.15 switch starts blank
+        let e = engine("c9300", "17.15");
+        let mut s = shell::Session::new(
+            &e,
+            device::Device::new(platform::parse_stack("C9300-24T").unwrap()),
+        );
+        s.factory_default();
+        assert!(!s.device.factory && s.device.global.is_empty());
+    }
+
+    #[test]
+    fn at_17_6_vlan_filter_follows_the_access_maps_and_the_vtp_domain_precedes_the_mode() {
+        let lines = [
+            "vtp mode transparent",
+            "vtp domain LAB",
+            "vlan access-map DROPX 10",
+            "action drop",
+            "exit",
+            "vlan filter DROPX vlan-list 10",
+            "vlan 10",
+            "exit",
+        ];
+        let e = engine("c9300", "17.6");
+        let run = configuration(&typed(&e, "C9300-24T", &lines).device);
+        let at = |l: &str| {
+            run.iter()
+                .position(|x| x == l)
+                .unwrap_or_else(|| panic!("{l}: {run:?}"))
+        };
+        assert_eq!(at("vtp mode transparent"), at("vtp domain LAB") + 1);
+        assert_eq!(at("vlan filter DROPX vlan-list 10"), at(" action drop") + 2);
+        assert!(at("vlan 10 ") > at("vlan filter DROPX vlan-list 10"));
+        // other releases keep it among the global lines, before the access maps
+        let e = engine("c9300", "17.15");
+        let run = configuration(&typed(&e, "C9300-24T", &lines).device);
+        let at = |l: &str| run.iter().position(|x| x == l).unwrap();
+        assert!(at("vlan filter DROPX vlan-list 10") < at("vlan access-map DROPX 10"));
+    }
+
+    #[test]
+    fn the_configuration_size_counts_one_past_its_lines() {
+        let e = engine("c9300", "17.6");
+        let mut s = typed(
+            &e,
+            "C9300-24T",
+            &["interface Vlan1", "ip address dhcp", "shutdown"],
+        );
+        // `!`, the header, two lines and `end`, each with its newline, plus one
+        assert_eq!(
+            s.type_line("show running-config interface Vlan1").0[2],
+            "Current configuration : 50 bytes"
+        );
+    }
+
+    #[test]
+    fn vtp_stamps_print_month_and_day_unpadded() {
+        assert_eq!(shell::vtp_stamp(1_792_175_417), "10-16-26 18:30:17");
+        assert_eq!(shell::vtp_stamp(731_735_372), "3-10-93 03:49:32");
     }
 
     #[test]
@@ -3080,14 +3550,15 @@ mod tests {
         );
         // the lab C9300 (17.6.4): Vlan10 waits on DHCP, so Lo0
         assert!(
-            vtp_status(&s.device).contains(
+            vtp_layout(&s.device).0.contains(
                 &"Local updater ID is 192.0.2.1 on interface Lo0 (first layer3 interface found)"
                     .to_string()
             )
         );
         let s = typed(&e, "C9300-24T", &["vtp mode off"]);
         assert!(
-            !vtp_status(&s.device)
+            !vtp_layout(&s.device)
+                .0
                 .iter()
                 .any(|l| l.starts_with("Local updater"))
         );

@@ -114,6 +114,35 @@ pub struct Session<'a> {
     /// the lab the switch is cabled into, as it stood once every cable came up (`lab::connect`):
     /// spanning tree reads it with this session's own configuration in its place
     pub lab: Option<crate::spanning::LabView>,
+    /// the switch's clock, as seconds since 1970 UTC, which a VLAN database change stamps; the
+    /// computer's clock when `None`
+    pub clock: Option<u64>,
+    /// the VLAN database as it stood when VTP last counted a change
+    vlans_seen: Option<Vec<(String, Vec<String>)>>,
+}
+
+/// A time as VTP's last-change line prints it: month and day unpadded, the year in two digits
+/// (`10-16-26 18:30:17`, the lab C9300, 17.6.4; `3-10-93 03:49:32`, the lab C2960G).
+pub fn vtp_stamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rest = secs % 86_400;
+    // civil date from days since 1970 (Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{month}-{day}-{:02} {:02}:{:02}:{:02}",
+        year.rem_euclid(100),
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// What a typed line did.
@@ -152,6 +181,102 @@ impl<'a> Session<'a> {
             saved: None,
             replayed: false,
             lab: None,
+            clock: None,
+            vlans_seen: None,
+        }
+    }
+
+    /// Boots the switch as it comes from the factory with no startup configuration, where vswitch
+    /// models that default (`startup::factory`): its lines taken as the switch's own, the startup
+    /// configuration still absent, the session at `>`.
+    pub fn factory_default(&mut self) {
+        let Some(lines) = crate::startup::factory(&self.device) else {
+            return;
+        };
+        crate::check::type_into(self, &lines.join("\n"));
+        self.frames = vec![Frame::top("exec")];
+        self.replayed = false;
+        self.accepted.clear();
+        self.device.factory = true;
+        self.vlans_seen = Some(self.device.vlan_contents());
+    }
+
+    /// The switch's clock, as seconds since 1970 UTC.
+    fn now(&self) -> u64 {
+        self.clock.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+        })
+    }
+
+    /// What VTP makes of the line just typed: a new domain, transparent or off mode, or version 3
+    /// starts the revision at 0 again (VLAN configuration guide; version 3 measured on the lab
+    /// C9300, 17.6.4); a VLAN database change a version 1 or 2 server takes at the console counts
+    /// one revision and stamps the updater and the clock once the VLAN submode is left (the lab
+    /// C9300, 17.6.4: `vlan 140`, `exit`, revision 1). A replayed configuration is the boot state
+    /// and counts nothing.
+    fn vtp_after(&mut self, before: (String, String, String)) {
+        let (version, mode, domain) = self.device.vtp_settings();
+        if domain != before.2
+            || (mode != before.1 && matches!(mode.as_str(), "transparent" | "off"))
+            || (version != before.0 && version == "3")
+        {
+            self.device.vtp.revision = 0;
+        }
+        // a VLAN submode's changes count when it is left (inferred: one change per `vlan` entry,
+        // a range included)
+        if self.mode() == "config-vlan" {
+            return;
+        }
+        let contents = self.device.vlan_contents();
+        let changed = self.vlans_seen.as_ref().is_some_and(|s| *s != contents);
+        // a version 3 server is no primary server, which vswitch does not model: its revision stays
+        // (inferred)
+        if changed && !self.redacted && mode == "server" && version != "3" {
+            self.device.vtp.revision += 1;
+            self.device.vtp.modified_by =
+                show::vtp_updater(&self.device).map_or_else(|| "0.0.0.0".to_string(), |u| u.1);
+            self.device.vtp.modified_at = vtp_stamp(self.now());
+        }
+        self.vlans_seen = Some(contents);
+    }
+
+    /// The forced speeds of the ports a `no speed` is about to clear, by full name.
+    fn forced_speeds(&self, p: &Parse) -> Vec<(String, u32)> {
+        if !p.negated || crate::device::key(p) != "speed" {
+            return vec![];
+        }
+        let Some(f) = self.frames.last() else {
+            return vec![];
+        };
+        f.blocks
+            .iter()
+            .filter_map(|&b| {
+                let name = self.device.blocks[b].header.strip_prefix("interface ")?;
+                let mbps =
+                    self.device.config_of(name).iter().find_map(|l| {
+                        l.strip_prefix("speed ").and_then(|v| v.parse::<u32>().ok())
+                    })?;
+                Some((name.to_string(), mbps))
+            })
+            .collect()
+    }
+
+    /// The lab C9300, 17.6.4 kept costing a port at the speed `no speed` cleared, with its Type back
+    /// to `P2p`, 30 seconds on. That the cost holds until the port is given a speed again, and that
+    /// other platforms and releases do the same, is inferred.
+    fn hold_speeds(&mut self, p: &Parse, cleared: Vec<(String, u32)>) {
+        self.device.held_speed.extend(cleared);
+        if !p.negated && crate::device::key(p) == "speed" {
+            let Some(f) = self.frames.last() else {
+                return;
+            };
+            for &b in &f.blocks {
+                if let Some(name) = self.device.blocks[b].header.strip_prefix("interface ") {
+                    self.device.held_speed.remove(name);
+                }
+            }
         }
     }
 
@@ -735,6 +860,16 @@ impl<'a> Session<'a> {
 
     /// Types `line` at the current prompt; returns what IOS prints and whether it was accepted.
     pub fn type_line(&mut self, line: &str) -> (Vec<String>, Result) {
+        if self.vlans_seen.is_none() {
+            self.vlans_seen = Some(self.device.vlan_contents());
+        }
+        let before = self.device.vtp_settings();
+        let out = self.typed(line);
+        self.vtp_after(before);
+        out
+    }
+
+    fn typed(&mut self, line: &str) -> (Vec<String>, Result) {
         let lead = self.lead.take();
         // a switch booted from the configuration replayed before its first typed line
         if self.redacted {
@@ -983,7 +1118,9 @@ impl<'a> Session<'a> {
         });
         if let Some(tok) = refused {
             self.frames.extend(closed.drain(..).rev());
-            let at = crate::cli::tokens(trimmed).get(tok).map_or(0, |t| t.at);
+            let at = crate::cli::tokens(trimmed)
+                .get(tok)
+                .map_or(0, |t| t.at + past_in_range(&t.text, &self.device.stack));
             return (
                 self.error(prompt_len, trimmed, &Outcome::Invalid(at)),
                 Result::Error,
@@ -1042,7 +1179,11 @@ impl<'a> Session<'a> {
                 key: Some(crate::device::key(&p)),
             });
         }
+        let speeds = self.forced_speeds(&p);
         let (mut out, r) = self.run(&mode, trimmed, &p);
+        if r == Result::Ok {
+            self.hold_speeds(&p, speeds);
+        }
         // at the console an access or voice VLAN the switch lacks is made, and said so, as IOS does;
         // a replayed configuration defines its own
         if r == Result::Ok
@@ -1211,7 +1352,7 @@ impl<'a> Session<'a> {
         let lead = prompt_len + line[..at].chars().count();
         let saved = std::mem::replace(&mut self.frames, vec![Frame::top("privileged")]);
         self.lead = Some(lead);
-        let out = self.type_line(&line[at..]);
+        let out = self.typed(&line[at..]);
         self.frames = saved;
         out
     }
@@ -1306,6 +1447,23 @@ impl<'a> Session<'a> {
             "copy running-config startup-config" => {
                 self.asking = true;
                 return (vec![], Result::Ok);
+            }
+            // the boot level lives in the license store, not the configuration: typed at the console
+            // it changes nothing until saved and booted, and says so (the lab C9300, 17.6.4; other IOS
+            // XE releases inferred); a replayed configuration's line is the level the switch booted at
+            _ if cli::is_config(mode)
+                && !self.redacted
+                && !p.negated
+                && !self.device.stack.classic()
+                && p.canonical().starts_with("license boot level ") =>
+            {
+                return (
+                    vec![
+                        "% use 'write' command to make license boot config take effect on next boot"
+                            .into(),
+                    ],
+                    Result::Ok,
+                );
             }
             _ => {}
         }
@@ -2363,6 +2521,35 @@ fn on_stack(value: &str, stack: &crate::platform::Stack) -> bool {
     })
 }
 
+/// Where in a refused name typed with its number (`Po10`) the caret goes: past the digits that
+/// still name an interface of its type (the lab C2960G, 15.0(2)SE11, refused `Po10` past `Po1`).
+/// Other types and platforms are inferred to do the same; any other word, at its start.
+fn past_in_range(word: &str, stack: &crate::platform::Stack) -> usize {
+    let Some(split) = word.find(|c: char| c.is_ascii_digit()) else {
+        return 0;
+    };
+    let (abbr, digits) = word.split_at(split);
+    let types: Vec<(u64, u64)> = crate::cli::interface_types()
+        .iter()
+        .filter(|(full, _)| {
+            !abbr.is_empty() && full.to_lowercase().starts_with(&abbr.to_lowercase())
+        })
+        .filter_map(|(full, _)| stack.numbered(full))
+        .collect();
+    let ([(_, hi)], true) = (types.as_slice(), digits.bytes().all(|b| b.is_ascii_digit())) else {
+        return 0;
+    };
+    let fits = (1..=digits.len())
+        .take_while(|&k| digits[..k].parse::<u64>().is_ok_and(|v| v <= *hi))
+        .last()
+        .unwrap_or(0);
+    if fits == digits.len() {
+        0
+    } else {
+        abbr.len() + fits
+    }
+}
+
 fn looks_like_interface(v: &str) -> bool {
     crate::cli::interface_types().iter().any(|(full, _)| {
         v.starts_with(full) && v[full.len()..].starts_with(|c: char| c.is_ascii_digit())
@@ -2654,7 +2841,11 @@ mod tests {
         let stack = crate::platform::parse_stack("C9300-48P").unwrap();
         let mut s = Session::new(e, Device::new(stack));
         for line in ["enable", "configure terminal"].iter().chain(lines) {
+            // a boot level is the one the switch booted at, as a configuration loaded states it
+            let level = line.starts_with("license boot level ");
+            s.redacted = level;
             let (out, r) = s.type_line(line);
+            s.redacted = false;
             assert_eq!(r, Result::Ok, "{line}: {out:?}");
         }
         s
@@ -3217,7 +3408,8 @@ mod tests {
         );
         assert!(s.type_line("switchport access vlan 30").0.is_empty());
         let run = show::running_config(&s.device);
-        assert!(run.contains(&"vlan 30 ".to_string()) && run.contains(&"vlan 40 ".to_string()));
+        // unnamed VLANs print on one line
+        assert!(run.contains(&"vlan 10,30,40 ".to_string()), "{run:?}");
         // a replayed configuration defines its own VLANs
         let (replayed, _) = crate::check::type_config(
             &e,
@@ -3277,6 +3469,39 @@ mod tests {
             ]
         );
         assert_eq!(s.device.hostname, "lab");
+    }
+
+    #[test]
+    fn a_2960g_takes_six_port_channels_and_prints_one_port_s_configuration() {
+        let r = crate::release::Release::parse("15.0(2)SE").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960G-24TC-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        // refused past the digits that still name a port channel
+        let (out, r) = s.type_line("show spanning-tree interface Po10");
+        assert_eq!(r, Result::Error);
+        assert_eq!(out[0], format!("{}^", " ".repeat(39)));
+        s.type_line("configure terminal");
+        assert_eq!(s.type_line("interface Port-channel6").1, Result::Ok);
+        assert_eq!(s.type_line("interface Port-channel7").1, Result::Error);
+        s.type_line("interface GigabitEthernet0/3");
+        s.type_line("switchport mode trunk");
+        s.type_line("end");
+        assert_eq!(
+            s.type_line("show running-config interface GigabitEthernet0/3")
+                .0,
+            [
+                "Building configuration...",
+                "",
+                "Current configuration : 59 bytes",
+                "!",
+                "interface GigabitEthernet0/3",
+                " switchport mode trunk",
+                "end",
+                "",
+            ]
+        );
     }
 
     #[test]
@@ -5237,7 +5462,10 @@ mod tests {
                 ),
                 "end",
             ] {
+                // the level the switch booted at, as a configuration loaded states it
+                s.redacted = line.starts_with("license ");
                 let (out, r) = s.type_line(line);
+                s.redacted = false;
                 assert_eq!(r, Result::Ok, "{book} {line}: {out:?}");
             }
         }

@@ -38,7 +38,7 @@ IOS suspends a member that differs. A port-channel's switchport lines reach its 
 
 ### VLANs held outside the configuration
 
-A VTP server or client keeps its VLANs and VTP settings in vlan.dat, outside the running configuration (9300 command reference). `show running-config` prints them only in transparent mode. `write memory` keeps them ahead of the configuration under a `! vlan.dat` line, so the switch list reopens with them.
+A VTP server or client keeps its VLANs and VTP settings in vlan.dat, outside the running configuration (9300 command reference). `show running-config` prints them only in transparent or off mode. A server counts a revision per VLAN database change typed at the console (`show vtp status` keeps it, [output.md](output.md#show-vtp-status)). `write memory` keeps them ahead of the configuration under a `! vlan.dat` line, so the switch list reopens with them.
 
 ## Lab files
 

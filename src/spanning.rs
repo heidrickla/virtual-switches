@@ -270,10 +270,12 @@ pub fn port_number(d: &Device, ports: &[String], name: &str) -> Option<u16> {
 }
 
 /// A physical port's speed (Mb/s) for its cost: its `speed` where set (the lab C9300 and 2960G: 100
-/// costs 19 short, 10 costs 2000000 long), else its link's.
+/// costs 19 short, 10 costs 2000000 long), else the speed `no speed` cleared (the lab
+/// C9300, 17.6.4), else its link's.
 fn port_mbps(d: &Device, p: &str, l: &crate::device::Link) -> u32 {
     value(&d.config_of(p), "speed ")
         .and_then(|s| s.parse().ok())
+        .or_else(|| d.held_speed.get(p).copied())
         .unwrap_or_else(|| crate::show::link_mbps(p, l))
 }
 
@@ -2011,9 +2013,10 @@ mod tests {
     #[test]
     fn the_vtp_device_id_is_the_base_mac() {
         let e = engine();
-        let mut s = switch(&e, T, RAPID, 0x2a);
+        let s = switch(&e, T, RAPID, 0x2a);
         assert!(
-            shown(&mut s, "show vtp status")
+            crate::show::vtp_layout(&s.device)
+                .0
                 .contains(&"Device ID                       : 0011.2233.442a".to_string())
         );
     }
@@ -2193,6 +2196,41 @@ mod tests {
             shown(s, "show spanning-tree pathcost method"),
             ["Spanning tree default pathcost method used is short"]
         );
+    }
+
+    #[test]
+    fn a_port_keeps_the_cost_of_the_speed_no_speed_cleared_until_given_another() {
+        let e = engine();
+        let (mut b, _) = lab(
+            &e,
+            &[(T, RAPID, 1), (T, RAPID, 2)],
+            &[("a:Gi1/0/1", "b:Gi1/0/1"), ("a:Gi1/0/2", "b:Gi1/0/2")],
+        );
+        let s = &mut b[1].session;
+        let port = |s: &mut shell::Session<'_>| {
+            shown(s, "show spanning-tree")
+                .into_iter()
+                .find(|r| r.starts_with("Gi1/0/1 "))
+                .unwrap_or_default()
+        };
+        let set = |s: &mut shell::Session<'_>, lines: &[&str]| {
+            for l in ["configure terminal", "interface GigabitEthernet1/0/1"]
+                .iter()
+                .chain(lines)
+                .chain(&["end"])
+            {
+                s.type_line(l);
+            }
+        };
+        set(s, &["speed 10", "duplex half"]);
+        let row = port(s);
+        assert!(row.contains(" 2000000   128.1    Shr "), "{row}");
+        set(s, &["no speed", "no duplex"]);
+        let row = port(s);
+        assert!(row.contains(" 2000000   128.1    P2p "), "{row}");
+        set(s, &["speed 100", "no speed"]);
+        let row = port(s);
+        assert!(row.contains(" 200000    128.1    P2p "), "{row}");
     }
 
     #[test]

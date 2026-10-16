@@ -23,7 +23,7 @@ The caret stands under the refused word of the line as typed, spaces and `do` in
 | an argument could stand there | at the start of the word |
 | a number past the range offered | under the digit that takes it past the top (`terminal length 600` under the last `0`) |
 | a number below the range, or a word where only a number stands | at the start of the word |
-| an interface the stack does not have | under the start of its number (`GigabitEthernet9/0/1` under the `9`) |
+| an interface the stack does not have | under the start of its number (`GigabitEthernet9/0/1` under the `9`); a port channel, VLAN, loopback or tunnel typed with its number, under the digit that takes it past the top (`Po10` on a 2960G under the `0`) |
 
 The place of the caret in a word comes from a 2960-X session, checked against the words its own `?` offered where a capture has them.
 
@@ -79,9 +79,9 @@ The place of the caret in a word comes from a 2960-X session, checked against th
 
 ## show running-config
 
-The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too.
+The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too. n counts each line from the first `!` through `end` with its newline, plus one.
 
-`show running-config interface <name>` prints that block alone: a `!` line, the block, `end`. A port never configured prints as an empty block, and the byte count is that of the lines printed.
+`show running-config interface <name>` prints that block alone: a `!` line, the block, `end`. A port never configured prints as an empty block, and the byte count is that of the lines printed, plus one.
 
 ### Contents
 
@@ -127,10 +127,10 @@ These come from captured Catalyst 9400 running configurations at 17.5, and the l
 
 ### VLAN and VTP lines
 
-- VLANs and VTP lines print only in VTP transparent mode. A VTP server keeps them in vlan.dat.
-- An unnamed VLAN's line ends with a space.
-- VTP mode off (version 3) prints them as transparent mode does.
-- `vtp version` prints whatever the VTP mode.
+- VLANs and VTP lines print only in VTP transparent or off mode. A VTP server or client keeps them in vlan.dat.
+- The VLANs with nothing under them print on one line, their list compressed and ending with a space (`vlan 10,100-141 `). Each named VLAN prints its own block, the blocks in order of their first VLAN.
+- The VTP lines print together: `vtp domain`, `vtp mode`, then `vtp version` and `vtp password`.
+- `vtp version` prints whatever the VTP mode, but for mode off, which prints none (17.6.4, versions 1 and 3).
 - `vlan access-map` blocks print whatever the VTP mode. A `vlan configuration` with nothing under it is not kept.
 
 ### Section order
@@ -146,7 +146,9 @@ Lines and sections print in the order the captures print them: top-level lines b
 - A banner typed in a submode is taken globally.
 - A line typed less indented than its section closes it. Each class of a policy map keeps its own lines (`priority level`).
 - A modular C9200's slot 1 lists every module's ports whatever is fitted.
-- `router` blocks print after the last interface (inferred).
+- `router` blocks print after the last interface (measured at 17.6, inferred elsewhere).
+- At IOS XE 17.6, `vlan filter` prints after the `vlan access-map` blocks and before the VLANs; elsewhere among the global lines before them (inferred).
+- At IOS XE 17.6, `ip route` follows the `ip http` lines, and `ip access-list` blocks follow `ip route`, before `control-plane`.
 
 ### Blank and comment lines
 
@@ -174,6 +176,16 @@ Classic IOS is a 2960-X at 15.2(7)E0a for the 15.2 rules, the 2960 family for th
 - `Using <n> out of <m> bytes`: n is the saved text from its first `!` through `end` with each line's newline, plus one. m is the NVRAM the platform's `show version` names.
 - Then the configuration `write memory` saved, else the one the switch was loaded with, `end` and a blank line.
 - A switch nothing was saved on prints `startup-config is not present`.
+
+## Factory default
+
+A C9300 at IOS XE 17.6 started by `vswitch shell` or `vswitch run` boots its factory default, as the lab C9300-24T at 17.6.4 did after `write erase`, vlan.dat deleted and a reload. Other platforms and releases start blank.
+
+- Lines: `service timestamps debug` and `log datetime msec`, `hostname Switch`, `vrf definition Mgmt-vrf` with both address families, `no aaa new-model`, `license boot level network-advantage addon dna-advantage`, `spanning-tree mode rapid-pvst`, `spanning-tree extend system-id`, GigabitEthernet0/0 in Mgmt-vrf with `no ip address`, `shutdown` and `negotiation auto`, Vlan1 with `no ip address` and `shutdown`, `ip forward-protocol nd`, the three `ip http` lines, `line con 0` with `stopbits 1`, and `line vty 0 4` and `5 31` with `login` and `transport input ssh`.
+- The factory's call-home, control-plane policy, class maps and self-signed trustpoint are not printed.
+- `show startup-config` prints `startup-config is not present`.
+- VTP version 1, mode Server, no domain, revision 0, 5 VLANs.
+- A `license boot level` typed in configuration mode prints `% use 'write' command to make license boot config take effect on next boot` and leaves the configuration's line, the level booted. A configuration loaded states the level the switch booted at.
 - Each certificate prints as the NVRAM file IOS keeps it in: `certificate ca 01 nvram:CiscoLicensi#1CA.cer`. The name is the subject's common name without spaces cut to 12 characters, then `#` and its place, `CA` for a CA's.
 
 | Platform | NVRAM |
@@ -304,16 +316,25 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 
 ## show vtp status
 
-The layout is that of VTP versions 1 and 2.
+Versions 1 and 2 print the MD5 digest. Its input is unpublished and no reconstruction reproduced the lab's digests, so those forms answer `% vswitch has no output model for 'show vtp status' yet`. The layout behind them is kept and tested against the captures.
 
 - Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1, Server and pruning off by default). Traps come from `snmp-server enable traps vtp`.
 - The VLANs count with 1 and 1002-1005.
 - Device ID is the switch's base MAC address, as `show version` names it on every capture that prints both.
-- The database shows as never modified (`0.0.0.0 at 0-0-00 00:00:00`) at revision 0, and the MD5 digest is a hash of the domain and VLANs. A virtual switch has no change history or vlan.dat.
+- A new database shows `0.0.0.0 at 0-0-00 00:00:00` at revision 0.
+- A version 1 or 2 server counts one revision per VLAN database change typed at the console, once the VLAN submode is left, and stamps the updater and the switch's clock (`10-16-26 18:30:17`: month and day unpadded). A replayed configuration counts nothing.
+- A new domain, transparent or off mode and version 3 start the revision at 0.
 - Both digest lines end with a space on every platform.
 - The updater is the lowest-numbered VLAN interface with an address. It skips a VLAN interface with no address (DHCP with no lease); with none, the first layer 3 interface with an address prints (`on interface Lo0 (first layer3 interface found)`). A transparent switch and VTP mode off name no updater.
 - From IOS XE 17.6 the pruning line adds its operational state (`Enabled (Operationally Enabled)`); the 9400 at 17.5 prints `Enabled` alone.
 - A 2960-Plus supports 255 VLANs locally and an IE-3300 259.
+
+Version 3 prints no last change or updater, then a Feature VLAN block: the mode, the VLANs, the extended VLANs and 4096 VLANs supported. A server or client adds the revision, `Primary ID` `0000.0000.0000`, an empty `Primary Description` and an empty `MD5 digest`, as vswitch models no primary server; its revision stays 0. Feature MST and Feature UNKNOWN blocks follow, each Transparent, and a blank line ends the output.
+
+## show vtp counters and show vtp password
+
+- `show vtp counters` prints every advertisement and error count at 0, then the pruning table with a row per trunking port (`Gi1/1/1`, `Po10`), its three counts at 0.
+- `show vtp password` prints `The VTP password is not configured.`. A password set answers the no-output-model line.
 
 ## show spanning-tree
 
@@ -326,7 +347,7 @@ PVST, Rapid PVST and MST in their converged state, across every switch of a lab,
 - The root is the lowest bridge ID a switch reaches; each other switch's root port is the one with the lowest path cost, then designated bridge ID, designated port ID and its own port ID.
 - On each link the end with the better path cost, bridge ID and port ID is designated. The other blocks: `Back` where both ends are one switch's (a cable between two of its ports), `Altn` otherwise.
 - A port-channel is one port, its members left out, costed by the speed its members bundle.
-- Cost is `spanning-tree [vlan <list>] cost`, else the speed's: long (802.1t, 1G 20000) by default on IOS XE, short (802.1D, 1G 4) on classic IOS, or `spanning-tree pathcost method`. The speed is the link's, or the port's `speed`.
+- Cost is `spanning-tree [vlan <list>] cost`, else the speed's: long (802.1t, 1G 20000) by default on IOS XE, short (802.1D, 1G 4) on classic IOS, or `spanning-tree pathcost method`. The speed is the port's `speed`, else the speed a `no speed` cleared, else the link's: the lab C9300 kept costing a port at its old forced speed after `no speed`.
 - A cable to a device the lab does not model carries no BPDUs unless the lab file's `[[device]]` gives the BPDUs it sends.
 - `spanning-tree bpdufilter enable` sends and takes no BPDUs: both ends are designated forwarding.
 - A port with BPDU guard that hears a BPDU is err-disabled: it leaves the tables, and its cable's far end loses its link. `show interfaces status` names its transceiver; `show interfaces status err-disabled` lists it with reason `bpduguard`.
@@ -402,8 +423,9 @@ The layout and column widths follow C9200L captures at 17.6 and 17.15, with no b
 - Rows: the VLAN interfaces, the ports, the port-channels, loopbacks and tunnels.
 - Vlan1 is `administratively down` until configured.
 - Up: a loopback, an AppGigabitEthernet port, a cabled port, a port-channel with a bundled member, and a VLAN interface whose VLAN a running port carries. A VLAN interface whose VLAN exists with no running port carrying it is up, its protocol down.
-- Method is `NVRAM` where a loaded configuration gives an address or `no ip address`, `manual` for an address typed at the console (DHCP's with no lease too), and `DHCP` for `ip address dhcp` in a loaded configuration.
-- Method is `unset` on a front-panel switch port however configured and on a loopback with no address.
+- Method is `NVRAM` where a loaded configuration gives an address or `no ip address`, `manual` for an address typed at the console and for `no ip address` typed after it, and `DHCP` for `ip address dhcp` in a loaded configuration.
+- `ip address dhcp` typed at the console reads `manual` while the interface is down and `DHCP` once it is up, with or without a lease.
+- Method is `unset` on a front-panel switch port however configured, on a loopback with no address, and for the factory default's `no ip address`.
 - IOS XE prints a name wider than 22 short (Te1/1/1, Fo1/1/1, Ap1/0/1). Classic IOS prints a name of 22 characters or more whole, followed by one space.
 - Protocol is padded to 8. The IE-3300 pads Protocol to its header's width.
 

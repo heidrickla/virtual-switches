@@ -2964,16 +2964,32 @@ impl Stack {
             .find(|c: char| c.is_ascii_digit())
             .unwrap_or(name.len());
         let (ty, num) = name.split_at(split);
-        let in_range = |lo: u64, hi: u64| num.parse::<u64>().is_ok_and(|v| v >= lo && v <= hi);
-        match ty {
-            // channel-group numbers 1-128 (command reference, channel-group)
-            "Port-channel" => in_range(1, 128),
-            "Vlan" => in_range(1, 4094),
-            "Loopback" => in_range(0, 2_147_483_647),
-            "Tunnel" => in_range(0, 2_147_483_647),
+        match self.numbered(ty) {
+            Some((lo, hi)) => num.parse::<u64>().is_ok_and(|v| v >= lo && v <= hi),
             // one null interface (the lab C9300, 17.6.4: `ip route ... Null0`)
-            "Null" => num == "0",
-            _ => self.physical().iter().any(|p| p == name),
+            None if ty == "Null" => num == "0",
+            None => self.physical().iter().any(|p| p == name),
+        }
+    }
+
+    /// The numbers a logical interface type takes on this stack, where one number names it.
+    pub fn numbered(&self, ty: &str) -> Option<(u64, u64)> {
+        match ty {
+            // the lab C2960G (15.0(2)SE11) refused `Port-channel10` and `channel-group 10`; that
+            // its six groups hold for the other classic 2960s is inferred
+            "Port-channel"
+                if matches!(
+                    self.family(),
+                    Some(Family::C2960 | Family::C2960Plus | Family::C2960C)
+                ) =>
+            {
+                Some((1, 6))
+            }
+            // channel-group numbers 1-128 (command reference, channel-group)
+            "Port-channel" => Some((1, 128)),
+            "Vlan" => Some((1, 4094)),
+            "Loopback" | "Tunnel" => Some((0, 2_147_483_647)),
+            _ => None,
         }
     }
 }

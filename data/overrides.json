@@ -941,6 +941,14 @@
       "lines": ["channel-group <channel-group-number> mode {active | auto [non-silent] | desirable [non-silent] | on | passive}", "no channel-group"],
       "args": {"channel-group-number": {"kind": "Number", "min": 1, "max": 6}},
       "evidence": "the 2960 books split the argument ('channel-group <channel> -group-number mode'), which refused every number; the lab C2960G (15.0(2)SE11) took 'channel-group 1 mode active' and refused 'channel-group 10 mode active'; six groups is the 2960's EtherChannel count (inferred)"
+    },
+    {
+      "name": "show running-config interface",
+      "platform": "Catalyst 2960",
+      "modes": ["privileged", "config-if"],
+      "lines": ["show running-config interface <interface-id>"],
+      "args": {"interface-id": {"kind": "Interface"}},
+      "evidence": "the 12.2 and 15.0 books give no interface form, which refused it; the lab C2960G (15.0(2)SE11) answered 'show running-config interface GigabitEthernet0/3' and 'show running-config interface Port-channel1' with the port's block; the 15.2 guides type it at (config-if) as well (inferred for the earlier releases)"
     }
   ]
 }

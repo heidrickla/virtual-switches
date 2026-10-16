@@ -75,11 +75,11 @@ Removes passwords and secrets from configuration files and session logs, in plac
 
 ### shell
 
-A console from `Switch>` on a switch kept nowhere. The keys are in [terminal.md](terminal.md).
+A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default ([output.md](output.md#factory-default)); other platforms and releases start blank. The keys are in [terminal.md](terminal.md).
 
 ### run
 
-Types each line of a script at its prompt and prints the session, each line after its prompt. Lines starting with `!` are skipped in configuration modes, and a banner's text is typed as written. A line ending in `?` prints the help for what precedes it and is not entered. `--quiet` prints only the count. The count `<n> line(s) refused` goes to stderr, and exit is 1 when it is above 0. A byte order mark at the start of the file is dropped.
+Types each line of a script at its prompt and prints the session, each line after its prompt. The switch starts as `shell` starts it, a C9300 at 17.6 from its factory default. Lines starting with `!` are skipped in configuration modes, and a banner's text is typed as written. A line ending in `?` prints the help for what precedes it and is not entered. `--quiet` prints only the count. The count `<n> line(s) refused` goes to stderr, and exit is 1 when it is above 0. A byte order mark at the start of the file is dropped.
 
 ## Designs
 

@@ -105,7 +105,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "VLANs and VTP lines print only in VTP transparent mode; a VTP server keeps them in vlan.dat; an unnamed VLAN's line ends with a space",
+        rule: "VLANs and VTP lines print only in VTP transparent or off mode; a VTP server keeps them in vlan.dat; the unnamed VLANs print on one line, their list compressed and ending with a space (`vlan 10,100-141 `), each named VLAN its own block; `vtp domain` before `vtp mode`; mode off prints no `vtp version` at versions 1 and 3; `Current configuration` counts each line through `end` with its newline, plus one",
         source: Source::Live,
         evidence: LAB,
     },
@@ -117,15 +117,27 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "`router` blocks after the last interface, before `ip forward-protocol` and `ip route`; `vlan access-map` blocks among the global blocks in every VTP mode",
+        rule: "IOS XE 17.6: `vlan access-map` blocks among the global blocks in every VTP mode, then `vlan filter`, then the VLANs; `router` blocks after the last interface, before `ip forward-protocol`; `ip route` after the `ip http` lines; `ip access-list` blocks after `ip route`, before `control-plane`",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show running-config",
+        rule: "other releases and classic IOS: the 17.6 places of `router`, `ip route` and `ip access-list`; `vlan filter` among the global lines before the access maps; a named VLAN inside the unnamed VLANs' list printed by its first VLAN; `vtp version` and `vtp password` after `vtp mode`",
         source: Source::Inferred,
-        evidence: "no capture holds a routing process or a VLAN access map",
+        evidence: "only the lab C9300 at 17.6.4 holds a routing process, a VLAN access map or a VLAN filter",
     },
     Rule {
         output: "show running-config",
         rule: "a `vlan configuration` with nothing under it is not kept; a blank line after `end`, the interface form's too; IOS XE keeps `no port-channel standalone-disable` under a port-channel; a member's `channel-group` typed makes its port-channel with the member's switch port lines",
         source: Source::Live,
         evidence: LAB,
+    },
+    Rule {
+        output: "show running-config",
+        rule: "the interface form on the 2960G at 15.0(2)SE11, a physical port's and a port channel's block, its byte count one past its lines",
+        source: Source::Live,
+        evidence: C2960G,
     },
     Rule {
         output: "show running-config",
@@ -141,15 +153,21 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "VTP mode off (version 3) prints them as transparent mode does",
-        source: Source::Inferred,
-        evidence: "no document or capture of mode off",
+        rule: "VTP mode off prints the domain, the mode and the VLANs as transparent mode does",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show running-config, show startup-config",
+        rule: "a C9300 at 17.6 boots its factory default with no startup configuration: `service timestamps`, `vrf definition Mgmt-vrf` and GigabitEthernet0/0's lines, rapid-pvst with extend system-id, Vlan1 `no ip address` and `shutdown`, the `ip http` lines and the line blocks; `show startup-config` prints `startup-config is not present`; a `license boot level` typed says `% use 'write' command to make license boot config take effect on next boot` and leaves the configuration's line",
+        source: Source::Live,
+        evidence: "the lab C9300-24T (17.6.4) after `write erase`, vlan.dat deleted and a reload, 2026-10-16",
     },
     Rule {
         output: "show running-config",
-        rule: "default lines of a new switch (`vrf definition Mgmt-vrf`, GigabitEthernet0/0's, `service timestamps`)",
+        rule: "the factory default of other platforms and releases: a switch with no configuration starts blank; the factory's call-home, control-plane policy and self-signed trustpoint lines are not printed; the license message on IOS XE releases other than 17.6",
         source: Source::Inferred,
-        evidence: "not printed until configured; a new switch's capture settles them",
+        evidence: "only the lab C9300 at 17.6.4 was booted from the factory default",
     },
     Rule {
         output: "show interfaces status",
@@ -357,6 +375,18 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show spanning-tree",
+        rule: "a port forced to 10 Mb/s and half duplex costs 2000000 long, Type `Shr`; after `no speed` and `no duplex` it keeps the 2000000 cost with Type `P2p`",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show spanning-tree",
+        rule: "the cost of the speed `no speed` cleared holds until the port is given a speed again, on every platform and release",
+        source: Source::Inferred,
+        evidence: "one measurement, 30 seconds after the change, on the lab C9300 at 17.6.4",
+    },
+    Rule {
+        output: "show spanning-tree",
         rule: "BPDU guard: a port that hears a BPDU is err-disabled and leaves the tables, its cable's far end `notconnect` (`show interfaces status`); BPDU filter sends none and ignores what it hears, both ends designated forwarding",
         source: Source::Live,
         evidence: LAB,
@@ -393,7 +423,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show ip interface brief",
-        rule: "Vlan1 administratively down while no block configures it; up: loopbacks, AppGigabitEthernet, a port-channel with a bundled member; Method `manual` for an address typed at the console, DHCP's with no lease too; IOS XE prints a name wider than 22 short (Te1/1/1, Fo1/1/1, Ap1/0/1); a front-panel port's `no ip address` `unset`",
+        rule: "Vlan1 administratively down while no block configures it; up: loopbacks, AppGigabitEthernet, a port-channel with a bundled member; Method `manual` for an address typed at the console, and for `no ip address` typed after it; `ip address dhcp` typed reads `manual` while the interface is down and `DHCP` once it is up, with no lease; the factory default's `no ip address` `unset`; IOS XE prints a name wider than 22 short (Te1/1/1, Fo1/1/1, Ap1/0/1); a front-panel port's `no ip address` `unset`",
         source: Source::Live,
         evidence: LAB,
     },
@@ -435,9 +465,39 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show vtp status",
-        rule: "layout under VTP version 1 or 2; version, domain, pruning and mode from vlan.dat; traps from `snmp-server enable traps vtp`; the updater the lowest-numbered VLAN interface with an address; the VLANs counted with 1 and 1002-1005; both digest lines end with a space on every platform, which a terminal log loses; version 3 has no output model",
+        rule: "layout under VTP version 1 or 2; version, domain, pruning and mode from vlan.dat; traps from `snmp-server enable traps vtp`; the updater the lowest-numbered VLAN interface with an address; the VLANs counted with 1 and 1002-1005; both digest lines end with a space on every platform, which a terminal log loses",
         source: Source::Live,
-        evidence: "core-a, core-b (9400, 17.5), c2960x 15.2(7)E capture 8 (2960-X, 15.2(7)E0a), c2960 15.2(6)E capture 5 and c2960 15.2(6)E capture 6 (2960-Plus, 15.2(6)E1) and the C2960G (15.0(2)SE11); every capture runs version 1",
+        evidence: "core-a, core-b (9400, 17.5), c2960x 15.2(7)E capture 8 (2960-X, 15.2(7)E0a), c2960 15.2(6)E capture 5 and c2960 15.2(6)E capture 6 (2960-Plus, 15.2(6)E1), the C2960G (15.0(2)SE11) and the lab C9300 (17.6.4)",
+    },
+    Rule {
+        output: "show vtp status",
+        rule: "versions 1 and 2 print the MD5 digest, whose input is unpublished: those forms answer the no-output-model line",
+        source: Source::Inferred,
+        evidence: "a reconstruction of the summary-and-VLAN hash did not reproduce the lab C9300's digests",
+    },
+    Rule {
+        output: "show vtp status",
+        rule: "a server counts one revision per VLAN database change and stamps the updater and the time (`10-16-26 18:30:17`); a new domain, transparent or off mode and version 3 start the revision at 0; version 1 mode off prints the last change and no updater; version 3 prints Feature VLAN, MST and UNKNOWN blocks, MST and UNKNOWN transparent, the extended VLANs and 4096 VLANs, and on a server the revision, `Primary ID 0000.0000.0000` and an empty digest",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show vtp status",
+        rule: "a VLAN submode's changes count once it is left, a range as one; a version 3 server counts nothing, being no primary server; a version 3 client prints a server's lines; a replayed configuration counts nothing",
+        source: Source::Inferred,
+        evidence: "the lab added one VLAN per change on a version 1 server and never made a primary server",
+    },
+    Rule {
+        output: "show vtp counters, show vtp password",
+        rule: "counters all 0 and a pruning row per trunking port; `The VTP password is not configured.`",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show vtp counters, show vtp password",
+        rule: "no advertisement counted between VTP servers in a lab; a password set answers the no-output-model line",
+        source: Source::Inferred,
+        evidence: "the lab C9300 ran VTP off when its counters were read and set no password",
     },
     Rule {
         output: "show vtp status",
@@ -459,9 +519,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show vtp status",
-        rule: "the database never modified (`0.0.0.0 at 0-0-00 00:00:00`), revision 0, and a digest of the domain and VLANs: a virtual switch has no change history or vlan.dat",
-        source: Source::Inferred,
-        evidence: "what a switch holds outside its configuration",
+        rule: "a new VLAN database: `0.0.0.0 at 0-0-00 00:00:00`, revision 0",
+        source: Source::Live,
+        evidence: "the lab C9300 (17.6.4) after vlan.dat was deleted and the switch reloaded, 2026-10-16",
     },
     Rule {
         output: "show running-config",
@@ -510,6 +570,18 @@ pub const RULES: &[Rule] = &[
         rule: "the caret stands past the longest start of the refused word some keyword there begins with (`show config` at `>`: under the `f`, as `controllers` begins `con`), from the switch's own `?` answer where one was captured",
         source: Source::Live,
         evidence: CLASSIC_2960X,
+    },
+    Rule {
+        output: "% Invalid input",
+        rule: "the caret stands past the `bri` of `show spanning-tree vlan 1 brief` (IOS XE, `bridge` begins it) and past the `Po1` of `Po10` on a 2960G, which takes port channels 1 to 6",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "% Invalid input",
+        rule: "a VLAN, loopback or tunnel typed with its number, and a port channel on another platform, is refused under the digit that takes it past the top; the other classic 2960s take port channels 1 to 6",
+        source: Source::Inferred,
+        evidence: "the lab C2960G's `Po10`, and the caret IOS gives a number past its range",
     },
     Rule {
         output: "% Invalid input",

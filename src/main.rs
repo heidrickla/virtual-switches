@@ -1018,6 +1018,7 @@ fn run(args: &[String]) -> Result<bool, String> {
             let (st, r) = stack(args)?;
             let engine = cli::Engine::new(grammar(args, st.family(), r)?);
             let mut s = shell::Session::new(&engine, device::Device::new(st));
+            s.factory_default();
             let (transcript, refused) = s.script(&text);
             if !args.iter().any(|a| a == "--quiet") {
                 for l in &transcript {
@@ -2017,6 +2018,7 @@ fn run(args: &[String]) -> Result<bool, String> {
             let (st, r) = stack(args)?;
             let engine = cli::Engine::new(grammar(args, st.family(), r)?);
             let mut s = shell::Session::new(&engine, device::Device::new(st));
+            s.factory_default();
             console::interact(&mut s)?;
             Ok(true)
         }

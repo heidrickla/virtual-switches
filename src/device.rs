@@ -42,6 +42,33 @@ pub struct Device {
     /// ports BPDU guard err-disabled, as `show interfaces status` prints them (`spanning.rs`), with
     /// the transceiver their link had
     pub errdisabled: std::collections::BTreeMap<String, Option<&'static crate::platform::Optic>>,
+    /// what vlan.dat keeps beside the VTP lines: the configuration revision and the last change
+    pub vtp: Vtp,
+    /// booted with no startup configuration: the factory default's `no ip address` reads Method
+    /// `unset` (the lab C9300, 17.6.4)
+    pub factory: bool,
+    /// ports whose forced speed `no speed` removed, by full name, with that speed:
+    /// the lab C9300, 17.6.4 kept costing them at it (`spanning.rs`)
+    pub held_speed: std::collections::BTreeMap<String, u32>,
+}
+
+/// The VLAN database's history, as `show vtp status` prints it: the configuration revision, and the
+/// updater and time of the last change (`0.0.0.0` and `0-0-00 00:00:00` on a new database).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Vtp {
+    pub revision: u32,
+    pub modified_by: String,
+    pub modified_at: String,
+}
+
+impl Default for Vtp {
+    fn default() -> Self {
+        Vtp {
+            revision: 0,
+            modified_by: "0.0.0.0".into(),
+            modified_at: "0-0-00 00:00:00".into(),
+        }
+    }
 }
 
 /// A port's link: the far end, the transceiver, and how the port runs once both ends have
@@ -296,6 +323,17 @@ const CHOICES: &[(&str, &[&str])] = &[
     ("power inline", &["auto", "never", "static", "max"]),
     ("mls qos trust", &["cos", "dscp", "ip-precedence"]),
     ("ip ssh version", &["1", "2"]),
+    // one boot level, whatever its add-on
+    (
+        "license boot level",
+        &[
+            "network-advantage",
+            "network-essentials",
+            "addon",
+            "dna-advantage",
+            "dna-essentials",
+        ],
+    ),
     ("ip http authentication", &["aaa", "enable", "local"]),
     (
         "vlan internal allocation policy",
@@ -555,7 +593,44 @@ impl Device {
             held_after: Default::default(),
             links: Default::default(),
             manual: Default::default(),
+            vtp: Vtp::default(),
+            factory: false,
+            held_speed: Default::default(),
         }
+    }
+
+    /// A global line's value after `prefix` (`vtp mode `), as stored.
+    pub fn global_value(&self, prefix: &str) -> Option<&str> {
+        self.global.iter().find_map(|e| e.text.strip_prefix(prefix))
+    }
+
+    /// The VTP version, mode and domain the VTP lines set: version 1, server and no domain by default.
+    pub fn vtp_settings(&self) -> (String, String, String) {
+        (
+            self.global_value("vtp version ").unwrap_or("1").to_string(),
+            self.global_value("vtp mode ")
+                .unwrap_or("server")
+                .to_string(),
+            self.global_value("vtp domain ").unwrap_or("").to_string(),
+        )
+    }
+
+    /// The VLAN database's contents: each VLAN block's header and lines, in order. A change to it is a
+    /// change VTP counts.
+    pub fn vlan_contents(&self) -> Vec<(String, Vec<String>)> {
+        let mut v: Vec<(String, Vec<String>)> = self
+            .blocks
+            .iter()
+            .filter(|b| crate::show::vlan_ids_of(&b.header).is_some())
+            .map(|b| {
+                (
+                    b.header.clone(),
+                    b.lines.iter().map(|e| e.text.clone()).collect(),
+                )
+            })
+            .collect();
+        v.sort();
+        v
     }
 
     /// An interface's configuration lines.
@@ -654,6 +729,11 @@ impl Device {
             Some(b) => &mut self.blocks[b].lines,
             None => &mut self.global,
         };
+        // an interface has one primary address: `ip address dhcp`, an address or `no ip address`
+        // replaces the other (the lab C9300, 17.6.4: Vlan1's `no ip address`, then `ip address dhcp`)
+        if at.is_some() && (k == "ip address" || k == "ip address dhcp") {
+            lines.retain(|e| e.key == k || (e.key != "ip address" && e.key != "ip address dhcp"));
+        }
         if at.is_some() && k == "switchport" {
             if p.negated {
                 // a routed port: its switch port lines go

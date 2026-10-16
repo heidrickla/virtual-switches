@@ -15,6 +15,68 @@ pub fn nvram(book: &str) -> u64 {
         .map_or(2048 * 1024, |(_, n)| *n)
 }
 
+/// The configuration a switch boots with no startup configuration, as lines that type it: the C9300
+/// at 17.6 (the lab C9300-24T, 17.6.4, after `write erase` and a reload). The factory's own lines a
+/// running configuration prints beside these (call-home, the control-plane policy, the self-signed
+/// trustpoint, whose key each switch makes) are left out; the license line is the factory's level
+/// (console-bridge record, 2026-10-14). None elsewhere: no capture holds another platform's or
+/// release's default.
+pub fn factory(d: &crate::device::Device) -> Option<Vec<String>> {
+    let book = crate::grammars::book(d.stack.family());
+    let train = crate::release::Release::parse(&d.release)?.config_version();
+    if book != "c9300" || train != "17.6" {
+        return None;
+    }
+    let mut lines: Vec<String> = [
+        "service timestamps debug datetime msec",
+        "service timestamps log datetime msec",
+        "hostname Switch",
+        "vrf definition Mgmt-vrf",
+        " address-family ipv4",
+        " exit-address-family",
+        " address-family ipv6",
+        " exit-address-family",
+        "no aaa new-model",
+        "license boot level network-advantage addon dna-advantage",
+        "spanning-tree mode rapid-pvst",
+        "spanning-tree extend system-id",
+    ]
+    .iter()
+    .map(|l| l.to_string())
+    .collect();
+    if let Some(m) = d.stack.management() {
+        lines.extend([
+            format!("interface {m}"),
+            " vrf forwarding Mgmt-vrf".into(),
+            " no ip address".into(),
+            " shutdown".into(),
+            " negotiation auto".into(),
+        ]);
+    }
+    lines.extend(
+        [
+            "interface Vlan1",
+            " no ip address",
+            " shutdown",
+            "ip forward-protocol nd",
+            "ip http server",
+            "ip http authentication local",
+            "ip http secure-server",
+            "line con 0",
+            " stopbits 1",
+            "line vty 0 4",
+            " login",
+            " transport input ssh",
+            "line vty 5 31",
+            " login",
+            " transport input ssh",
+        ]
+        .iter()
+        .map(|l| l.to_string()),
+    );
+    Some(lines)
+}
+
 /// A DER element: its tag, its contents and what follows it.
 fn tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let (&tag, rest) = b.split_first()?;
