@@ -2971,6 +2971,8 @@ impl Stack {
             "Vlan" => in_range(1, 4094),
             "Loopback" => in_range(0, 2_147_483_647),
             "Tunnel" => in_range(0, 2_147_483_647),
+            // one null interface (the lab C9300, 17.6.4: `ip route ... Null0`)
+            "Null" => num == "0",
             _ => self.physical().iter().any(|p| p == name),
         }
     }

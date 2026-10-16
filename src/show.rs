@@ -374,12 +374,46 @@ fn privilege_tree<T>(items: Vec<T>, text: impl Fn(&T) -> &str) -> Vec<T> {
     items.into_iter().flatten().collect()
 }
 
+/// The comment IOS XE prints above `contact-email-addr sch-smart-licensing@cisco.com`.
+pub const CALL_HOME_NOTE: [&str; 2] = [
+    "! If contact email address in call-home is configured as sch-smart-licensing@cisco.com",
+    "! the email address configured in Cisco Smart License Portal will be used as contact email address to send SCH notifications.",
+];
+
 /// A block's lines as IOS prints them: an interface's and a line's in IOS's order, an access list's
 /// by sequence number as its release prints them (`acl::running`), any other block's as typed (a
 /// policy map's order is its meaning).
 fn block_lines(b: &Block, classic: bool) -> Vec<String> {
     if let Some((kind, _)) = crate::acl::of(&b.header) {
         return crate::acl::running(kind, &b.lines, classic);
+    }
+    // a pubkey chain prints its users two spaces in and their keys three, typed or replayed (the
+    // lab C9300, 17.6.4, and the lab C2960G, 15.0(2)SE11)
+    if b.header == "ip ssh pubkey-chain" {
+        return b
+            .lines
+            .iter()
+            .map(|e| {
+                let t = e.text.trim_start();
+                let user = t.starts_with("username ") || t.starts_with("server ");
+                format!("{}{t}", if user { "  " } else { "   " })
+            })
+            .collect();
+    }
+    // IOS XE explains the smart licensing address above it, and no other (the lab C9300, 17.6.4;
+    // every capture's call-home at 17.5 to 17.9)
+    if b.header == "call-home" && !classic {
+        return b
+            .lines
+            .iter()
+            .flat_map(|e| {
+                let note = e.text.trim() == "contact-email-addr sch-smart-licensing@cisco.com";
+                let notes = note.then_some(CALL_HOME_NOTE).into_iter().flatten();
+                notes
+                    .map(|n| format!(" {n}"))
+                    .chain([format!(" {}", e.text)])
+            })
+            .collect();
     }
     let order = if b.header.starts_with("interface ") {
         Some(&orders().interface)
@@ -415,20 +449,24 @@ fn interface_order(header: &str, d: &Device) -> (u8, usize) {
             .and_then(|n| n.parse::<usize>().ok())
             .unwrap_or(0)
     };
-    // loopbacks first (c9200 17.15 capture 27), then port-channels, the ports and the VLAN interfaces
+    // Null0 first (the lab C9300, 17.6.4), then loopbacks (c9200 17.15 capture 27), port-channels,
+    // the ports and the VLAN interfaces
+    if name.starts_with("Null") {
+        return (0, num("Null"));
+    }
     if name.starts_with("Loopback") {
-        return (0, num("Loopback"));
+        return (1, num("Loopback"));
     }
     if name.starts_with("Port-channel") {
-        return (1, num("Port-channel"));
+        return (2, num("Port-channel"));
     }
     if let Some(i) = d.stack.physical().iter().position(|p| p == name) {
-        return (2, i);
+        return (3, i);
     }
     if name.starts_with("Vlan") {
-        return (3, num("Vlan"));
+        return (4, num("Vlan"));
     }
-    (4, 0)
+    (5, 0)
 }
 
 /// The running configuration as `show running-config` prints it, a blank line after `end` (the lab
@@ -586,6 +624,8 @@ pub fn configuration(d: &Device) -> Vec<String> {
         .blocks
         .iter()
         .filter(|b| b.header.starts_with("interface "))
+        // Null0 with nothing under it is not printed (the lab C9300, 17.6.4)
+        .filter(|b| !(b.header.starts_with("interface Null") && b.lines.is_empty()))
         .chain(&unconfigured)
         .collect();
     ifaces.sort_by_key(|b| interface_order(&b.header, d));
@@ -699,7 +739,7 @@ fn place_held(d: &Device, body: &mut Vec<String>) {
                 .filter(|b| d.held_top.contains(&b.header))
                 .map(|b| {
                     let mut u = vec![b.header.clone()];
-                    u.extend(b.lines.iter().map(|e| format!(" {}", e.text)));
+                    u.extend(block_lines(b, d.stack.classic()));
                     u.push("!".into());
                     u
                 }),

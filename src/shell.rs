@@ -94,6 +94,8 @@ pub struct Session<'a> {
     banner: Option<(usize, String)>,
     /// a certificate's hex being typed after `certificate` in a chain: the chain's block
     certificate: Option<usize>,
+    /// a public key's text typed after `key-string` in `ip ssh pubkey-chain`, until `exit`
+    pubkey: Option<String>,
     /// the top-level line or block header written last, as the running configuration prints it: a
     /// line a real switch held prints after the line typed before it
     last_top: Option<String>,
@@ -139,6 +141,7 @@ impl<'a> Session<'a> {
             accepted: vec![],
             banner: None,
             certificate: None,
+            pubkey: None,
             last_top: None,
             raw: String::new(),
             lead: None,
@@ -759,6 +762,9 @@ impl<'a> Session<'a> {
         if let Some(done) = self.certificate_data(line) {
             return done;
         }
+        if let Some(done) = self.pubkey_data(line) {
+            return done;
+        }
         let prompt_len = lead.unwrap_or_else(|| self.prompt().chars().count());
         if let Some(at) = self.do_exec_at(line) {
             if line[at..].trim().is_empty() {
@@ -846,16 +852,22 @@ impl<'a> Session<'a> {
         }
         // a configuration submode hands a line it does not know to the nearest enclosing mode that
         // takes it (`no ip address` after `vrf forwarding` goes to the interface), global
-        // configuration last; a numbered entry stays in its list
+        // configuration last; a numbered entry stays in its list. A line the submode takes only as an
+        // abbreviation goes to an enclosing mode that takes it word for word: the 17.6 book lists
+        // `router ospfv3` under config-if, and the lab C9300 (17.6.4) keeps `router ospf 1` typed there
         let mut back_to = None;
-        if cli::is_submode(&mode) && seq.is_none() && !matches!(outcome, Outcome::Ok(_)) {
+        let abbreviated = matches!(&outcome, Outcome::Ok(p) if !whole_words(p));
+        if cli::is_submode(&mode)
+            && seq.is_none()
+            && (abbreviated || !matches!(outcome, Outcome::Ok(_)))
+        {
             for i in (0..self.frames.len().saturating_sub(1)).rev() {
                 let m = self.frames[i].mode.clone();
                 if !cli::is_config(&m) {
                     break;
                 }
                 let o = self.parse(&m, trimmed);
-                if matches!(o, Outcome::Ok(_)) {
+                if matches!(&o, Outcome::Ok(q) if !abbreviated || whole_words(q)) {
                     back_to = Some(i);
                     mode = m;
                     outcome = o;
@@ -1122,6 +1134,64 @@ impl<'a> Session<'a> {
         Some((vec![], Result::Ok))
     }
 
+    /// A line of the public key being typed after `key-string`: IOS reads every line as the key's
+    /// text, `end` and `configure terminal` included, until `exit`, which leaves the key as the
+    /// `key-hash` it makes or says it could not read it (the lab C9300, 17.6.4).
+    fn pubkey_data(&mut self, line: &str) -> Option<(Vec<String>, Result)> {
+        self.pubkey.as_ref()?;
+        if self.mode() != "conf-ssh-pubkey-data" {
+            self.pubkey = None;
+            return None;
+        }
+        let t = line.trim();
+        if t.is_empty() {
+            return Some((vec![], Result::Ok));
+        }
+        let parsed = self.parse("conf-ssh-pubkey-data", t);
+        if matches!(&parsed, Outcome::Ok(p) if self.engine.grammar.commands[p.command].name == "exit")
+        {
+            self.frames.pop();
+            // no text keeps no key and says nothing (the lab C9300, 17.6.4)
+            let text = self.pubkey.take().unwrap_or_default();
+            if text.is_empty() {
+                return Some((vec![], Result::Ok));
+            }
+            let Some(key) = crate::pubkey::key_hash(&text) else {
+                return Some((
+                    vec!["%SSH: Failed to decode the Key Value".into()],
+                    Result::Ok,
+                ));
+            };
+            // the comment is kept whole, though a typed `key-hash` takes one word
+            let mode = self.mode().to_string();
+            let line = format!("key-hash {} {}", key.kind, key.hex);
+            if let Outcome::Ok(mut p) = self.parse(&mode, &line) {
+                if let Some(c) = &key.comment
+                    && let Some(Item::Arg { value, .. }) = p.items.last_mut()
+                {
+                    value.push(' ');
+                    value.push_str(c);
+                }
+                self.write(&p);
+            }
+            return Some((vec![], Result::Ok));
+        }
+        if let Some(text) = self.pubkey.as_mut() {
+            text.push_str(t);
+        }
+        let block = self.block_header();
+        let key = match &parsed {
+            Outcome::Ok(p) => crate::device::key(p),
+            _ => String::new(),
+        };
+        self.accepted.push(Accepted {
+            block,
+            line: t.to_string(),
+            key: Some(key),
+        });
+        Some((vec![], Result::Ok))
+    }
+
     /// The rest of `line` from `at`, as typed, run at the privileged prompt (`do`, `do-exec`); a
     /// refused word's caret stands under it after the configuration prompt and the words before it.
     fn run_exec(&mut self, prompt_len: usize, line: &str, at: usize) -> (Vec<String>, Result) {
@@ -1185,6 +1255,41 @@ impl<'a> Session<'a> {
                 );
             }
             "write memory" => return self.save(),
+            // IOS XE says what the smart licensing address means when it is set (the lab C9300,
+            // 17.6.4, during a configuration replace)
+            "contact-email-addr"
+                if !p.negated
+                    && !self.device.stack.classic()
+                    && p.canonical() == "contact-email-addr sch-smart-licensing@cisco.com" =>
+            {
+                self.write(p);
+                return (
+                    vec![crate::show::CALL_HOME_NOTE[1][2..].replace("the email", "The email")],
+                    Result::Ok,
+                );
+            }
+            // a hash typed in a pubkey chain prints in upper case, and on IOS XE with a space after
+            // it where no comment follows (the lab C9300, 17.6.4); one a key's lines make has none,
+            // and classic IOS, unmeasured, is given none
+            "key-hash" if !p.negated && cli::is_config(mode) => {
+                let mut q = p.clone();
+                let spaceless = self.device.stack.classic()
+                    || q.items
+                        .iter()
+                        .any(|i| matches!(i, Item::Arg { name, .. } if name == "key-comment"));
+                for i in &mut q.items {
+                    if let Item::Arg { name, value, .. } = i
+                        && name == "key-name"
+                    {
+                        *value = value.to_uppercase();
+                        if !spaceless {
+                            value.push(' ');
+                        }
+                    }
+                }
+                self.write(&q);
+                return (vec![], Result::Ok);
+            }
             "copy running-config startup-config" => {
                 self.asking = true;
                 return (vec![], Result::Ok);
@@ -1304,7 +1409,12 @@ impl<'a> Session<'a> {
                 // closes with its `exit-` line however the mode is left (c9200 17.12 capture 1's empty ones)
                 let header = headers(p).remove(0);
                 let close = self.closes(sub, &header);
-                for &b in &top.blocks {
+                // a public key's lines make the `key-hash` IOS prints in place of `key-string`
+                let key_string = sub == "conf-ssh-pubkey-data";
+                if key_string {
+                    self.pubkey = Some(String::new());
+                }
+                for &b in top.blocks.iter().filter(|_| !key_string) {
                     let key = format!("{}{header}", top.prefix);
                     let lines = &mut self.device.blocks[b].lines;
                     if !lines.iter().any(|e| e.key == key) {
@@ -1394,7 +1504,7 @@ impl<'a> Session<'a> {
             .iter()
             .map(|(full, _)| *full)
             .filter(|full| {
-                ["Loopback", "Port-channel", "Tunnel", "Vlan"].contains(full)
+                ["Loopback", "Null", "Port-channel", "Tunnel", "Vlan"].contains(full)
                     || physical.iter().any(|p| cli::of_type(p, full))
             })
             .map(str::to_string)
@@ -2081,6 +2191,14 @@ fn do_exec_begins(mode: &str, done: &[cli::Tok], typed: &str) -> bool {
 /// member of an interface range; an interface as IOS names it, its type and number joined
 /// (`interface Port-channel11` for `interface port-channel 11`, `interface Vlan20` for
 /// `interface vlan 20`).
+/// Whether every keyword of a parse was typed whole.
+fn whole_words(p: &Parse) -> bool {
+    p.items.iter().all(|i| match i {
+        Item::Kw { exact, .. } => *exact,
+        Item::Arg { .. } => true,
+    })
+}
+
 fn headers(p: &Parse) -> Vec<String> {
     let c = p.canonical();
     let c = c.trim_start_matches("no ");
@@ -4200,6 +4318,103 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[test]
+    fn a_global_command_typed_whole_in_a_submode_is_not_read_as_a_submode_abbreviation() {
+        // the 17.6 book lists `router ospfv3` under config-if; the lab C9300 (17.6.4) printed
+        // `router ospf 1` typed after an interface block
+        let e = books_17_6();
+        let s = configured(
+            &e,
+            &[
+                "interface Loopback0",
+                "router ospf 1",
+                " network 192.0.2.1 0.0.0.0 area 0",
+            ],
+        );
+        assert_eq!(s.mode(), "config-router");
+        let text = crate::show::configuration(&s.device).join("\n");
+        assert!(
+            text.contains("router ospf 1\n network 192.0.2.1 0.0.0.0 area 0"),
+            "{text}"
+        );
+        assert!(!text.contains("ospfv3"), "{text}");
+    }
+
+    #[test]
+    fn a_key_typed_after_key_string_prints_as_the_key_hash_it_makes() {
+        // the lab C9300 (17.6.4): a key's lines make `key-hash` with the MD5 of its blob and the
+        // words after it; a typed hash prints in upper case with a space after it; every line
+        // before `exit` is key text; no text keeps no key and says nothing
+        let e = books_17_6();
+        let typed = format!("ssh-rsa {} two words here", crate::pubkey::LAB_KEY);
+        let mut lines = vec!["ip ssh pubkey-chain", "username lab8i", "key-string"];
+        lines.extend(
+            typed
+                .as_bytes()
+                .chunks(72)
+                .map(|c| std::str::from_utf8(c).unwrap()),
+        );
+        lines.extend([
+            "exit",
+            "exit",
+            "username lab8d",
+            "key-hash ssh-rsa 0123456789abcdef0123456789abcdef",
+            "exit",
+            "username lab8k",
+            "key-string",
+        ]);
+        let mut s = configured(&e, &lines);
+        assert_eq!(s.type_line("exit"), (vec![], Result::Ok));
+        for line in ["exit", "username lab8x", "key-string", "end"] {
+            s.type_line(line);
+        }
+        assert_eq!(s.mode(), "conf-ssh-pubkey-data");
+        let (out, r) = s.type_line("exit");
+        assert_eq!(
+            (out, r),
+            (
+                vec!["%SSH: Failed to decode the Key Value".to_string()],
+                Result::Ok
+            )
+        );
+        assert_eq!(s.mode(), "conf-ssh-pubkey-user");
+        let text = crate::show::configuration(&s.device).join("\n");
+        let want = "ip ssh pubkey-chain\n  username lab8i\n   key-hash ssh-rsa \
+            F7D30FD3AC9B60E00F3E2A65685F80D5 two words here\n  username lab8d\n   key-hash \
+            ssh-rsa 0123456789ABCDEF0123456789ABCDEF \n  username lab8k\n  username lab8x\n";
+        assert!(text.contains(want), "{text}");
+        assert!(!text.contains("key-string"), "{text}");
+    }
+
+    #[test]
+    fn the_smart_licensing_address_prints_with_its_note() {
+        // the lab C9300 (17.6.4): the address says what it means when set, and the running
+        // configuration prints the note above it and above no other address
+        let e = books_17_6();
+        let mut s = configured(&e, &["call-home"]);
+        let (out, r) = s.type_line("contact-email-addr sch-smart-licensing@cisco.com");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            vec![
+                "The email address configured in Cisco Smart License Portal will be used as \
+                 contact email address to send SCH notifications."
+                    .to_string()
+            ]
+        );
+        let text = crate::show::configuration(&s.device).join("\n");
+        let want = format!(
+            "call-home\n {}\n {}\n contact-email-addr sch-smart-licensing@cisco.com\n",
+            crate::show::CALL_HOME_NOTE[0],
+            crate::show::CALL_HOME_NOTE[1]
+        );
+        assert!(text.contains(&want), "{text}");
+        let (out, _) = s.type_line("contact-email-addr noc@example.com");
+        assert!(out.is_empty(), "{out:?}");
+        let text = crate::show::configuration(&s.device).join("\n");
+        assert!(!text.contains("! If contact"), "{text}");
     }
 
     /// A C9300 at 17.6 on its books and the captures' held lines, without the crawls' answers.

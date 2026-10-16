@@ -1007,8 +1007,10 @@ fn plain_from(
             return Ok(());
         }
         let line = line.trim_end_matches(['\r', '\n']);
+        // help is fitted to `terminal width` as on a console (the lab C9300, 17.6.4, over the relay)
         let o = match line.strip_suffix('?').filter(|_| !s.in_banner()) {
-            Some(before) => s.help(before),
+            Some(before) if matches!(s.width, 0 | usize::MAX) => s.help(before),
+            Some(before) => fit_help(s.help(before), s.width),
             None => s.type_line(line).0,
         };
         for l in o {
@@ -1510,6 +1512,20 @@ mod tests {
         let mut out = Vec::new();
         plain_from(&mut s, "show cl?\n".as_bytes(), &mut out).unwrap();
         assert!(String::from_utf8_lossy(&out).contains("class-map"));
+    }
+
+    #[test]
+    fn piped_help_is_fitted_to_the_terminal_width() {
+        // the lab C9300 (17.6.4) broke `ip ssh ?` descriptions short of `terminal width 80`
+        let e = engine();
+        let lines = |width: usize| {
+            let mut s = session(&e);
+            let mut out = Vec::new();
+            let input = format!("terminal width {width}\nshow ?\n");
+            plain_from(&mut s, input.as_bytes(), &mut out).unwrap();
+            String::from_utf8_lossy(&out).lines().count()
+        };
+        assert!(lines(40) > lines(200));
     }
 
     #[test]

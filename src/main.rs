@@ -26,6 +26,7 @@ mod lint;
 mod live;
 mod platform;
 mod probe;
+mod pubkey;
 mod release;
 mod shell;
 mod show;

@@ -842,6 +842,60 @@
       },
       "renames": {"level": "privilege-level"},
       "evidence": "the lab C9300-24T (17.6.4) took `privilege exec level 14 show version` and printed it whole, so the command is every word after the level; it refused `privilege exec level 99 show version` with the caret under the second 9. The books read one word for the command and leave the level open"
+    },
+    {
+      "name": "length (line)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-line"],
+      "lines": ["length <screen-length>", "no length [<screen-length>]"],
+      "args": {"screen-length": {"kind": "Number", "min": 0, "max": 512}},
+      "evidence": "the 9300 books document no length under line configuration; the lab C9300-24T (17.6.4) holds 'line con 0' with ' length 0', ' width 512' and ' speed 115200', and answers 'length ?' at (config-line)# with '<0-512>  Number of lines on screen (0 for no pausing)'"
+    },
+    {
+      "name": "width (line)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-line"],
+      "lines": ["width <screen-width>", "no width [<screen-width>]"],
+      "args": {"screen-width": {"kind": "Number", "min": 0, "max": 512}},
+      "evidence": "the 9300 books document no width under line configuration; the lab C9300-24T (17.6.4) holds 'line con 0' with ' length 0', ' width 512' and ' speed 115200', and answers 'width ?' at (config-line)# with '<0-512>  Number of characters on a screen line'"
+    },
+    {
+      "name": "speed (line)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-line"],
+      "lines": ["speed <line-speed>", "no speed [<line-speed>]"],
+      "args": {"line-speed": {"kind": "Number", "min": 0, "max": 4294967295}},
+      "evidence": "the 9300 books document no speed under line configuration; the lab C9300-24T (17.6.4) holds 'line con 0' with ' length 0', ' width 512' and ' speed 115200', and answers 'speed ?' at (config-line)# with '<0-4294967295>  Transmit and receive speeds'"
+    },
+    {
+      "name": "ip unreachables",
+      "platform": "Catalyst 9300",
+      "modes": ["config-if"],
+      "lines": ["ip unreachables", "no ip unreachables"],
+      "evidence": "the 9300 books document no ip unreachables; the lab C9300-24T (17.6.4) took ' no ip unreachables' under 'interface Null0' and printed the block, Null0 first of the interfaces"
+    },
+    {
+      "name": "key-hash",
+      "platform": "Catalyst 9300",
+      "modes": ["conf-ssh-pubkey-user", "conf-ssh-pubkey-data", "conf-ssh-pubkey-server"],
+      "lines": ["key-hash <key-type> <key-name> [<key-comment>]", "no key-hash [<key-type> <key-name>]"],
+      "args": {"key-type": {"kind": "Word"}, "key-name": {"kind": "Word"}, "key-comment": {"kind": "Word"}},
+      "evidence": "the books give 'key-hash <key-type> <key-name>'; the lab C9300-24T (17.6.4) took 'key-hash ssh-rsa <hash> <comment>' with one comment word, refused a second with the caret under it, and printed the comment after the hash"
+    },
+    {
+      "name": "username (ssh pubkey-chain)",
+      "platform": "Catalyst 2960",
+      "enters": "conf-ssh-pubkey-user",
+      "lines": [],
+      "evidence": "the lab C2960G (15.0(2)SE11) prints 'ip ssh pubkey-chain', '  username <name>', '   key-hash ssh-rsa <hash>' in its running configuration, and its 'alias ?' lists the ssh-pubkey-user and ssh-pubkey-data modes; the 2960 reference gives no example prompt after username"
+    },
+    {
+      "name": "key-hash",
+      "platform": "Catalyst 2960",
+      "modes": ["conf-ssh-pubkey-user", "conf-ssh-pubkey-server"],
+      "lines": ["key-hash <key-type> <key-name> [<key-comment>]", "no key-hash [<key-type> <key-name>]"],
+      "args": {"key-type": {"kind": "Word"}, "key-name": {"kind": "Word"}, "key-comment": {"kind": "Word"}},
+      "evidence": "the 2960 references document no key-hash; the lab C2960G (15.0(2)SE11) prints '   key-hash ssh-rsa <hash>' under '  username <name>' in 'ip ssh pubkey-chain'"
     }
   ]
 }

@@ -172,6 +172,7 @@ pub fn interface_types() -> &'static [(&'static str, &'static str)] {
         ("GigabitEthernet", "Gi"),
         ("HundredGigE", "Hu"),
         ("Loopback", "Lo"),
+        ("Null", "Nu"),
         ("Port-channel", "Po"),
         ("TenGigabitEthernet", "Te"),
         ("Tunnel", "Tu"),
