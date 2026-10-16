@@ -188,6 +188,15 @@ impl<'a> Session<'a> {
                 .any(|r| r.len() <= words.len() && r.iter().zip(words).all(|(a, b)| a == b))
     }
 
+    /// Whether words as typed, each whole or a start of its word, begin a raised command at `mode`.
+    fn raised_typed(raised: &[Vec<String>], mode: &str, words: &[String]) -> bool {
+        mode == "exec"
+            && raised.iter().any(|r| {
+                r.len() <= words.len()
+                    && r.iter().zip(words).all(|(a, b)| a.starts_with(b.as_str()))
+            })
+    }
+
     /// Records a top-level line or block header as written last; returns the one written before it.
     fn wrote_top(&mut self, text: &str) -> Option<String> {
         self.last_top.replace(text.to_string())
@@ -1706,8 +1715,14 @@ impl<'a> Session<'a> {
     fn offered_at(&self, mode: &str, done: &[cli::Tok]) -> (Vec<Offer>, bool) {
         let (next, mut complete) = self.engine.next(mode, done);
         let mut offered = self.offered(&next);
-        if done.is_empty() && mode == "exec" {
-            offered.retain(|o| !self.above_exec(&[o.shown.to_lowercase()]));
+        if mode == "exec" {
+            let raised = self.raised();
+            let words: Vec<String> = done.iter().map(|t| t.text.to_lowercase()).collect();
+            offered.retain(|o| {
+                let mut line = words.clone();
+                line.push(o.shown.to_lowercase());
+                !Self::raised_typed(&raised, mode, &line)
+            });
         }
         // `terminal length` and `terminal width`, which the shell takes (`terminal`): both words,
         // then the range, described as the books describe the length's value where they do
@@ -1754,15 +1769,12 @@ impl<'a> Session<'a> {
     /// alone; the image's own first, then a donor's. Each is printed for this switch
     /// (`as_this_switch`).
     fn held_answer(&self, mode: &str, context: Option<&str>, text: &str) -> Option<Vec<String>> {
-        let typed: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
-        if text.ends_with(char::is_whitespace)
-            && typed.first().is_some_and(|w| {
-                self.raised()
-                    .iter()
-                    .any(|r| r.len() == 1 && r[0].starts_with(w.as_str()))
-            })
-            && mode == "exec"
-        {
+        // the whole words before the one being typed, a raised command among their starts
+        let mut done: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+        if !text.ends_with(char::is_whitespace) {
+            done.pop();
+        }
+        if Self::raised_typed(&self.raised(), mode, &done) {
             return Some(vec!["% Unrecognized command".into()]);
         }
         let answer =
@@ -3488,6 +3500,24 @@ mod tests {
         }
         assert_eq!(s.complete("show vers"), None);
         assert_eq!(s.complete("sh cloc").as_deref(), Some("sh clock "));
+        // a word begun, the books' list as much as a held one, and the raised command's own `?`
+        let h = s.help("show v");
+        assert!(!has(&h, "version") && has(&h, "vlan"), "{h:?}");
+        let books = |s: &Session<'_>, typed: &str| -> Vec<String> {
+            s.offered_at("exec", &crate::cli::tokens(typed))
+                .0
+                .into_iter()
+                .map(|o| o.shown)
+                .collect()
+        };
+        let plain = configured(&e, &[]);
+        assert!(books(&plain, "show").contains(&"version".to_string()));
+        for typed in ["show", "sh"] {
+            let b = books(&s, typed);
+            assert!(!b.contains(&"version".to_string()), "{typed:?}: {b:?}");
+            assert!(b.contains(&"vlan".to_string()), "{typed:?}: {b:?}");
+        }
+        assert_eq!(s.help("show version "), ["% Unrecognized command"]);
         assert_eq!(s.type_line("show version").1, Result::Error);
     }
 
@@ -3655,6 +3685,12 @@ mod tests {
         assert!(listed.contains(&"enable".to_string()), "{listed:?}");
         assert!(!listed.contains(&"show".to_string()), "{listed:?}");
         assert_eq!(s.help("show "), ["% Unrecognized command"]);
+        // a word begun after it is answered the same, abbreviated or not, and completes nothing
+        for typed in ["show v", "sh ver", "show ip r"] {
+            assert_eq!(s.help(typed), ["% Unrecognized command"], "{typed:?}");
+        }
+        assert_eq!(s.complete("show vers"), None);
+        assert_eq!(s.complete("sh cloc"), None);
         assert_eq!(s.complete("sho"), None);
         assert_eq!(s.type_line("show version").1, Result::Error);
         // the one-word form the captures hold prints alone
