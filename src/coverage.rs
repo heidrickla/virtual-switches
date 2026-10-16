@@ -2,7 +2,7 @@
 //! typed at its platform and release with the lines real switches held set aside. A refused line is
 //! a root when every line it sits under was taken; the lines under a refused block opener, at any
 //! depth, follow from it. `vswitch coverage` prints the roots; a test holds them against
-//! `data/coverage.txt`, so a grammar change that refuses more, or less, says so.
+//! the captures repository's `coverage.txt`, so a grammar change that refuses more, or less, says so.
 
 use crate::cli::Engine;
 use crate::live::{Capture, Held};
@@ -117,7 +117,7 @@ pub fn baseline(captures: &[Capture], roots: &[Root]) -> String {
     keys.sort();
     let mut out = String::from(
         "# Lines real switches held that their books alone refuse, under a line the books take.\n\
-         # `vswitch coverage --baseline > data/coverage.txt` writes it again after a grammar change.\n",
+         # `vswitch coverage --baseline > ../virtual-switches-captures/coverage.txt` writes it again after a grammar change.\n",
     );
     out.push_str(&format!("corpus {}\n", corpus_digest(captures)));
     for k in keys {
