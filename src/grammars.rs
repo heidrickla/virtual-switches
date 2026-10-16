@@ -160,7 +160,6 @@ pub fn grammar(book: &str, release: Release) -> Result<Grammar, String> {
     let mut g: Grammar =
         serde_json::from_str(&text(book, release)?).map_err(|e| format!("grammar: {e}"))?;
     g.release = release.to_string();
-    privilege_as_measured(&mut g);
     if let Some((_, bytes)) = HELP.iter().find(|h| h.0 == book) {
         let table: BTreeMap<String, BTreeMap<String, String>> =
             serde_json::from_str(&gunzip(bytes, &format!("help {book}"))?)
@@ -174,38 +173,6 @@ pub fn grammar(book: &str, release: Release) -> Result<Grammar, String> {
         }
     }
     Ok(g)
-}
-
-/// `privilege <mode> level <level> <command>` as the lab C9300-24T (17.6.4) took it, where the books'
-/// lines read one word for each: the command is every word after the level (`show version`), and
-/// outside the `no` form the level is 0 to 15 (`level 99` refused).
-fn privilege_as_measured(g: &mut Grammar) {
-    use crate::compile::ArgKind;
-    use crate::syntax::Node;
-    fn rename(n: &mut Node) {
-        match n {
-            Node::Arg(a) if a == "level" => *a = "privilege-level".into(),
-            Node::Seq(v) | Node::Alt(v) => v.iter_mut().for_each(rename),
-            Node::Opt(o) => rename(o),
-            _ => {}
-        }
-    }
-    for c in g.commands.iter_mut().filter(|c| c.name == "privilege") {
-        if let Some(k) = c.args.get_mut("command") {
-            *k = ArgKind::Text;
-        }
-        if !c.args.contains_key("level") {
-            continue;
-        }
-        c.args.insert(
-            "privilege-level".into(),
-            ArgKind::Number { min: 0, max: 15 },
-        );
-        for l in c.lines.iter_mut().filter(|l| !l.negated) {
-            rename(&mut l.node);
-            l.text = l.text.replace("<level>", "<privilege-level>");
-        }
-    }
 }
 
 #[cfg(test)]

@@ -833,6 +833,15 @@
       ],
       "args": {"remark": {"kind": "Text"}},
       "evidence": "the security reference's remark takes a comment to the end of the line in a standard or extended named list (its Command Modes); the IOS XE books give it for extended lists alone, while eight captured C9200Ls at 17.15 hold `20 remark ...` in standard lists and the lab WS-C2960G-8TC-L (15.0(2)SE11) took `remark a note`. Taken at every release whose books show a `remark` line"
+    },
+    {
+      "name": "privilege",
+      "args": {
+        "command": {"kind": "Text"},
+        "privilege-level": {"kind": "Number", "min": 0, "max": 15}
+      },
+      "renames": {"level": "privilege-level"},
+      "evidence": "the lab C9300-24T (17.6.4) took `privilege exec level 14 show version` and printed it whole, so the command is every word after the level; it refused `privilege exec level 99 show version` with the caret under the second 9. The books read one word for the command and leave the level open"
     }
   ]
 }

@@ -91,6 +91,10 @@ struct Override {
     adds: Vec<String>,
     #[serde(default)]
     args: BTreeMap<String, ArgKind>,
+    /// a patch renames these arguments in the command's lines outside the `no` form, so `args` can
+    /// bound what a switch bounds there and leave the `no` form as the book has it (`privilege`'s level)
+    #[serde(default)]
+    renames: BTreeMap<String, String>,
     #[serde(default)]
     enters: Option<String>,
     evidence: String,
@@ -183,6 +187,13 @@ pub fn apply_overrides(
                     }
                     if !c.lines.iter().any(|x| x.text == l.text) {
                         c.lines.push(l.clone());
+                    }
+                }
+                // after the adds, so a line the patch adds is renamed as the command's own are
+                for l in c.lines.iter_mut().filter(|l| !l.negated) {
+                    for (from, to) in &ov.renames {
+                        rename_arg(&mut l.node, from, to);
+                        l.text = l.text.replace(&format!("<{from}>"), &format!("<{to}>"));
                     }
                 }
                 for m in &ov.modes {
@@ -2014,6 +2025,15 @@ fn intro_help(intro: &str) -> Option<String> {
     Some(first.to_uppercase().chain(c).collect())
 }
 
+fn rename_arg(n: &mut Node, from: &str, to: &str) {
+    match n {
+        Node::Arg(a) if a == from => *a = to.into(),
+        Node::Seq(v) | Node::Alt(v) => v.iter_mut().for_each(|x| rename_arg(x, from, to)),
+        Node::Opt(b) => rename_arg(b, from, to),
+        Node::Arg(_) | Node::Kw(_) => {}
+    }
+}
+
 fn args_of(n: &Node, out: &mut BTreeSet<String>) {
     match n {
         Node::Arg(a) => {
@@ -3171,6 +3191,51 @@ mod tests {
         let names: Vec<&str> = g.commands.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["license smart (global config)"]);
         assert_eq!((kept, dropped), (1, 1));
+    }
+
+    #[test]
+    fn a_patch_renames_an_argument_outside_the_no_form() {
+        let mut c = command(
+            "privilege",
+            "config",
+            "privilege <mode> level <level> <command>",
+            None,
+        );
+        c.lines.push(syntax_line(
+            "no privilege <mode> level <level> <command>",
+            None,
+        ));
+        let mut g = book(vec![c]);
+        let patch = r#"{"commands": [{"name": "privilege",
+            "args": {"command": {"kind": "Text"}, "privilege-level": {"kind": "Number", "min": 0, "max": 15}},
+            "adds": ["privilege <mode> all level <level> <command>"],
+            "renames": {"level": "privilege-level"}, "evidence": "e"}]}"#;
+        apply_overrides(&mut g, patch, &BTreeSet::new()).unwrap();
+        let texts: Vec<&str> = g.commands[0]
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "privilege <mode> level <privilege-level> <command>",
+                "no privilege <mode> level <level> <command>",
+                "privilege <mode> all level <privilege-level> <command>"
+            ]
+        );
+        let e = crate::cli::Engine::new(g);
+        let takes = |l: &str| matches!(e.parse("config", l), crate::cli::Outcome::Ok(_));
+        assert!(takes("privilege exec level 14 show version"));
+        assert!(!takes("privilege exec level 99 show version"));
+        assert!(
+            !takes("privilege exec all level 99 show"),
+            "a line the patch adds"
+        );
+        assert!(
+            takes("no privilege exec level 99 show"),
+            "the no form keeps the book's level"
+        );
     }
 
     #[test]
