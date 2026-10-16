@@ -30,7 +30,7 @@ const AFTER_INTERFACES: &[&str] = &[
 
 /// Classic IOS before 15.2 (12.2, 15.0), whose output some rules set apart (the lab C2960G at
 /// 15.0(2)SE11).
-fn before_15_2(d: &Device) -> bool {
+pub(crate) fn before_15_2(d: &Device) -> bool {
     crate::release::Release::parse(&d.release)
         .zip(crate::release::Release::parse("15.2(2)E"))
         .is_some_and(|(r, e)| r.classic() && r < e)
@@ -654,6 +654,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
             })
             .collect(),
     );
+    let before = spanning_vlans_in_order(before, |e| e.text.as_str());
     let block = |body: &mut Vec<String>, b: &Block| {
         // a `vlan configuration` with nothing under it is not kept (the lab C9300, 17.6.4)
         if b.lines.is_empty() && b.header.starts_with("vlan configuration ") {
@@ -820,6 +821,33 @@ pub fn configuration(d: &Device) -> Vec<String> {
     separate(d, body)
 }
 
+/// IOS writes the `spanning-tree vlan` lines in VLAN order whatever order they were typed in (the lab
+/// C9300, 17.6.4: `vlan 1 priority 24576` before `vlan 10 priority 4096`); the other lines keep their
+/// places.
+fn spanning_vlans_in_order<T>(items: Vec<T>, text: impl Fn(&T) -> &str) -> Vec<T> {
+    let first = |t: &str| -> Option<u32> {
+        let list = t
+            .strip_prefix("spanning-tree vlan ")?
+            .split_whitespace()
+            .next()?;
+        crate::generate::vlan_ids(list).first().copied()
+    };
+    let places: Vec<usize> = (0..items.len())
+        .filter(|&i| first(text(&items[i])).is_some())
+        .collect();
+    let mut picked: Vec<(u32, usize)> = places
+        .iter()
+        .filter_map(|&i| Some((first(text(&items[i]))?, i)))
+        .collect();
+    picked.sort();
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    let moved: Vec<Option<T>> = picked.iter().map(|&(_, i)| slots[i].take()).collect();
+    for (&p, m) in places.iter().zip(moved) {
+        slots[p] = m;
+    }
+    slots.into_iter().flatten().collect()
+}
+
 /// Puts the lines and blocks taken as a real switch held them where that switch printed them:
 /// after the top-level line before them in its capture, or the nearest earlier one present.
 fn place_held(d: &Device, body: &mut Vec<String>) {
@@ -960,28 +988,45 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
             let c = p
                 .canonical()
                 .replacen("show interface ", "show interfaces ", 1);
+            let view = s.lab.as_ref();
+            if let Some(out) = crate::spanning::show(&s.device, view, &c) {
+                return out;
+            }
+            // the switch as the lab leaves it: ports BPDU guard err-disabled, and their far ends
+            // without a link
+            let eff = crate::spanning::effective(&s.device, view);
+            let d: &Device = &eff;
             // every platform keeps IOS's trailing spaces (`act/unsup `): every family's show tech
             // has them; only a terminal log loses them
             match c.as_str() {
-                "show interfaces status" => interfaces_status(&s.device),
-                "show vlan brief" => vlan_brief(&s.device, s.width),
-                "show vlan" => vlan(&s.device, s.width),
-                "show interfaces switchport" => interfaces_switchport(&s.device),
+                "show interfaces status" => interfaces_status(d),
+                "show vlan brief" => vlan_brief(d, s.width),
+                "show vlan" => vlan(d, s.width),
+                "show interfaces switchport" => interfaces_switchport(d),
                 // one port: `show interfaces Gi1/0/1 switchport`
                 _ if c.starts_with("show interfaces ")
                     && c.ends_with(" switchport")
-                    && one_port(&c)
-                        .is_some_and(|p| interface_switchport(&s.device, &p).is_some()) =>
+                    && one_port(&c).is_some_and(|p| interface_switchport(d, &p).is_some()) =>
                 {
                     one_port(&c)
-                        .and_then(|p| interface_switchport(&s.device, &p))
+                        .and_then(|p| interface_switchport(d, &p))
                         .unwrap_or_default()
                 }
-                "show etherchannel summary" => etherchannel_summary(&s.device),
-                "show interfaces trunk" => interfaces_trunk(&s.device),
-                "show ip interface brief" => ip_interface_brief(&s.device),
-                "show power inline" => power_inline(&s.device),
-                "show vtp status" => vtp_status(&s.device),
+                "show etherchannel summary" => etherchannel_summary(d),
+                "show interfaces trunk" => {
+                    // under MST (phase 2) every active VLAN is taken to forward
+                    if crate::spanning::mode(&s.device) == "mst" {
+                        interfaces_trunk(d)
+                    } else {
+                        let sp = crate::spanning::Spanning::of(&s.device, view);
+                        interfaces_trunk_with(d, &|p: &str, v: u32| {
+                            crate::spanning::forwards(&sp, p, v)
+                        })
+                    }
+                }
+                "show ip interface brief" => ip_interface_brief(d),
+                "show power inline" => power_inline(d),
+                "show vtp status" => vtp_status(d),
                 // the configuration saved or booted from, as NVRAM keeps it (`startup`); a switch
                 // with none answers as IOS does with its NVRAM erased
                 "show startup-config" => match &s.saved {
@@ -1020,7 +1065,7 @@ pub fn access_lists(d: &Device, name: Option<&str>) -> Vec<String> {
 }
 
 /// A port's link while the port runs: not shut down and not a supervisor uplink that is off.
-fn up<'d>(d: &'d Device, name: &str) -> Option<&'d Link> {
+pub(crate) fn up<'d>(d: &'d Device, name: &str) -> Option<&'d Link> {
     let l = d.links.get(name)?;
     let off = config_of(d, name).contains(&"shutdown")
         || d.stack.uplink_off(name, &enabled_uplinks(d)).is_some();
@@ -1044,7 +1089,7 @@ fn bundle<'d>(d: &'d Device, channel: &str) -> Option<(String, &'d Link)> {
 }
 
 /// A member's port-channel number and whether it runs LACP (`channel-group <n> mode active`).
-fn channel_of(d: &Device, p: &str) -> Option<(String, bool)> {
+pub(crate) fn channel_of(d: &Device, p: &str) -> Option<(String, bool)> {
     let c = config_of(d, p);
     let mut words = value(&c, "channel-group ")?.split_whitespace();
     let n = words.next()?.to_string();
@@ -1053,7 +1098,7 @@ fn channel_of(d: &Device, p: &str) -> Option<(String, bool)> {
 
 /// An LACP member with a link it does not bundle: IOS XE suspends it unless its port-channel has
 /// `no port-channel standalone-disable` (the lab C9300, 17.6.4); classic IOS leaves it stand-alone.
-fn suspended(d: &Device, p: &str) -> bool {
+pub(crate) fn suspended(d: &Device, p: &str) -> bool {
     !d.stack.classic()
         && up(d, p).is_some_and(|l| !l.bundled)
         && channel_of(d, p).is_some_and(|(n, lacp)| {
@@ -1073,7 +1118,7 @@ fn channel_down(d: &Device, p: &str) -> bool {
 
 /// The speed a port's link runs (Mb/s): its transceiver's, a copper link's negotiated speed, else
 /// the copper port's own.
-fn link_mbps(name: &str, l: &Link) -> u32 {
+pub(crate) fn link_mbps(name: &str, l: &Link) -> u32 {
     match (l.optic, l.speed) {
         (Some(o), _) => o.mbps,
         (None, Some(s)) => s,
@@ -1100,7 +1145,7 @@ fn carries(d: &Device, name: &str, l: &Link, id: u32) -> bool {
     }
 }
 
-fn value<'a>(lines: &[&'a str], prefix: &str) -> Option<&'a str> {
+pub(crate) fn value<'a>(lines: &[&'a str], prefix: &str) -> Option<&'a str> {
     lines.iter().find_map(|l| l.strip_prefix(prefix))
 }
 
@@ -1211,6 +1256,9 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
         let held = suspended(d, &p);
         let status = if c.contains(&"shutdown") {
             "disabled"
+        } else if d.errdisabled.contains(&p) {
+            // BPDU guard heard a BPDU (the lab C9300, 17.6.4); its far end prints `notconnect`
+            "err-disabled"
         } else if d.stack.uplink_off(&p, &enabled).is_some() {
             "inactive"
         } else if held {
@@ -1334,6 +1382,12 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
 /// port-channel in place of its members), its DTP mode, the allowed VLANs, those the VLAN database
 /// has, and those forwarding. Nothing while no port trunks.
 pub fn interfaces_trunk(d: &Device) -> Vec<String> {
+    interfaces_trunk_with(d, &|_: &str, _: u32| true)
+}
+
+/// `show interfaces trunk` with spanning tree's state: the last list keeps the VLANs a port forwards
+/// in (`forwards`), `none` on a port blocked in all of them (the lab C9300, 17.6.4).
+pub fn interfaces_trunk_with(d: &Device, forwards: &dyn Fn(&str, u32) -> bool) -> Vec<String> {
     let mut defined = defined_vlans(d);
     defined.insert(1);
     let mut rows: Vec<(String, Vec<&str>)> = vec![];
@@ -1416,6 +1470,9 @@ pub fn interfaces_trunk(d: &Device) -> Vec<String> {
             let mut set = allowed(c);
             if title != "Vlans allowed on trunk" {
                 set.retain(|v| defined.contains(v));
+            }
+            if title.starts_with("Vlans in spanning tree") {
+                set.retain(|v| forwards(p, *v));
             }
             out.push(format!("{:<w$}{}", short(p), list(&set)));
         }
@@ -2016,9 +2073,9 @@ pub fn etherchannel_summary(d: &Device) -> Vec<String> {
 /// `show vtp status` under VTP version 1 or 2, laid out as the cores and c2960x 15.2(7)E capture 8 print it: the
 /// VTP lines vlan.dat keeps (default version 1, mode Server, pruning off), traps from `snmp-server
 /// enable traps vtp`, the updater the lowest-numbered VLAN interface with an address, and the VLANs
-/// counted with 1 and 1002-1005. A virtual switch has no burned-in address, change history or
-/// vlan.dat digest: Device ID and the MD5 digest come from the hostname and VLANs, and the database
-/// reads as never modified.
+/// counted with 1 and 1002-1005, Device ID the base MAC address. A virtual switch has no change
+/// history or vlan.dat digest: the MD5 digest comes from the domain and VLANs, and the database reads
+/// as never modified.
 pub fn vtp_status(d: &Device) -> Vec<String> {
     let global = |prefix: &str| {
         d.global
@@ -2098,17 +2155,8 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
             (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
         })
     };
-    let host = global("hostname ").unwrap_or_else(|| "Switch".into());
-    let id = hash(0, &host).to_be_bytes();
-    let device_id = format!(
-        "{:02x}{:02x}.{:02x}{:02x}.{:02x}{:02x}",
-        id[0] & 0xfc,
-        id[1],
-        id[2],
-        id[3],
-        id[4],
-        id[5]
-    );
+    // the base MAC address, as `show version` names it (13 captures that print both agree)
+    let device_id = d.mac.to_string();
     let database = format!("{domain} {vlans:?}");
     let digest: Vec<String> = [hash(1, &database), hash(2, &database)]
         .iter()

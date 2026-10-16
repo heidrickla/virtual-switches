@@ -327,9 +327,63 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces trunk",
-        rule: "the active VLANs as the allowed ones the VLAN database holds, all forwarding (no spanning-tree blocking modelled)",
+        rule: "the active VLANs as the allowed ones the VLAN database holds; the forwarding list keeps those spanning tree forwards the port in, `none` on a port blocked in all of them",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show interfaces trunk",
+        rule: "under MST every active VLAN is listed as forwarding",
         source: Source::Inferred,
-        evidence: "the lab C9300 shows `none` forwarding on a port spanning tree blocks; vswitch runs no spanning tree",
+        evidence: "MST is not modelled yet",
+    },
+    Rule {
+        output: "show spanning-tree",
+        rule: "PVST and Rapid PVST converged: a block per VLAN with a port up in it, three blank lines between; `rstp` or `ieee`; the bridge priority with the VLAN added; rows by port number, each ending `P2p ` with a space; a cable between two ports of one switch blocks the higher port ID as `Back BLK`; a port-channel is one row (Po1 128.3049, its members absent), costed 20000 long with one 1G member; `spanning-tree port-priority 64` and `cost 100` (`64.4`, cost 100); a port hearing BPDUs is not edge whatever its PortFast; Ap1/0/1 is port 41 on a C9300-24T and keeps VLAN 1 alive; 1G costs 20000 (long, the default at 17.6.4); `active` and `vlan <n>` print the same blocks",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show spanning-tree",
+        rule: "a bridge that is not the root adds `Cost` and `Port <n> (<name>)` under the root's address; 1G costs 4 (short, the default at 15.0(2)SE); the 2960G's ports are numbered by their place",
+        source: Source::Live,
+        evidence: C2960G,
+    },
+    Rule {
+        output: "show spanning-tree",
+        rule: "IOS XE's non-root block as the 2960G's; port numbers on other models and on stack members after the first (168 a member on IOS XE, 56 on classic IOS), costs at speeds other than 1G, `Shr` on half duplex or `spanning-tree link-type shared`, Aging Time from `mac address-table aging-time`, `Peer(STP)` on a Rapid PVST port facing PVST, `Edge` on PortFast hearing no BPDU; a Catalyst 9400's and a classic port-channel's port numbers are not known and those forms print no output model",
+        source: Source::Inferred,
+        evidence: "the 9300 command reference's example (Fif2/0/17 is 128.185), the 2960 15.2(2)E configuration guide's (Gi4/0/1 is 128.169, Po4 costs 3 short), 802.1t and 802.1D",
+    },
+    Rule {
+        output: "show spanning-tree",
+        rule: "BPDU guard: a port that hears a BPDU is err-disabled and leaves the tables, its cable's far end `notconnect` (`show interfaces status`); BPDU filter sends none and ignores what it hears, both ends designated forwarding",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show spanning-tree summary, root, bridge, blockedports, inconsistentports, pathcost method, interface",
+        rule: "IOS XE's summary labels at two widths, EtherChannel misconfig guard first, `<n> vlans`; the root and bridge tables with a padded last column; the blocked list and its count; an empty inconsistency table; `Spanning tree default pathcost method used is long`; one port's rows by VLAN, and `enabled` under `portfast` while PortFast is set",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show spanning-tree summary",
+        rule: "classic IOS pads its labels to one width and lists EtherChannel misconfig guard after Loopguard Default; `1 vlan` in the singular; `Root bridge for: none`",
+        source: Source::Live,
+        evidence: C2960G,
+    },
+    Rule {
+        output: "show spanning-tree summary, blockedports",
+        rule: "the root bridge list and a VLAN's blocked ports on one line however long; UplinkFast under Rapid PVST `enabled but inactive in rapid-pvst mode` as the reference prints BackboneFast; `summary totals` the header and the total line alone",
+        source: Source::Inferred,
+        evidence: "no capture roots more than three VLANs, blocks more than two ports in one or holds `summary totals`",
+    },
+    Rule {
+        output: "show spanning-tree",
+        rule: "`detail`, `interface <port> detail`, a VLAN with no instance, a port not in the tables and MST print no output model: no BPDU counters, topology changes or ages are invented",
+        source: Source::Inferred,
+        evidence: "the lab's counters and ages are its own history",
     },
     Rule {
         output: "show ip interface brief",
@@ -399,9 +453,27 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show vtp status",
-        rule: "Device ID from the hostname, the database never modified (`0.0.0.0 at 0-0-00 00:00:00`), revision 0, and a digest of the domain and VLANs: a virtual switch has no burned-in address, change history or vlan.dat",
+        rule: "Device ID is the base MAC address `show version` names",
+        source: Source::Live,
+        evidence: "13 captures that print both, 2960-Plus, 2960-X, C2960G, C9200L and IE-3300, 2026-10-16",
+    },
+    Rule {
+        output: "show vtp status",
+        rule: "the database never modified (`0.0.0.0 at 0-0-00 00:00:00`), revision 0, and a digest of the domain and VLANs: a virtual switch has no change history or vlan.dat",
         source: Source::Inferred,
         evidence: "what a switch holds outside its configuration",
+    },
+    Rule {
+        output: "show running-config",
+        rule: "`spanning-tree vlan` lines in VLAN order; `root primary` stored as `priority 24576`",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show running-config",
+        rule: "`root secondary` stored as `priority 28672`, and `root primary` as 24576 whatever the other bridges' priorities",
+        source: Source::Inferred,
+        evidence: "the command reference lowers the priority below a better root's; the lab switch was alone",
     },
     Rule {
         output: "show interfaces status",
@@ -504,6 +576,8 @@ mod tests {
             RULES.iter().filter(|r| r.source != Source::Live).count()
         );
         assert!(list.iter().any(|l| l.starts_with("show interfaces trunk:")));
+        assert!(list.iter().any(|l| l.starts_with("show spanning-tree:")));
+        assert!(!list.iter().any(|l| l.contains("Device ID is the base MAC")));
         assert!(
             !list
                 .iter()

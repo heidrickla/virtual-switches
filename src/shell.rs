@@ -111,6 +111,9 @@ pub struct Session<'a> {
     /// memory` saved, else the one replayed before the first typed line (the switch booted from it)
     pub saved: Option<Vec<String>>,
     replayed: bool,
+    /// the lab the switch is cabled into, as it stood once every cable came up (`lab::connect`):
+    /// spanning tree reads it with this session's own configuration in its place
+    pub lab: Option<crate::spanning::LabView>,
 }
 
 /// What a typed line did.
@@ -148,6 +151,7 @@ impl<'a> Session<'a> {
             redacted: false,
             saved: None,
             replayed: false,
+            lab: None,
         }
     }
 

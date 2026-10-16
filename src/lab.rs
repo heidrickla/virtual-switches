@@ -13,6 +13,7 @@ use crate::device::{Device, Link};
 use crate::platform::{self, Optic, Stack};
 use crate::release::Release;
 use crate::show::short;
+use crate::spanning::{CableEnd, LabView};
 use crate::{check, generate, grammars, release, shell};
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +36,9 @@ pub struct SwitchSpec {
     /// the first design's release when absent, else a configuration's version line, else 17.15
     #[serde(default)]
     pub release: Option<String>,
+    /// the base MAC address (`xxxx.xxxx.xxxx`); derived from the name and the stack when absent
+    #[serde(default)]
+    pub mac: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +69,8 @@ pub struct Switch {
     pub files: Vec<(String, String)>,
     /// VLANs its VLAN database already holds (a design's `existing_vlans`)
     pub existing: BTreeSet<u32>,
+    /// its base MAC address
+    pub mac: crate::stp::Mac,
 }
 
 /// The engines a lab has loaded, by book and release: a grammar loads once per lab.
@@ -119,7 +125,14 @@ pub fn prepare(path: &Path) -> Result<(Vec<Switch>, Vec<Cable>), String> {
             let body = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
             bodies.push((f.clone(), body));
         }
-        out.push(ready(sw, bodies, &mut engines)?);
+        let next = ready(sw, bodies, &mut engines)?;
+        if let Some(other) = out.iter().find(|s| s.mac == next.mac) {
+            return Err(format!(
+                "{shown}: {} and {} have the same MAC address {}",
+                other.name, next.name, next.mac
+            ));
+        }
+        out.push(next);
     }
     Ok((out, lab.cable))
 }
@@ -198,7 +211,13 @@ pub fn ready(
             return Err(format!("{}: {}", sw.name, inactive.join("; ")));
         }
     }
+    // the lab's name for the switch, never its hostname, which a console may change
+    let mac = match &sw.mac {
+        Some(t) => crate::stp::Mac::parse(t.trim()).map_err(|e| format!("{}: {e}", sw.name))?,
+        None => crate::stp::Mac::derive(&format!("{}\n{spec}", sw.name)),
+    };
     Ok(Switch {
+        mac,
         name: sw.name.clone(),
         stack_spec: spec,
         stack,
@@ -225,7 +244,9 @@ pub fn engine(
 
 /// Types a switch's files into one session, then gives it the VLANs its database already holds.
 pub fn build(sw: &Switch) -> Built<'_> {
-    let mut s = shell::Session::new(&sw.engine, Device::new(sw.stack.clone()));
+    let mut device = Device::new(sw.stack.clone());
+    device.mac = sw.mac;
+    let mut s = shell::Session::new(&sw.engine, device);
     let mut typed = 0;
     let mut refused = Vec::new();
     for (file, text) in &sw.files {
@@ -475,7 +496,7 @@ fn physical(
 }
 
 /// BPDU guard on a port: set on it (or its bundle), or PortFast with BPDU guard by default.
-fn bpdu_guard(d: &Device, l: &[&str], portfast: bool) -> bool {
+pub(crate) fn bpdu_guard(d: &Device, l: &[&str], portfast: bool) -> bool {
     if l.contains(&"spanning-tree bpduguard disable") {
         return false;
     }
@@ -490,7 +511,7 @@ fn bpdu_guard(d: &Device, l: &[&str], portfast: bool) -> bool {
 /// PortFast on a port: set on it (or its bundle), or by default on an access port. On a trunking port
 /// only the `trunk` form acts; the plain form acts while the port is not trunking (STP guide, as
 /// `lint` reads it).
-fn portfast(d: &Device, l: &[&str], trunk: bool) -> bool {
+pub(crate) fn portfast(d: &Device, l: &[&str], trunk: bool) -> bool {
     if l.contains(&"spanning-tree portfast disable") {
         return false;
     }
@@ -906,6 +927,52 @@ pub fn connect(built: &mut [Built], cables: &[Cable]) -> Result<Report, String> 
             ));
         }
     }
+    // every session sees the lab as it came up, for spanning tree; a port cabled twice keeps its
+    // first cable
+    let mut taken: BTreeSet<(usize, String)> = BTreeSet::new();
+    let mut ends: Vec<[CableEnd; 2]> = vec![];
+    for c in cables {
+        let side = |t: &str| -> Result<CableEnd, String> {
+            Ok(match end(built, &names, t)? {
+                Some(e) => CableEnd::Port(e.sw, e.port),
+                None => CableEnd::Device(t.trim().to_string()),
+            })
+        };
+        let pair = [side(&c.a)?, side(&c.b)?];
+        let fresh = pair.iter().all(|e| match e {
+            CableEnd::Port(sw, p) => !taken.contains(&(*sw, p.clone())),
+            CableEnd::Device(_) => true,
+        });
+        if !fresh {
+            continue;
+        }
+        for e in &pair {
+            if let CableEnd::Port(sw, p) = e {
+                taken.insert((*sw, p.clone()));
+            }
+        }
+        ends.push(pair);
+    }
+    let switches: Arc<Vec<(String, Device)>> = Arc::new(
+        built
+            .iter()
+            .map(|b| (b.name.clone(), b.session.device.clone()))
+            .collect(),
+    );
+    let ends = Arc::new(ends);
+    for (i, b) in built.iter_mut().enumerate() {
+        b.session.lab = Some(LabView {
+            me: i,
+            switches: switches.clone(),
+            cables: ends.clone(),
+        });
+    }
+    if let Some(first) = built.first() {
+        let sp = crate::spanning::Spanning::of(&first.session.device, first.session.lab.as_ref());
+        for f in sp.filter_findings() {
+            r.finding(f);
+        }
+    }
     Ok(r)
 }
 
@@ -959,6 +1026,37 @@ mod tests {
             .collect();
         let r = connect(&mut built, cables).unwrap();
         (built, r)
+    }
+
+    #[test]
+    fn a_lab_switch_takes_its_mac_from_the_file_or_from_its_name_and_stack() {
+        let t = crate::library::tests::TempDir::new("lab-mac");
+        let write = |body: &str| {
+            let p = t.0.join("lab.toml");
+            std::fs::write(&p, body).unwrap();
+            prepare(&p)
+        };
+        let sw = |name: &str, mac: &str| {
+            format!("[[switch]]\nname = \"{name}\"\nfiles = []\nstack = \"C9300-24T\"\n{mac}\n")
+        };
+        let (s, _) = write(&(sw("a", "mac = \"0011.2233.4401\"") + &sw("b", ""))).unwrap();
+        assert_eq!(s[0].mac.to_string(), "0011.2233.4401");
+        // derived from the lab's name and the stack, never from a hostname a console may change
+        assert_eq!(s[1].mac, crate::stp::Mac::derive("b\nC9300-24T"));
+        assert_eq!(s[1].mac.0[0] & 0x03, 0x02);
+        let built = build(&s[0]);
+        assert_eq!(built.session.device.mac.to_string(), "0011.2233.4401");
+        for (body, why) in [
+            (sw("a", "mac = \"0011.2233.44\""), "is not a MAC address"),
+            (sw("a", "mac = \"0111.2233.4401\""), "multicast"),
+            (
+                sw("a", "mac = \"0011.2233.4401\"") + &sw("b", "mac = \"0011.2233.4401\""),
+                "a and b have the same MAC address 0011.2233.4401",
+            ),
+        ] {
+            let e = write(&body).err().unwrap();
+            assert!(e.contains(why), "{e}");
+        }
     }
 
     const X: &str = "C9300X-24Y";

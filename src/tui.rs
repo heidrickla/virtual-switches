@@ -1976,6 +1976,13 @@ pub fn run(
                 }
             };
             let (mut s, taken, refused) = boot(engine, stack, &config);
+            if let Some(mac) = sw
+                .mac
+                .as_deref()
+                .and_then(|m| crate::stp::Mac::parse(m).ok())
+            {
+                s.device.mac = mac;
+            }
             println!("{}", loaded(&sw, taken));
             if !refused.is_empty() {
                 println!(

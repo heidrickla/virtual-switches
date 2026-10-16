@@ -27,6 +27,14 @@ pub struct Saved {
     /// secret lines the sweep removed from the kept copy
     #[serde(default)]
     pub swept: usize,
+    /// its base MAC address, made once from its name and hardware and kept through renames
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+}
+
+/// The base MAC address a switch takes when it joins the list: from its name and hardware.
+pub fn new_mac(name: &str, stack: &str) -> String {
+    crate::stp::Mac::derive(&format!("{name}\n{stack}")).to_string()
 }
 
 impl Saved {
@@ -299,6 +307,7 @@ fn merge(
                     opened_at: either(&b.opened_at, &o.opened_at, &d.opened_at),
                     saved_at: either(&b.saved_at, &o.saved_at, &d.saved_at),
                     swept: either(&b.swept, &o.swept, &d.swept),
+                    mac: either(&b.mac, &o.mac, &d.mac),
                 });
             }
             _ => out.push(o.clone()),
@@ -336,11 +345,22 @@ impl Library {
 
     pub fn open(dir: PathBuf) -> Result<Self, String> {
         let switches = read_list(&dir.join("switches.json"))?;
-        Ok(Library {
+        let mut lib = Library {
             dir,
             base: switches.clone(),
             switches,
-        })
+        };
+        // a switch kept before MACs were kept gets one now, written with the list; the same name and
+        // hardware give the same address if the write fails
+        let mut missing = false;
+        for s in lib.switches.iter_mut().filter(|s| s.mac.is_none()) {
+            s.mac = Some(new_mac(&s.name, &s.stack));
+            missing = true;
+        }
+        if missing {
+            let _ = lib.save();
+        }
+        Ok(lib)
     }
 
     /// Writes the list: this process's switches with what another vswitch (a second selector, `vswitch
@@ -450,6 +470,7 @@ impl Library {
             opened_at: None,
             saved_at: None,
             swept,
+            mac: Some(new_mac(name, stack)),
         });
         self.sort();
         if let Err(e) = self.save() {
@@ -565,6 +586,7 @@ impl Library {
             opened_at: None,
             saved_at: None,
             swept: s.swept + swept,
+            mac: Some(new_mac(new, &s.stack)),
             ..s
         });
         self.sort();
@@ -1198,5 +1220,36 @@ pub mod tests {
             serde_json::from_str(r#"{"name":"a","stack":"C9300X-24Y","source":"x","loaded_at":1}"#)
                 .unwrap();
         assert_eq!(old.release(), crate::release::DEFAULT);
+    }
+
+    #[test]
+    fn each_switch_keeps_one_mac_made_from_its_name_and_hardware() {
+        let t = TempDir::new("lib-mac");
+        // a list written before MACs were kept loads with one each, written back once
+        std::fs::write(
+            t.0.join("switches.json"),
+            r#"{"switches":[{"name":"a","stack":"C9300-24T","source":"x","loaded_at":1}]}"#,
+        )
+        .unwrap();
+        let mut lib = Library::open(t.0.clone()).unwrap();
+        let mac = new_mac("a", "C9300-24T");
+        assert_eq!(lib.switches[0].mac.as_deref(), Some(mac.as_str()));
+        assert!(
+            std::fs::read_to_string(t.0.join("switches.json"))
+                .unwrap()
+                .contains(&mac)
+        );
+        assert_eq!(lib.switches[0].stack, "C9300-24T");
+        // kept through a rename; a copy gets its own
+        std::fs::create_dir_all(t.0.join("configs")).unwrap();
+        std::fs::write(lib.config_path("a"), "hostname a\n").unwrap();
+        let i = lib.rename(0, "b").unwrap();
+        assert_eq!(lib.switches[i].mac.as_deref(), Some(mac.as_str()));
+        let j = lib.duplicate(i, "c").unwrap();
+        assert_eq!(
+            lib.switches[j].mac.as_deref(),
+            Some(new_mac("c", "C9300-24T").as_str())
+        );
+        assert_ne!(new_mac("c", "C9300-24T"), mac);
     }
 }

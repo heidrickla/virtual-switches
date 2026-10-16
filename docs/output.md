@@ -116,6 +116,11 @@ These come from captured Catalyst 9400 running configurations at 17.5, and the l
 - A first word the books read as an abbreviation of another command is taken as held (`service call-home` where a book has `service-template` alone).
 - A line taken from a capture is placed after the line typed before it, else after the line before it in the first capture that held it.
 
+### Spanning-tree lines
+
+- `spanning-tree vlan` lines print in VLAN order.
+- `spanning-tree vlan <list> root primary` is kept as `priority 24576`, `root secondary` as `priority 28672`.
+
 ### VLAN and VTP lines
 
 - VLANs and VTP lines print only in VTP transparent mode. A VTP server keeps them in vlan.dat.
@@ -184,6 +189,7 @@ The columns and rows follow the Catalyst 9400 captures (17.5), cabled as they ra
 ### Status and VLAN
 
 - A port is `disabled` when shut down, `inactive` when it is a supervisor uplink that is off, `notconnect` otherwise. An AppGigabitEthernet port or a cabled one is `connected`.
+- A port BPDU guard err-disabled is `err-disabled`, and the far end of its cable `notconnect`.
 - IOS XE shows an LACP member it has not bundled as `suspended`, duplex `auto`.
 - The Vlan column holds the access VLAN, `trunk` while trunking, `routed` on a routed port. An access VLAN the database lacks shows as typed, `connected` or `notconnect`, never `inactive`.
 - A port-channel no member bundles in prints `notconnect unassigned auto auto N/A` on IOS XE and on classic IOS before 15.2 (no Type there, its trailing space kept), whatever its mode. Classic IOS from 15.2 shows the access VLAN.
@@ -278,7 +284,8 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 
 - Each port trunking is listed (a port-channel in place of its members), with its mode, `802.1q` and its native VLAN. Nothing prints while no port trunks.
 - Mode is `on` for a trunk-mode port and for a port-channel that inherited `switchport mode trunk`, `desirable` or `auto` for a dynamic port.
-- The VLANs allowed, those the VLAN database holds, and those forwarding (the same, as no spanning-tree blocking is modelled) print as lists. Two VLANs in a row print as a range (`460-461`) where the running configuration writes `460,461`.
+- The VLANs allowed, those the VLAN database holds, and those spanning tree forwards the port in print as lists; a port blocked in every VLAN prints `none`. Two VLANs in a row print as a range (`460-461`) where the running configuration writes `460,461`.
+- Under MST every active VLAN is listed as forwarding.
 - The Port column is 12 wide on classic IOS and 15 on IOS XE, which pads the header's `Native vlan` with two spaces.
 
 ## show power inline
@@ -297,11 +304,58 @@ The layout is that of VTP versions 1 and 2.
 
 - Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1, Server and pruning off by default). Traps come from `snmp-server enable traps vtp`.
 - The VLANs count with 1 and 1002-1005.
-- Device ID comes from the hostname, the database shows as never modified (`0.0.0.0 at 0-0-00 00:00:00`) at revision 0, and the MD5 digest is a hash of the domain and VLANs. A virtual switch has no burned-in address, change history or vlan.dat.
+- Device ID is the switch's base MAC address, as `show version` names it on every capture that prints both.
+- The database shows as never modified (`0.0.0.0 at 0-0-00 00:00:00`) at revision 0, and the MD5 digest is a hash of the domain and VLANs. A virtual switch has no change history or vlan.dat.
 - Both digest lines end with a space on every platform.
 - The updater is the lowest-numbered VLAN interface with an address. It skips a VLAN interface with no address (DHCP with no lease); with none, the first layer 3 interface with an address prints (`on interface Lo0 (first layer3 interface found)`). A transparent switch and VTP mode off name no updater.
 - From IOS XE 17.6 the pruning line adds its operational state (`Enabled (Operationally Enabled)`); the 9400 at 17.5 prints `Enabled` alone.
 - A 2960-Plus supports 255 VLANs locally and an IE-3300 259.
+
+## show spanning-tree
+
+PVST and Rapid PVST in their converged state, across every switch of a lab, from the lab C9300-24T at 17.6.4 and the lab 2960G at 15.0(2)SE11.
+
+### The tree
+
+- Each switch's bridge ID is its priority with the VLAN added (`32769`) and its base MAC address: a lab file's `mac`, the switch list's, else one derived from the hardware.
+- A VLAN has an instance where a port of the switch is up in it: an access port in its VLAN, a trunk in its allowed VLANs the database holds. A C9300's AppGigabitEthernet port runs in VLAN 1 with no cable.
+- The root is the lowest bridge ID a switch reaches; each other switch's root port is the one with the lowest path cost, then designated bridge ID, designated port ID and its own port ID.
+- On each link the end with the better path cost, bridge ID and port ID is designated. The other blocks: `Back` where both ends are one switch's (a cable between two of its ports), `Altn` otherwise.
+- A port-channel is one port, its members left out, costed by the speed its members bundle.
+- Cost is `spanning-tree [vlan <list>] cost`, else the speed's: long (802.1t, 1G 20000) by default on IOS XE, short (802.1D, 1G 4) on classic IOS, or `spanning-tree pathcost method`.
+- A cable to a device the lab does not model carries no BPDUs: the port is designated forwarding.
+- `spanning-tree bpdufilter enable` sends and takes no BPDUs: both ends are designated forwarding.
+- A port with BPDU guard that hears a BPDU is err-disabled: it leaves the tables, and its cable's far end loses its link.
+- Type is `P2p`, `Shr` on half duplex or under `spanning-tree link-type shared`, with `Edge` for PortFast that hears no BPDU and `Peer(STP)` for a Rapid PVST port facing PVST.
+
+### Port numbers
+
+| Port | Number |
+|---|---|
+| IOS XE switch port | its place in its member: front ports, slot 1's listing, the application port (Ap1/0/1 is 41 on a C9300-24T); 168 more per member after the first |
+| IOS XE port-channel | 3048 plus its number (Po1 is 3049) |
+| classic two-part port | its place (Gi0/1 is 1) |
+| classic stack member's port | its place in its member, 56 more per member after the first |
+
+A Catalyst 9400's ports and a classic port-channel have no known number: the forms that print one print the no-output-model line.
+
+### Forms
+
+| Form | Output |
+|---|---|
+| `show spanning-tree`, `active`, `vlan <list>` | a block per VLAN: protocol (`rstp`, `ieee`), the root, the bridge, the ports by number; three blank lines between |
+| `summary`, `summary totals` | the settings, then each VLAN's blocking and forwarding counts |
+| `root`, `bridge` | a row per VLAN |
+| `blockedports` | each VLAN's blocked ports and their count |
+| `inconsistentports` | the empty table |
+| `pathcost method` | the method in use |
+| `interface <port>`, `interface <port> portfast` | the port's row per VLAN; `enabled` or `disabled` per VLAN |
+
+- A bridge that is not the root adds `Cost` and `Port <n> (<name>)` under the root's address.
+- IOS XE pads the summary's labels to two widths and lists EtherChannel misconfig guard first. Classic IOS pads them to one width and lists it after Loopguard Default.
+- The summary counts `1 vlan` in the singular.
+- `detail`, `interface <port> detail` where the release's grammar takes it, a VLAN with no instance, a port not in the tables and MST print the no-output-model line. No BPDU counter, topology change or age is invented.
+- Aging Time is `mac address-table aging-time` for the VLAN or the switch, else 300.
 
 ## show ip interface brief
 

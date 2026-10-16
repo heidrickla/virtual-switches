@@ -360,6 +360,7 @@ fn lab_findings(
             files: vec![file.clone()],
             stack: c.stack.clone(),
             release: Some(train),
+            mac: None,
         };
         switches.push(lab::ready(&spec, vec![(file, body)], engines)?);
     }

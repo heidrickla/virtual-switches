@@ -69,8 +69,9 @@ optic = "SFP-10G-SR"
 | `files` | designs (`.toml`) and configurations, typed in order into one session, paths relative to the lab file; a design's `existing_vlans` go into the switch's VLAN database |
 | `stack` | as `--stack`; else the first file that names hardware (a design's stack, or a configuration's provision lines and interface names); a switch whose files name none is refused |
 | `release` | as `--release`; else the first file that names one (a design's `release`, or a configuration's `version` line); else the newest release the platform's book documents that the hardware runs |
+| `mac` | the base MAC address as `xxxx.xxxx.xxxx`, which the bridge IDs and the VTP Device ID carry; else a locally administered address derived from `name` and the stack |
 
-A `release` that disagrees with one a file names is refused.
+A `release` that disagrees with one a file names is refused. A malformed or multicast `mac`, and two switches with the same MAC, are refused.
 
 | Cable field | Meaning |
 |---|---|
@@ -101,6 +102,7 @@ Accepted optics: SFP-10G-SR, SFP-10G-SR-S, SFP-10G-LR, SFP-10G-LR-S, GLC-SX-MMD,
 | Access ports | the same access VLAN at both ends |
 | Routed ports | both routed or neither; a routed port facing a switch port is a finding; the two addresses in one subnet and not the same address; a routed end with no address is a note |
 | Spanning tree | BPDU guard on a port facing a switch err-disables it, set on the port or its bundle, or by PortFast with `spanning-tree portfast bpduguard default`, unless `spanning-tree bpduguard disable` is set |
+| BPDU filter | a link between switches that filters BPDUs at both ends and closes a loop is a finding, as neither end blocks |
 | PortFast | PortFast on a port facing a switch is a note; plain PortFast acts only while the port does not trunk, and `spanning-tree portfast default` sets it on access ports |
 | MTU | a note when the MTUs a link runs differ (`system mtu jumbo` on a classic Gigabit link) |
 | VTP | a note when both switches are VTP servers or clients over a link that trunks at both ends, as one domain's highest revision then sets both VLAN databases |
@@ -113,7 +115,8 @@ Accepted optics: SFP-10G-SR, SFP-10G-SR-S, SFP-10G-LR, SFP-10G-LR-S, GLC-SX-MMD,
 | `show interfaces status` | `connected`, `trunk` in the Vlan column while the port trunks, the transceiver's speed and type |
 | `show vlan brief` | drops a port while it trunks |
 | `show etherchannel summary` | flags a bundled member `(P)` and its bundle in use `(SU)` |
-| `show interfaces trunk` | lists the trunking port or bundle |
+| `show interfaces trunk` | lists the trunking port or bundle, and the VLANs spanning tree forwards it in |
+| `show spanning-tree` | the port in each VLAN it carries, with its role and state across the lab |
 | `show ip interface brief` | brings the port up, with a VLAN interface whose VLAN a running port carries |
 
 Captured cores, cabled as they ran, print every row of `show interfaces status` their configuration decides and both `show vlan brief` tables as the switches printed them.

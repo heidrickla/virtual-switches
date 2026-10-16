@@ -228,6 +228,8 @@ Types a script on a private lab switch and compares each line's answer, and what
 
 Builds each switch from its files, brings each cable up from both ends and checks it. The output is each switch with its lines typed, each link, each finding and `note:` line, and the counts. `--shell` opens that switch's console with its links up, after the report; a name not in the file is refused. Exit is 1 on a finding.
 
+In the console, `show spanning-tree` and its forms read the whole lab: the other switches as they came up and the switch's own configuration as it stands, so a priority, cost, mode or `shutdown` typed there shows at once. Trunking, bundling and a link down at startup stay as the lab brought them up.
+
 ### topology
 
 Writes a lab file of the captured switches, cabled where both ends' port descriptions name each other, each at its newest capture. A switch captured before and after an upgrade is one switch. Lines of the report name what was left out and why. The closing line counts the captures, the switches cabled and the cables.

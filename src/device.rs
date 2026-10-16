@@ -36,6 +36,11 @@ pub struct Device {
     /// interface headers whose address was typed at the console, which `show ip interface brief`
     /// reads as Method `manual` (the lab C9300, 17.6.4)
     pub manual: std::collections::BTreeSet<String>,
+    /// the base MAC address its bridge IDs and VTP Device ID carry: a lab's or the switch list's, else
+    /// one derived from the hardware
+    pub mac: crate::stp::Mac,
+    /// ports BPDU guard err-disabled, as `show interfaces status` prints them (`spanning.rs`)
+    pub errdisabled: std::collections::BTreeSet<String>,
 }
 
 /// A port's link: the far end, the transceiver, and how the port runs once both ends have
@@ -446,6 +451,23 @@ fn negates(k: &str, e: &str, whole: bool) -> bool {
     }
 }
 
+/// The priority `spanning-tree vlan <list> root primary` (24576) or `secondary` (28672) sets; none
+/// for any other line, `diameter` among them.
+fn root_priority(p: &Parse) -> Option<&'static str> {
+    let words: Vec<String> = keywords(p);
+    let n = words.len();
+    let tail = words.get(n.checked_sub(2)?..)?;
+    let starts = words.first().map(String::as_str) == Some("spanning-tree")
+        && words.get(1).map(String::as_str) == Some("vlan")
+        && n == 4
+        && matches!(p.items.last(), Some(Item::Kw { .. }));
+    match (starts, tail[0].as_str(), tail[1].as_str()) {
+        (true, "root", "primary") => Some("24576"),
+        (true, "root", "secondary") => Some("28672"),
+        _ => None,
+    }
+}
+
 fn first_arg(p: &Parse) -> Option<String> {
     p.items.iter().find_map(|i| match i {
         Item::Arg { value, .. } => Some(value.clone()),
@@ -456,6 +478,8 @@ fn first_arg(p: &Parse) -> Option<String> {
 impl Device {
     pub fn new(stack: Stack) -> Self {
         Device {
+            mac: crate::stp::Mac::derive(&stack.spec()),
+            errdisabled: Default::default(),
             stack,
             hostname: "Switch".into(),
             release: String::new(),
@@ -584,6 +608,35 @@ impl Device {
         let bare = k.contains(" #") || !p.items.iter().any(|i| matches!(i, Item::Arg { .. }));
         if !p.negated && !printed && bare && (default_on(&k, at.is_none()) || standalone_off) {
             lines.retain(|e| e.key != k);
+            return;
+        }
+        // IOS stores `root primary` and `root secondary` as the priority they set (the lab C9300,
+        // 17.6.4: `spanning-tree vlan 1 priority 24576` alone); 24576 and 28672 whatever the other
+        // bridges' priorities, which the command reference lowers below a better root's (inferred)
+        if at.is_none()
+            && !p.negated
+            && let Some(priority) = root_priority(p)
+        {
+            let mut q = p.clone();
+            let n = q.items.len();
+            let tok = match &q.items[n - 2] {
+                Item::Kw { tok, .. } => *tok,
+                _ => 0,
+            };
+            q.items.truncate(n - 2);
+            q.items.push(Item::Kw {
+                kw: "priority".into(),
+                tok,
+                exact: true,
+            });
+            q.items.push(Item::Arg {
+                name: "priority".into(),
+                value: priority.into(),
+                tok: tok + 1,
+                typed: true,
+            });
+            let k = key(&q);
+            apply_to(lines, &q, k, keeps_no, whole);
             return;
         }
         let text = p.canonical();

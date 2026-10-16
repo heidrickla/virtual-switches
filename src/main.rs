@@ -30,7 +30,9 @@ mod pubkey;
 mod release;
 mod shell;
 mod show;
+mod spanning;
 mod startup;
+mod stp;
 mod sweep;
 mod syntax;
 mod target;
@@ -3574,6 +3576,13 @@ mod lab_tests {
     use super::*;
 
     include!(concat!(env!("VSWITCH_SITE_TESTS"), "/main-lab_tests.rs"));
+}
+
+#[cfg(all(test, captures))]
+mod stp_tests {
+    use super::*;
+
+    include!(concat!(env!("VSWITCH_SITE_TESTS"), "/stp-tests.rs"));
 }
 
 #[cfg(test)]
