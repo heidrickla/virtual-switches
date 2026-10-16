@@ -13,8 +13,8 @@ on:
       - "tests/**"
       # a test holds the extractor's platform names to the grammars'
       - "tools/extract-releases.js"
-      # a test holds the list's keys to the README's table
-      - "README.md"
+      # a test holds the list's keys to docs/terminal.md's table
+      - "docs/*.md"
       - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"

@@ -2949,20 +2949,20 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_lists_the_keys_the_help_lists() {
-        let readme = include_str!("../README.md");
-        let section = readme
-            .split("\n## Switch list\n")
+    fn the_terminal_page_lists_the_keys_the_help_lists() {
+        let page = include_str!("../docs/terminal.md").replace("\r\n", "\n");
+        let section = page
+            .split("\n### List keys\n")
             .nth(1)
-            .and_then(|s| s.split("\n## ").next())
-            .unwrap();
-        let mut table = String::from("| Key | |\n|---|---|\n");
+            .and_then(|s| s.split("\n#").next())
+            .expect("docs/terminal.md has a List keys section");
+        let mut table = String::from("| Key | Action |\n|---|---|\n");
         for (keys, what) in LIST_KEYS {
             table.push_str(&format!("| {} | {what} |\n", keys.join(", ")));
         }
         assert!(
             section.contains(&table),
-            "the README's table should read:\n{table}"
+            "docs/terminal.md's List keys table should read:\n{table}"
         );
     }
 

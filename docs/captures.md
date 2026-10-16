@@ -1,0 +1,372 @@
+# Captures and real switches
+
+What a real switch printed overrides what vswitch derives from the books. A capture is a running configuration and a session log read from a real switch and swept of secrets. Captures are kept outside this repository. `vswitch corpus <captures dir>` compiles what they teach into `data/corpus.json.gz`, which the binary embeds. Crawls of lab switches add `?` answers to the same file. `vswitch capture`, `vswitch changes` and `vswitch probe` read real switches and their backups.
+
+## Secret sweep
+
+`vswitch sweep [<file or folder>...] [--out <folder>]` removes passwords and other secrets from configuration files and session logs (Cisco IOS, IOS XE and HPE Onyx). The value goes and the rest of the line stays, so a cleaned file still reads and loads. `<removed>` marks each value. A value that runs to the end of its line (a password with spaces) goes whole. A changed line is rewritten with single spaces.
+
+Keywords count abbreviated as IOS takes them. The `no` and `default` form of each command below is swept too.
+
+| Covered | Kind reported |
+|---|---|
+| `enable secret`, `enable password`, `enable algorithm-type`, `enable common-criteria-policy` | `enable secret` |
+| `username` passwords and secrets | `username` |
+| `snmp-server community` | `snmp-server community` |
+| the community of `snmp-server host` | `snmp-server host` |
+| `snmp-server user` keys, `sha-2` and `aes` lengths included | `snmp-server user` |
+| `tacacs-server key`, `radius-server key`, per-host server keys, `key` inside `tacacs server` and `radius server`, PAC keys, `server-private`, `server-key` | `server key` |
+| `key-string` | `key-string` |
+| `pre-shared-key` (keyrings, IKEv2 `local` and `remote`) | `pre-shared-key` |
+| `authentication-key` | `authentication-key` |
+| OSPF and NTP `md5` keys, OSPFv3 IPsec keys | `md5 key` |
+| IS-IS `area-password` and `domain-password` | `password` |
+| HSRP authentication with or without a group, VRRP and GLBP authentication | `standby authentication` |
+| MSDP peer passwords | `password` |
+| the `key config-key` master key | `config key` |
+| `password` anywhere: BGP neighbours, VTY lines, VTP, PPP | `password` |
+| `secret` anywhere else | `secret` |
+| a URL's password | `password` |
+| `wpa-psk` | `wpa-psk` |
+| `crypto isakmp key` | `isakmp key` |
+| any `$1$`, `$5$`, `$6$`, `$8$`, `$9$` or `$14$` hash left elsewhere | `hash` |
+
+Left alone:
+
+- `description`, `remark` and `alias` text, wherever it starts, and `snmp-server location` and `contact` text.
+- Banner text and `?` answers.
+- `secret masked-secret`, the prompt for a value, and `<placeholders>`.
+- The keywords some commands take after `password` or `pre-shared-key` (`password encryption`, `system disable password recovery`, `pre-shared-key key-chain`).
+
+A session log is swept command by command after each prompt, and the prompt's mode gives the block. A byte order mark hides nothing.
+
+Each file's report names the kinds of secret cleaned and never a value. It says when a removed value of four characters or more still appears elsewhere in the file. Binary files, other encodings and files over 32 MB are left alone and named in the report.
+
+The command exits 1 for a path that does not exist, a file left alone, or a removed value that still appears elsewhere. A folder is read recursively. Without `--out` each changed file is cleaned in place, written beside and renamed over. `--out <folder>` (or `--out=<folder>`) writes cleaned copies of every file there under the same relative names and never cleans in place.
+
+The sweep folder is `sweep` beside the switch list. Put configuration files there, then press `s` in the list or run `vswitch sweep` with no path.
+
+## Corpus
+
+`vswitch corpus <captures dir> [--out <file>]` writes the corpus, by default `data/corpus.json.gz`. It holds:
+
+- the lines the captures held, and where and how IOS printed them
+- the `?` answers of session logs and crawls, and the keyword descriptions beside them
+- IOS's printing order, and the `!` separator lines a release printed between two top-level commands
+- each book's NVRAM size
+- the command forms the captures used
+
+Every value that names a site is characterized as `«ipv4»`, `«ipv6»`, `«mac»`, `«number»`, `«word»` or `«text»`. The values covered are a host, a domain, an address, a user, free text, a configured object's name, a MAC address, and a serial or certificate number. A held line of that form takes any value of its kind, and the corpus names nothing of the site. A `?` answer that names one is left out. Captures are listed in the corpus as `<book> <release> capture <n>`.
+
+The command reads `<captures dir>/../designs` for the names it gives and nothing else. It writes nothing when a corpus entry still names the site. Its other options:
+
+| Option | Does |
+|---|---|
+| `--scan <tree>` | lists every published file under the tree that names the site, by file, line and word; exits 1 on a hit |
+| `--loose` | with `--scan`, the wider match |
+| `--why` | counts which denied word took out each `?` answer row |
+
+### Use
+
+| Use | Effect |
+|---|---|
+| Lines | a switch of that platform and release takes a line a capture held, as captured or with each characterized value filled in, where the books' grammar refuses it: at the top level, in a block of the kind it sat in (any interface for an interface line), and a block the capture opened under a line the books give no submode. It prints where that switch printed it, after the line before it in its capture. A banner's text is text and never a held line |
+| Separators | `show running-config` prints between two top-level commands as many `!` lines as the release printed most often (the smaller number on a tie), else as the family printed most often, else as the books build it |
+| `verify` | a line a capture held as typed, a command a capture used with other arguments (a characterized line among them), or a line from the books only; the last are the list to check on hardware |
+| `check` | a line taken at the first release only because a capture held it is not counted as broken at a release no capture covers |
+| `?` | a line a switch of that platform and release was asked in its session log prints that switch's answer whole, in the same mode. `vswitch capture` asks the common show prefixes. An error answer (`% Unrecognized command`) belongs to that switch's configuration and is not kept. The first answer kept for a line is the one held |
+| `?` from a crawl | see Crawls |
+| `do-exec` | see below |
+
+### do-exec
+
+- In configuration modes `do-exec <command>` runs the command at the privileged prompt as `do` does.
+- `?` after `do-exec ` answers as privileged EXEC does.
+- `do-exec` may be abbreviated to three characters or more (`do-`, `do-ex`).
+- `?` after a first word lists `do-exec` among the words it begins, and Tab completes it.
+- A crawl's `do-exec <line> ?` is privileged EXEC's answer for `<line>`.
+
+## Captures folder
+
+The layout is `<book>-<release>/<host>-running-config.txt`, `<host>-show.log` and `<host>-stack.txt`, the layout `vswitch capture` writes. The release is the train: 17.15.1 is `17.15`, 15.2(7)E0a is `15.2(7)E`. Any file ending `.log` in a release folder is read as a session log, so lab sessions (`<host>-session-<name>.log`) and probe logs (`<host>-probe-<script>.log`) sit beside a capture.
+
+A build reads the folder when `VSWITCH_CAPTURES` names it, or when it sits beside this repository as `../virtual-switches-captures/live`. That build also runs the tests that replay each capture (see testing.md).
+
+The sessions hold `show version`, `show inventory` with serials removed, `show interfaces status`, `show vlan brief`, `show etherchannel summary`, `show interfaces trunk`, `show power inline` and `show vtp status`, some `show ip interface brief` and `?` answers. `<host>-stack.txt` holds the hardware of the 9400 cores, whose sessions name none.
+
+Switches by platform and release:
+
+| Platform | Release | Switches |
+|---|---|---|
+| Catalyst 2960, 2960-Plus, 2960-C | 12.2(44)SE | 2 |
+| Catalyst 2960, 2960-Plus, 2960-C | 12.2(55)SE | 2 |
+| Catalyst 2960, 2960-Plus, 2960-C | 15.0(2)SE | 1 |
+| Catalyst 2960, 2960-Plus, 2960-C | 15.2(2)E | 1 |
+| Catalyst 2960, 2960-Plus, 2960-C | 15.2(6)E | 6 |
+| Catalyst 2960-X | 15.2(2)E | 12 |
+| Catalyst 2960-X | 15.2(6)E | 1 |
+| Catalyst 2960-X | 15.2(7)E | 19 |
+| Catalyst 9200, 9200L | 17.6 | 1 |
+| Catalyst 9200, 9200L | 17.9 | 5 |
+| Catalyst 9200, 9200L | 17.12 | 1 |
+| Catalyst 9200, 9200L | 17.15 | 30 |
+| Catalyst 9300, 9300L, 9300-24S | 17.6 | 5 |
+| Catalyst 9300, 9300L, 9300-24S | 17.15 | 6 |
+| Catalyst 9400 cores | 17.5 | 2 |
+| Cisco IE 3000 | 15.2(6)E | 4 |
+| Cisco IE 3010 | 12.2(53)EZ | 2 |
+| Cisco IE3300 | 17.6 | 6 |
+
+That is 106 switches, each a running configuration and a session.
+
+## Crawls
+
+A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswitch corpus` reads crawls and the binary does not embed them. A C9300 17.6 crawl at each Catalyst 9000 level and a C2960G 15.0(2)SE crawl at `lanbase` serve as donors.
+
+### Crawl folders
+
+- The log is `<book>-<release>/crawl/crawl.log`, or `crawl-<name>/crawl.log` beside it for the same image at another level.
+- The folder's `level` file names the license level the switch ran at on its first line: lowercase letters, digits and `-` (`network-advantage`, `network-essentials`, `lanbase`).
+- A crawl folder without a level is named by `vswitch corpus` as not read.
+- No other file of a crawl folder is read.
+- `vswitch corpus` prints each crawl folder it read with its level.
+- Answers are held by level, mode, context and the line before `?`. The first answer for a key is the one held.
+- An answer replays as printed, duplicate rows and spacing included.
+
+### Exchanges held
+
+- Only a complete exchange is held: a probe followed by the next prompt.
+- A probe asked where the context is unknown is left out.
+- An answer holding `--More--`, a control character (a tab excepted) or undecodable bytes is left out.
+- The last exchange of a log is left out, since a log still being written may end in a cut-short probe.
+- A line typed after `do-exec` in a configuration mode is held in privileged EXEC.
+
+### Refusals
+
+- `% Unrecognized command` is held and answered as the switch printed it.
+- `% Ambiguous command:  "<line>"` is held and answered quoting the line as the user typed it, `do-exec` included.
+- A refusal of a line naming an interface (`buffers Loopback0`, `buffers Lspvif 0`) is not held, since which interfaces exist is the switch's hardware and configuration.
+- An answer with any other `%` line (`%Illegal Hostname or IP/IPv6 address`, `% LISP is not running.`) is not held.
+- A held refusal does not move the caret of a refused line, which stands where the books put it.
+
+### Context
+
+The context is the chain of lines that entered the submodes. Each keyword is expanded from its abbreviation, and object names, numbers and addresses are left out.
+
+| Entering line | Context |
+|---|---|
+| `router ospf 1` | `router ospf` |
+| `router bgp 65000` | `router bgp` |
+| `router eigrp 100` | `router eigrp as` |
+| `router eigrp NAME` | `router eigrp named` |
+| `interface GigabitEthernet1/0/1` | `interface physical` |
+| `interface Vlan10` | `interface vlan` |
+| `interface Loopback0` | `interface loopback` |
+| `interface Port-channel1` | `interface port-channel` |
+| `interface GigabitEthernet0/0` | `interface mgmt` |
+| `interface GigabitEthernet1/0/1.10` | `interface physical sub` |
+| `interface range GigabitEthernet1/0/1 - 4` | `interface range physical` |
+| `router bgp 65000` then `address-family ipv4` | `router bgp > address-family ipv4` |
+| `policy-map NAME` then `class NAME` | `policy-map «word» > class «word»` |
+
+One function derives the context for the corpus (from a log's prompts) and for the shell (from its entering lines).
+
+One table says which lines leave another such block for one of their own: `interface`, `vlan`, `line`, `router`, `vrf definition`, `ip vrf`, `route-map`, `class-map`, `policy-map` and `ip access-list`.
+
+An answer holds in the context it was asked in. A mode and context the crawl never entered take the books' answer and never another context's.
+
+### Addresses and state
+
+- An address typed in the line, whole or inside a word, is matched as `«ipv4»`, `«ipv6»` or `«mac»`, and a prefix length after it as `«number»`.
+- A crawl's key or context still holding an address is not compiled.
+- An answer that depends on the configuration replays only while the session lacks the line that changes it. `aaa ?`, `no aaa ?` and `default aaa ?` offer `new-model` alone until `aaa new-model` is configured.
+
+## Reading crawl answers
+
+The shell looks a line up in the image's own answers, then its derived answers, then the donor's, then the books.
+
+### Abbreviations
+
+Before a held answer is looked up, each word typed before the last space is read against the held answer for the line before it, in the same mode and context.
+
+- A word that begins exactly one keyword of that answer is read as that keyword, as IOS takes a unique start of a keyword (`ip acc ?` answers as `ip access-list ?`, `snmp-server enable traps stackwise port-c member-up ?` as its derived answer).
+- A word typed whole is itself, though it begins longer keywords (`ip` beside `ipv6`). Where the switch refused such a line (`alias filter ?`), its held refusal answers.
+- A word that begins no keyword (a value), stands where no answer is held, or that the switch answered after although its `?` left it out (`ipv6 nd ra`) is kept as typed, and the words after it are read on.
+- A word that begins two keywords or more and is neither is refused as the switch refuses it: `% Ambiguous command:  "<line>"` quoting the whole line as typed.
+- Where no answer is held for the line before a word, the word is kept. The crawls hold an answer for every line before each word of every key they hold.
+- In the C9300 17.6 and C2960G 15.0(2)SE crawls the books offer no keyword for 97% of the switch's keyword positions and read 4% of the unique starts they do offer as another keyword or as ambiguous.
+
+### Derived answers
+
+A line with no held answer, made of a held line `Q` and two picks or more of the keywords its answer offers (`snmp-server enable traps stackwise new-master port-change`), is answered from the held answers after each pick alone. The longest `Q` that qualifies is taken.
+
+- Each pick's answer is a subset answer of `Q`'s by the crawler's rule: only words `Q` offered, at least two, and at least half as many. The pick is not `no` or `default`.
+- Each pick is offered after every other pick.
+- The answer is `Q`'s rows in its order with their descriptions, each kept where every pick's answer offers it. A pick stays where its own answer offers it again.
+- `<cr>` comes last where every pick's answer offers it.
+- The word column narrows to the longest word printed, a bare `<cr>` not counted.
+- A held answer for the line itself comes first. A value or a pick whose answer is not held leaves the line to the books.
+
+### License level
+
+A session's level is its running configuration's `license boot level <level>`. Without that line the book gives it:
+
+| Platform | Level |
+|---|---|
+| IE3300 | `network-essentials` |
+| Catalyst 2960, 2960-X, IE 3000, IE 3010 | `lanbase` |
+| Catalyst 9200, 9300, 9400 | `network-advantage`, as a C9300 with no startup-config runs |
+
+An image's own crawl answers only at the session's level.
+
+### Donor crawls
+
+Where the image's own answers, the abbreviations read and the answers derived hold none, a donor crawl answers the same way, in the same mode and the same context.
+
+| Platform | Donor |
+|---|---|
+| IOS XE (Catalyst 9200, 9300, 9400, IE3300) | the C9300 17.6 crawl at the session's level |
+| classic IOS (Catalyst 2960, 2960-X, IE 3000, IE 3010) | the C2960G 15.0(2)SE crawl at `lanbase` |
+
+A donor answers for an image at a level only once that book, release and level is listed in `license::ENABLED` (`src/license.rs`). The listed images are those whose captured `?` answers the donor matched better than the books with those answers masked:
+
+| Book | Release | Level |
+|---|---|---|
+| C2960-X | 15.2(7)E | `lanbase` |
+| C9200 | 17.6 | `network-essentials` and `network-advantage` |
+| C9200 | 17.15 | `network-essentials` and `network-advantage` |
+| C9300 | 17.15 | `network-essentials` and `network-advantage` |
+| C9400 | 17.5 | `network-advantage` |
+
+- A line is read once across the image and the donor. Each abbreviated word is read against the answer for the line before it from the image where it holds one, else from the donor, and the line read takes the image's answer before the donor's.
+- A derived answer is built from one of them alone.
+- Where the donor holds no answer either, the books answer. A donor's keywords and the books' are never merged.
+- A donor's answer does not move the caret of a refused line.
+- No answer to `?` makes a line taken on Enter.
+
+## capture
+
+`vswitch capture <user@host> [--key <file>] [--out <dir>] [--pending <dir>]` reads a switch over SSH with show commands only. `--out` defaults to the current folder.
+
+| Step | Commands |
+|---|---|
+| paging and width | `terminal length 0`, `terminal width 80` |
+| `?` answers, the common show prefixes | `show ?`, `show vtp ?`, `show vlan ?`, `show interfaces ?`, `show etherchannel ?`, `show spanning-tree ?`, `show power inline ?`, `show ip ?` |
+| identity | `show version` (the release), `show inventory` (the stack as `--stack` notation, and any part vswitch has no model for) |
+| configuration | `show running-config` |
+| state | `show interfaces status`, `show vlan brief`, `show etherchannel summary`, `show interfaces trunk`, `show ip interface brief`, `show power inline`, `show vtp status` |
+| width 132 | `terminal width 132`, `show vlan brief` again, `show running-config | include hostname ` |
+
+The `?` follows show commands only, so IOS runs the line it redisplays and a show command changes nothing. `show vlan brief` runs at widths 80 and 132 to show how the switch wraps.
+
+- SSH runs with `BatchMode=yes`: key authentication only, never a password prompt. `--key` adds `-i <file>` with `IdentitiesOnly=yes`.
+- The session also sets `ConnectTimeout=20` and `StrictHostKeyChecking=accept-new`, and allocates a terminal.
+- `VSWITCH_SSH` names another ssh program.
+- The capture writes `<out>/<book>-<release>/<host>-running-config.txt` and `<host>-show.log`, the layout of a captures folder.
+- Both files are swept of secrets. Serial numbers are removed (`show version` serial lines and processor board ID, `show inventory` `SN:`, a configuration's `license udi ... sn`). A value either sweep removes is removed wherever else it stands in the session.
+- The switch's configuration is then typed into vswitch at the switch's release, and the first 20 lines vswitch refuses are listed.
+- A configuration comes from `show running-config`, else from any command that printed one, and from `show startup-config`, `show configuration` or `show archive` only where nothing else printed one.
+- The command fails when the transcript prints no configuration.
+
+A capture naming hardware or a release vswitch does not model, or a member or card it does not model, goes under `--pending <dir>` as `<part>-<release>`, with `unidentified` and the configuration's `version` where they say nothing. Without `--pending` such a capture is refused. A pending capture is never live evidence.
+
+The stack notation numbers a member where its number is not its place (`2=C9300-48P`). A 9400 card always carries its slot number.
+
+### From logs
+
+`--log <session log>` reads a terminal log of such a session instead of connecting.
+
+- A log's lines that a terminal cut every 80 characters and padded to its window's width are joined.
+- A byte order mark and UTF-16 are read.
+- `--log` repeated reads the logs as one session.
+- `--config <file>` adds a configuration file where the session printed none. A session that printed its own configuration reports the file as not used.
+
+### --folder
+
+`vswitch capture --folder <dir> [--out <dir>] [--pending <dir>]` reads every file at the top of a folder for what it holds, whatever its name:
+
+- a session
+- a configuration printed before the first prompt
+- a configuration file alone
+- a backup tool's output (the prompt alone on a line, the command on the next)
+- `show tech`, of which the sections that vswitch models or reads and the neighbours are kept
+
+Files group by the switch they name, in any case, and the first session's spelling names it. A session's own configuration is kept over a backup file's. A saved configuration (`show startup-config`) is used only where nothing else printed one.
+
+Commands are read through the abbreviations IOS takes (`sh int status`). A `show tech` typed at its prompt splits into its sections.
+
+For a switch captured already, at the session's own release:
+
+- the capture gains the commands its log lacks, with the kept log's bytes kept
+- its configuration is kept, and a differing one is reported as `vswitch changes` reports it
+
+At another release the switch is a capture of its own. A session naming no release is refused. The command prints one line per switch and a summary of switches captured, added to a kept capture and not captured. It exits 1 when any switch fails or when the folder names no switch.
+
+## changes
+
+`vswitch changes <backup file or folder>... --captures <dir>` reads a backup tool's configuration of a captured switch against its capture at the backup's release, else the newest. A folder names the files in it.
+
+Output:
+
+- the items it adds, removes and edits, as a unified diff, ordered and nested
+- a line moved between sections, or reordered, as a change
+- first-match lists (numbered access lists, AS-path and community lists) paired in order
+- a banner as one item
+- the lines its release refuses that the kept configuration's did not
+- the lint findings and notes it adds or clears
+- the cables its port descriptions make or no longer make
+- the findings on the switch's cables, each neighbour built from its own capture
+
+Save-time lines are left out: `Building configuration`, `Current configuration :`, `ntp clock-period`, `!` lines and `end`.
+
+A backup whose version line names another release is typed at that release. A file holding no configuration (a `version` and a `hostname` line) or session is named and fails the run. The command exits 1 on a new refusal or a new finding. Notes and cable changes do not fail it.
+
+## probe
+
+`vswitch probe <user@host> <script> --lab [--key <file>] [--out <dir>] [--skip-unsafe] [--map <from>=<to>]...` is for a lab switch whose configuration may change. `--lab` is required.
+
+### Steps
+
+1. It reads the switch: release, hardware, `show ip interface brief`, `show interfaces status` and the running configuration. The target's name resolves to addresses, and one interface must hold one of them, else nothing is sent.
+2. `--map Twe1/0/=Gi1/0/` renames the script's ports onto ports the lab switch has, before the script is checked.
+3. It refuses the script when a line could cut the session (below) and sends nothing.
+4. It copies the running configuration to `flash:vswitch-probe-before.cfg` in a session of its own.
+5. It types the script after IOS answers `bytes copied`, then reads the running configuration.
+6. It puts the configuration back with `configure replace flash:vswitch-probe-before.cfg force`.
+
+The script stops at `end`. Blank lines and `!` comments are skipped.
+
+### Refused lines
+
+A line is read as IOS reads it: abbreviated, spaced, in its `no` and `default` forms.
+
+| Refused | Reason |
+|---|---|
+| `aaa`, `username`, `enable secret`, `enable password`, `tacacs`, `radius` | the session's login |
+| `line`, `ip ssh`, `crypto`, `ip http`, `netconf`, `restconf`, `gnxi`, `management` | the session's path |
+| `ip route`, `ip default-gateway`, `ip domain`, `ntp`, `snmp-server`, `logging host`, `vrf definition` | routes and addresses |
+| `hostname`, `boot`, `reload`, `license`, `archive`, `event manager` | the switch's identity |
+| `no ip routing`, `default ip routing` | routing turned off |
+| `write`, `copy`, `erase`, `delete`, `format` | files |
+| `do`, `do-exec` (typed whole or as a start of three characters or more) | EXEC from configuration mode |
+| `exit`, `logout`, `quit`, `disable`, `clear` | leaves configuration mode, so later lines run at the EXEC prompt |
+| `interface range macro` | ports the probe does not read |
+| a control character | the terminal acts on it |
+| the management interface or its VRF (`mgmt-vrf`); an `interface range` or VLAN list spanning it too | the session's interface |
+| a port carrying the management VLAN, trunking, or bundled into a port-channel | the session's path |
+
+### --skip-unsafe
+
+`--skip-unsafe` leaves the refused lines out, with any lines under a block it leaves out, and lists them. A whole configuration (a generated `.cfg`) probes as a script this way.
+
+### Result
+
+The probe reports:
+
+- each line the switch took and vswitch refuses, or the reverse
+- each configuration line IOS kept that vswitch does not keep, or the reverse
+- whether `configure replace` answered `Rollback Done`
+
+It writes `<host>-probe-<script>.log` and `<host>-probe-<script>-running-config.txt` under `<out>/<book>-<release>/`, swept of secrets. `--out` defaults to the current folder, and a classic switch's folder is named as its capture is. Added to the captures folder and compiled into the corpus, that configuration's lines are held at the switch's release.
+
+The command exits 1 on a difference, when the replace did not answer `Rollback Done`, and when it refuses the script.
