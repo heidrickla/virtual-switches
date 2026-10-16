@@ -39,8 +39,9 @@ pub struct Device {
     /// the base MAC address its bridge IDs and VTP Device ID carry: a lab's or the switch list's, else
     /// one derived from the hardware
     pub mac: crate::stp::Mac,
-    /// ports BPDU guard err-disabled, as `show interfaces status` prints them (`spanning.rs`)
-    pub errdisabled: std::collections::BTreeSet<String>,
+    /// ports BPDU guard err-disabled, as `show interfaces status` prints them (`spanning.rs`), with
+    /// the transceiver their link had
+    pub errdisabled: std::collections::BTreeMap<String, Option<&'static crate::platform::Optic>>,
 }
 
 /// A port's link: the far end, the transceiver, and how the port runs once both ends have
@@ -466,6 +467,71 @@ fn root_priority(p: &Parse) -> Option<&'static str> {
         (true, "root", "secondary") => Some("28672"),
         _ => None,
     }
+}
+
+/// A global `spanning-tree vlan <list> root primary|secondary`: its VLAN list and whether it is
+/// `primary`.
+pub(crate) fn root_request(p: &Parse) -> Option<(String, bool)> {
+    let primary = root_priority(p)? == "24576";
+    let list = p.items.iter().find_map(|i| match i {
+        Item::Arg { value, .. } => Some(value.clone()),
+        Item::Kw { .. } => None,
+    })?;
+    Some((list, primary))
+}
+
+/// A global `spanning-tree vlan <list> priority|forward-time|hello-time|max-age [<value>]`: its VLAN
+/// list, the setting and the value, none for the `no` form.
+pub(crate) fn vlan_setting(p: &Parse) -> Option<(String, String, Option<String>)> {
+    let words = keywords(p);
+    let ["spanning-tree", "vlan", setting] =
+        words.iter().map(String::as_str).collect::<Vec<_>>()[..]
+    else {
+        return None;
+    };
+    if !["priority", "forward-time", "hello-time", "max-age"].contains(&setting) {
+        return None;
+    }
+    let mut args = p.items.iter().filter_map(|i| match i {
+        Item::Arg { value, .. } => Some(value.clone()),
+        Item::Kw { .. } => None,
+    });
+    let list = args.next()?;
+    let value = args.next().filter(|_| !p.negated);
+    if value.is_none() && !p.negated {
+        return None;
+    }
+    Some((list, setting.to_string(), value))
+}
+
+/// The line `spanning-tree vlan <list> priority <priority>` a root request stores for some of its
+/// VLANs.
+pub(crate) fn as_priority(p: &Parse, list: &str, priority: u32) -> Parse {
+    let mut q = p.clone();
+    for i in q.items.iter_mut() {
+        if let Item::Arg { value, .. } = i {
+            *value = list.to_string();
+            break;
+        }
+    }
+    let n = q.items.len();
+    let tok = match &q.items[n - 2] {
+        Item::Kw { tok, .. } => *tok,
+        Item::Arg { .. } => 0,
+    };
+    q.items.truncate(n - 2);
+    q.items.push(Item::Kw {
+        kw: "priority".into(),
+        tok,
+        exact: true,
+    });
+    q.items.push(Item::Arg {
+        name: "priority".into(),
+        value: priority.to_string(),
+        tok: tok + 1,
+        typed: true,
+    });
+    q
 }
 
 fn first_arg(p: &Parse) -> Option<String> {

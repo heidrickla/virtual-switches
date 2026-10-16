@@ -896,6 +896,51 @@
       "lines": ["key-hash <key-type> <key-name> [<key-comment>]", "no key-hash [<key-type> <key-name>]"],
       "args": {"key-type": {"kind": "Word"}, "key-name": {"kind": "Word"}, "key-comment": {"kind": "Word"}},
       "evidence": "the 2960 references document no key-hash; the lab C2960G (15.0(2)SE11) prints '   key-hash ssh-rsa <hash>' under '  username <name>' in 'ip ssh pubkey-chain'"
+    },
+    {
+      "name": "spanning-tree mst configuration",
+      "enters": "config-mst",
+      "lines": [],
+      "evidence": "most releases' examples show '(config-mst)#' after the line once or never, short of the two an entry needs; the lab C9300-24T (17.6.4) took 'name LAB', 'revision 3' and 'instance 1 vlan 10' after it and printed them indented under 'spanning-tree mst configuration' in its running configuration"
+    },
+    {
+      "name": "instance (VLAN)",
+      "modes": ["config-mst"],
+      "lines": ["instance <instance-id> vlan <vlan-range>", "no instance <instance-id>"],
+      "args": {"instance-id": {"kind": "Number", "min": 0, "max": 4094}, "vlan-range": {"kind": "VlanList"}},
+      "corrects": ["instance <instance-id> vlans <vlan-range>", "no instance <instance-id>"],
+      "evidence": "the command reference gives 'vlans', which made vswitch store 'instance 1 vlans 10'; the lab C9300-24T (17.6.4) took 'instance 1 vlan 10' and printed ' instance 1 vlan 10' in its running configuration, as the configuration guides write it"
+    },
+    {
+      "name": "show spanning-tree",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "adds": ["show spanning-tree interface <interface-id> detail", "show spanning-tree vlan <vlan-id> bridge"],
+      "args": {"interface-id": {"kind": "Interface"}},
+      "evidence": "the books give no keyword after 'interface <interface>' or 'vlan <vlan-id>'; the lab C9300-24T (17.6.4) answered 'show spanning-tree interface Gi1/0/2 detail' and took 'bridge' after 'vlan <vlan-id>'"
+    },
+    {
+      "name": "show spanning-tree",
+      "platform": "Catalyst 2960",
+      "lines": [],
+      "adds": ["show spanning-tree mst interface <interface-id>"],
+      "args": {"interface-id": {"kind": "Interface"}},
+      "evidence": "the 2960 books give 'interface' only after an instance number; the lab C2960G (15.0(2)SE11) answered 'show spanning-tree mst interface Port-channel1' with the port's MST instances"
+    },
+    {
+      "name": "spanning-tree pathcost method",
+      "platform": "Catalyst 2960",
+      "modes": ["config"],
+      "lines": ["spanning-tree pathcost method {long | short}", "no spanning-tree pathcost method"],
+      "evidence": "the 2960 references document no pathcost method; the lab C2960G (15.0(2)SE11) took 'spanning-tree pathcost method long' and its summary printed 'Configured Pathcost method used is long'"
+    },
+    {
+      "name": "channel-group",
+      "platform": "Catalyst 2960",
+      "modes": ["config-if"],
+      "lines": ["channel-group <channel-group-number> mode {active | auto [non-silent] | desirable [non-silent] | on | passive}", "no channel-group"],
+      "args": {"channel-group-number": {"kind": "Number", "min": 1, "max": 6}},
+      "evidence": "the 2960 books split the argument ('channel-group <channel> -group-number mode'), which refused every number; the lab C2960G (15.0(2)SE11) took 'channel-group 1 mode active' and refused 'channel-group 10 mode active'; six groups is the 2960's EtherChannel count (inferred)"
     }
   ]
 }

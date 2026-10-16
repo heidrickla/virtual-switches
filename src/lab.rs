@@ -22,6 +22,82 @@ pub struct Lab {
     pub switch: Vec<SwitchSpec>,
     #[serde(default)]
     pub cable: Vec<Cable>,
+    /// devices the lab does not model that send BPDUs
+    #[serde(default)]
+    pub device: Vec<DeviceSpec>,
+}
+
+/// A device the lab does not model, named as its cables name it, and the BPDUs it sends.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSpec {
+    pub name: String,
+    /// `rstp` or `stp`: the BPDUs' version
+    pub protocol: String,
+    #[serde(default)]
+    pub bpdu: Vec<BpduSpec>,
+}
+
+/// One BPDU a device sends, by the VLAN the receiving port puts it in: its root, root path cost,
+/// own bridge ID and port ID (`128.7`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BpduSpec {
+    pub vlan: u16,
+    pub root_priority: u32,
+    pub root: String,
+    pub cost: u32,
+    pub bridge_priority: u32,
+    pub bridge: String,
+    pub port: String,
+}
+
+/// What each device the lab does not model sends, by its name.
+pub type Heard = BTreeMap<String, crate::stp::Heard>;
+
+fn heard_of(specs: &[DeviceSpec]) -> Result<Heard, String> {
+    let mut out = Heard::new();
+    for d in specs {
+        let rstp = match d.protocol.as_str() {
+            "rstp" => true,
+            "stp" => false,
+            p => {
+                return Err(format!(
+                    "device {}: protocol {p} is not rstp or stp",
+                    d.name
+                ));
+            }
+        };
+        let mut bpdus = BTreeMap::new();
+        for b in &d.bpdu {
+            let id = |priority: u32, mac: &str| -> Result<crate::stp::BridgeId, String> {
+                Ok(crate::stp::BridgeId {
+                    priority,
+                    mac: crate::stp::Mac::parse(mac)
+                        .map_err(|e| format!("device {}: {e}", d.name))?,
+                })
+            };
+            let port = b
+                .port
+                .split_once('.')
+                .and_then(|(a, n)| Some((a.parse().ok()?, n.parse().ok()?)))
+                .ok_or(format!(
+                    "device {}: port {} is not <priority>.<number>",
+                    d.name, b.port
+                ))?;
+            bpdus.insert(
+                b.vlan,
+                crate::stp::Bpdu {
+                    root: id(b.root_priority, &b.root)?,
+                    cost: b.cost,
+                    bridge: id(b.bridge_priority, &b.bridge)?,
+                    port,
+                },
+            );
+        }
+        out.insert(d.name.clone(), crate::stp::Heard { rstp, bpdus });
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,7 +184,13 @@ impl Report {
 
 /// Reads a lab file and readies each switch: designs are checked and rendered, the release and
 /// hardware resolved and checked together, as `generate` and `lint` do for one switch.
+#[cfg(test)]
 pub fn prepare(path: &Path) -> Result<(Vec<Switch>, Vec<Cable>), String> {
+    prepare_lab(path).map(|(s, c, _)| (s, c))
+}
+
+/// `prepare`, with what the devices the lab does not model send.
+pub fn prepare_lab(path: &Path) -> Result<(Vec<Switch>, Vec<Cable>, Heard), String> {
     let shown = path.display();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{shown}: {e}"))?;
     let lab: Lab = toml::from_str(&text).map_err(|e| format!("{shown}: {e}"))?;
@@ -134,7 +216,8 @@ pub fn prepare(path: &Path) -> Result<(Vec<Switch>, Vec<Cable>), String> {
         }
         out.push(next);
     }
-    Ok((out, lab.cable))
+    let heard = heard_of(&lab.device).map_err(|e| format!("{shown}: {e}"))?;
+    Ok((out, lab.cable, heard))
 }
 
 /// Readies one switch from its files' text, named as the lab file names them.
@@ -590,6 +673,15 @@ struct Joined {
 /// Brings up every cable from both ends: the physical link, DTP, the channel, then what the two
 /// configurations disagree on. Each linked port gets its link (`Device::links`).
 pub fn connect(built: &mut [Built], cables: &[Cable]) -> Result<Report, String> {
+    connect_with(built, cables, &Heard::new())
+}
+
+/// `connect`, with the BPDUs the devices the lab does not model send.
+pub fn connect_with(
+    built: &mut [Built],
+    cables: &[Cable],
+    heard: &Heard,
+) -> Result<Report, String> {
     let names: Vec<String> = built.iter().map(|b| b.name.clone()).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut r = Report::default();
@@ -648,6 +740,24 @@ pub fn connect(built: &mut [Built], cables: &[Cable]) -> Result<Report, String> 
             if let Err(why) = physical(d, e, c, optic, slots[i].as_deref(), far_holds) {
                 down.push(why);
             }
+        }
+        // a classic switch's copper port with a fixed speed runs no auto-MDIX: two of them on one
+        // cable get no link (the lab 2960G, 15.0(2)SE11: Gi0/5 to Gi0/6 at speed 100, where the lab
+        // C9300's Gi1/0/3 to Gi1/0/4 kept theirs; other classic models inferred)
+        if down.is_empty()
+            && let Some(y) = &y
+            && [(&x, &slots[0]), (y, &slots[1])].iter().all(|(e, slot)| {
+                let d = &built[e.sw].session.device;
+                d.stack.classic()
+                    && slot.is_none()
+                    && value(&d.config_of(&e.port), "speed ")
+                        .is_some_and(|s| s.parse::<u32>().is_ok())
+            })
+        {
+            down.push(format!(
+                "{} and {} have fixed speeds, which turn auto-MDIX off at both ends",
+                x.label, y.label
+            ));
         }
         if !down.is_empty() {
             let shut_only = down.iter().all(|d| d.ends_with("is shut down"));
@@ -960,11 +1070,13 @@ pub fn connect(built: &mut [Built], cables: &[Cable]) -> Result<Report, String> 
             .collect(),
     );
     let ends = Arc::new(ends);
+    let heard = Arc::new(heard.clone());
     for (i, b) in built.iter_mut().enumerate() {
         b.session.lab = Some(LabView {
             me: i,
             switches: switches.clone(),
             cables: ends.clone(),
+            heard: heard.clone(),
         });
     }
     if let Some(first) = built.first() {

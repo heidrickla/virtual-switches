@@ -80,6 +80,21 @@ A `release` that disagrees with one a file names is refused. A malformed or mult
 | `speed` | the speed a copper link negotiates when the far end runs slower (Mb/s), one the copper port runs |
 | `half` | the far end negotiates half duplex (a device on an old hub, `a-half a-100`) |
 
+| Device field | Meaning |
+|---|---|
+| `name` | a cable end's name alone: a device the lab does not model |
+| `protocol` | `rstp` or `stp`, the version of the BPDUs it sends |
+| `bpdu` | one per VLAN the receiving port puts it in: `vlan`, `root_priority`, `root` (a MAC address), `cost`, `bridge_priority`, `bridge`, `port` (`128.7`) |
+
+```toml
+[[device]]
+name = "upstream"
+protocol = "rstp"
+bpdu = [{ vlan = 54, root_priority = 0, root = "0011.2233.4490", cost = 1500, bridge_priority = 8192, bridge = "0011.2233.4491", port = "128.7" }]
+```
+
+A device with no `[[device]]` sends no BPDUs.
+
 Accepted optics: SFP-10G-SR, SFP-10G-SR-S, SFP-10G-LR, SFP-10G-LR-S, GLC-SX-MMD, GLC-LH-SMD, GLC-FE-100FX, GLC-T and GLC-TE. GLC-T and GLC-TE are copper SFPs. A cable with neither end a switch is refused.
 
 ### Link checks
@@ -89,6 +104,7 @@ Accepted optics: SFP-10G-SR, SFP-10G-SR-S, SFP-10G-LR, SFP-10G-LR-S, GLC-SX-MMD,
 | The link | both ends run; a port shut down is a note and the link stays down; neither end is a supervisor uplink that is off |
 | Transceiver ports | a transceiver port has an optic it runs and no other `speed`: SFP28 25G, 10G, 1G; SFP+ 10G, 1G; SFP 1G, and 100M on the 9400 SFP card, a 2960-X's SFP uplinks and an IE 3010's FastEthernet SFP ports |
 | RJ-45 ports | an RJ-45 port takes no optic, or a copper SFP at the far end |
+| Auto-MDIX | two classic RJ-45 ports with a fixed `speed` on one cable get no link, as a fixed speed turns auto-MDIX off |
 | Dual-purpose uplinks | a dual-purpose uplink (2960, 2960-Plus, 2960-C, IE 3000, IE 3010) takes copper or an optic as its `media-type` allows |
 | QSFP ports | a QSFP port takes a transceiver vswitch does not model, and says so |
 | Cabled twice | a port named by two cables is a finding |

@@ -1000,6 +1000,7 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
             // has them; only a terminal log loses them
             match c.as_str() {
                 "show interfaces status" => interfaces_status(d),
+                "show interfaces status err-disabled" => interfaces_status_errdisabled(d),
                 "show vlan brief" => vlan_brief(d, s.width),
                 "show vlan" => vlan(d, s.width),
                 "show interfaces switchport" => interfaces_switchport(d),
@@ -1014,15 +1015,10 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 }
                 "show etherchannel summary" => etherchannel_summary(d),
                 "show interfaces trunk" => {
-                    // under MST (phase 2) every active VLAN is taken to forward
-                    if crate::spanning::mode(&s.device) == "mst" {
-                        interfaces_trunk(d)
-                    } else {
-                        let sp = crate::spanning::Spanning::of(&s.device, view);
-                        interfaces_trunk_with(d, &|p: &str, v: u32| {
-                            crate::spanning::forwards(&sp, p, v)
-                        })
-                    }
+                    let sp = crate::spanning::Spanning::of(&s.device, view);
+                    interfaces_trunk_with(d, &|p: &str, v: u32| {
+                        crate::spanning::forwards(&sp, p, v)
+                    })
                 }
                 "show ip interface brief" => ip_interface_brief(d),
                 "show power inline" => power_inline(d),
@@ -1205,6 +1201,33 @@ pub fn enabled_uplinks(d: &Device) -> std::collections::BTreeSet<(u32, u32)> {
         .collect()
 }
 
+/// `show interfaces status err-disabled`, laid out as the lab C9300 printed it (17.6.4):
+/// BPDU guard the only reason modelled; the 12-character name cut is inferred.
+fn interfaces_status_errdisabled(d: &Device) -> Vec<String> {
+    let mut out = vec![
+        "Port         Name         Status       Reason               Err-disabled Vlans"
+            .to_string(),
+        String::new(),
+    ];
+    for p in ports(d)
+        .into_iter()
+        .filter(|p| d.errdisabled.contains_key(p))
+    {
+        let c = config_of(d, &p);
+        let name: String = value(&c, "description ")
+            .unwrap_or("")
+            .chars()
+            .take(12)
+            .collect();
+        out.push(format!(
+            "{:<13}{name:<13}{:<13}bpduguard",
+            short(&p),
+            "err-disabled"
+        ));
+    }
+    out
+}
+
 /// A transceiver's Type in `show interfaces status`: the IE-3300 leaves off the Catalysts' ` SFP`
 /// (`1000BaseLX`, ie3300 17.6 capture 1).
 fn optic_type(d: &Device, o: &crate::platform::Optic) -> &'static str {
@@ -1256,7 +1279,7 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
         let held = suspended(d, &p);
         let status = if c.contains(&"shutdown") {
             "disabled"
-        } else if d.errdisabled.contains(&p) {
+        } else if d.errdisabled.contains_key(&p) {
             // BPDU guard heard a BPDU (the lab C9300, 17.6.4); its far end prints `notconnect`
             "err-disabled"
         } else if d.stack.uplink_off(&p, &enabled).is_some() {
@@ -1336,7 +1359,12 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
                     }
                 }
             },
-            None => {}
+            // an err-disabled port still names its transceiver (the lab C9300, 17.6.4)
+            None => {
+                if let Some(Some(o)) = d.errdisabled.get(&p) {
+                    ty = optic_type(d, o);
+                }
+            }
         }
         // a suspended member negotiates its speed and not its duplex (the lab C9300's `auto a-1000`)
         if held {
@@ -1381,6 +1409,7 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
 /// `show interfaces trunk`, laid out as the command reference's example: each port trunking now (a
 /// port-channel in place of its members), its DTP mode, the allowed VLANs, those the VLAN database
 /// has, and those forwarding. Nothing while no port trunks.
+#[cfg(test)]
 pub fn interfaces_trunk(d: &Device) -> Vec<String> {
     interfaces_trunk_with(d, &|_: &str, _: u32| true)
 }
@@ -1394,7 +1423,8 @@ pub fn interfaces_trunk_with(d: &Device, forwards: &dyn Fn(&str, u32) -> bool) -
     for p in ports(d) {
         let link = up(d, &p).or_else(|| bundle(d, &p).map(|(_, l)| l));
         let member = !p.starts_with("Port-channel") && link.is_some_and(|l| l.bundled);
-        if link.is_some_and(|l| l.trunk) && !member {
+        // a suspended LACP member does not trunk (the lab C9300, 17.6.4)
+        if link.is_some_and(|l| l.trunk) && !member && !suspended(d, &p) {
             rows.push((p.clone(), config_of(d, &p)));
         }
     }
@@ -2034,7 +2064,19 @@ pub fn etherchannel_summary(d: &Device) -> Vec<String> {
         let po = format!("Po{n}({layer}{state})");
         // no protocol prints ` -` (the lab C9300, 17.6.4, and the lab C2960G)
         let protocol = if protocol == "-" { " -" } else { protocol };
-        if classic {
+        if classic && before_15_2(d) {
+            // before 15.2 each member is padded to 12, its padding kept (the lab C2960G,
+            // 15.0(2)SE11); wrapping as 15.2 does is inferred
+            let mut line = format!("{n:<7}{po:<16}{protocol:<10}");
+            for (i, m) in members.iter().enumerate() {
+                if i > 0 && line.trim_end().len() + 1 + m.len() > 78 {
+                    out.push(line);
+                    line = format!("{:33}", "");
+                }
+                line.push_str(&format!("{m:<12}"));
+            }
+            out.push(line);
+        } else if classic {
             // the members wrap under the Ports column before column 79 (c2960x 15.2(7)E capture 7's
             // four); a group with none keeps its padding (the lab C2960G's Po1)
             let mut line = format!("{n:<7}{po:<16}{protocol:<10}");

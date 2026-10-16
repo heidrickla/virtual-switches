@@ -1663,7 +1663,7 @@ fn run(args: &[String]) -> Result<bool, String> {
         Some("lab") => {
             // switches cabled together, each cable brought up from both ends
             let path = args.get(1).ok_or(USAGE)?;
-            let (switches, cables) = lab::prepare(std::path::Path::new(path))?;
+            let (switches, cables, heard) = lab::prepare_lab(std::path::Path::new(path))?;
             let mut built: Vec<lab::Built> = live::par_map(&switches, lab::build);
             for (sw, b) in switches.iter().zip(&built) {
                 println!(
@@ -1675,7 +1675,7 @@ fn run(args: &[String]) -> Result<bool, String> {
                     b.refused.len()
                 );
             }
-            let report = lab::connect(&mut built, &cables)?;
+            let report = lab::connect_with(&mut built, &cables, &heard)?;
             for l in &report.links {
                 println!("{l}");
             }
@@ -3583,6 +3583,13 @@ mod stp_tests {
     use super::*;
 
     include!(concat!(env!("VSWITCH_SITE_TESTS"), "/stp-tests.rs"));
+}
+
+#[cfg(all(test, captures))]
+mod stp2_tests {
+    use super::*;
+
+    include!(concat!(env!("VSWITCH_SITE_TESTS"), "/stp2-tests.rs"));
 }
 
 #[cfg(test)]

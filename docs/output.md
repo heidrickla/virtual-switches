@@ -119,7 +119,11 @@ These come from captured Catalyst 9400 running configurations at 17.5, and the l
 ### Spanning-tree lines
 
 - `spanning-tree vlan` lines print in VLAN order.
-- `spanning-tree vlan <list> root primary` is kept as `priority 24576`, `root secondary` as `priority 28672`.
+- A VLAN's priority, forward-time, hello-time and max-age are kept per VLAN. VLANs holding one value print on one line (`spanning-tree vlan 1,10 priority 4096`); `no spanning-tree vlan 10 priority` then leaves `spanning-tree vlan 1 priority 4096`.
+- `spanning-tree vlan <list> root primary` is kept as `priority 24576` where that makes the switch the root, else as the highest multiple of 4096 that beats the current root; `root secondary` as `priority 28672`. VLANs taking one priority share a line.
+- `spanning-tree mst configuration` enters its submode, and `instance <n> vlan <list>` prints with `vlan`.
+- Classic IOS's first `no spanning-tree mst configuration` returns the region to its defaults and keeps the header line; the second removes it. IOS XE removes it at the first.
+- A member's `channel-group <n>` gives a new or empty port-channel interface the member's switch port lines.
 
 ### VLAN and VTP lines
 
@@ -313,49 +317,83 @@ The layout is that of VTP versions 1 and 2.
 
 ## show spanning-tree
 
-PVST and Rapid PVST in their converged state, across every switch of a lab, from the lab C9300-24T at 17.6.4 and the lab 2960G at 15.0(2)SE11.
+PVST, Rapid PVST and MST in their converged state, across every switch of a lab, from the lab C9300-24T at 17.6.4 and the lab 2960G at 15.0(2)SE11. Listening and learning, BPDU counters, topology changes and ages are not modelled.
 
 ### The tree
 
-- Each switch's bridge ID is its priority with the VLAN added (`32769`) and its base MAC address: a lab file's `mac`, the switch list's, else one derived from the hardware.
+- Each switch's bridge ID is its priority with the VLAN or MST instance added (`32769`) and its base MAC address: a lab file's `mac`, the switch list's, else one derived from the hardware.
 - A VLAN has an instance where a port of the switch is up in it: an access port in its VLAN, a trunk in its allowed VLANs the database holds. A C9300's AppGigabitEthernet port runs in VLAN 1 with no cable.
 - The root is the lowest bridge ID a switch reaches; each other switch's root port is the one with the lowest path cost, then designated bridge ID, designated port ID and its own port ID.
 - On each link the end with the better path cost, bridge ID and port ID is designated. The other blocks: `Back` where both ends are one switch's (a cable between two of its ports), `Altn` otherwise.
 - A port-channel is one port, its members left out, costed by the speed its members bundle.
-- Cost is `spanning-tree [vlan <list>] cost`, else the speed's: long (802.1t, 1G 20000) by default on IOS XE, short (802.1D, 1G 4) on classic IOS, or `spanning-tree pathcost method`.
-- A cable to a device the lab does not model carries no BPDUs: the port is designated forwarding.
+- Cost is `spanning-tree [vlan <list>] cost`, else the speed's: long (802.1t, 1G 20000) by default on IOS XE, short (802.1D, 1G 4) on classic IOS, or `spanning-tree pathcost method`. The speed is the link's, or the port's `speed`.
+- A cable to a device the lab does not model carries no BPDUs unless the lab file's `[[device]]` gives the BPDUs it sends.
 - `spanning-tree bpdufilter enable` sends and takes no BPDUs: both ends are designated forwarding.
-- A port with BPDU guard that hears a BPDU is err-disabled: it leaves the tables, and its cable's far end loses its link.
-- Type is `P2p`, `Shr` on half duplex or under `spanning-tree link-type shared`, with `Edge` for PortFast that hears no BPDU and `Peer(STP)` for a Rapid PVST port facing PVST.
+- A port with BPDU guard that hears a BPDU is err-disabled: it leaves the tables, and its cable's far end loses its link. `show interfaces status` names its transceiver; `show interfaces status err-disabled` lists it with reason `bpduguard`.
+
+### MST
+
+- A switch in MST mode runs the CIST (MST0) and an MSTI for each `instance <n> vlan <list>` of `spanning-tree mst configuration`. A VLAN no instance lists runs in the CIST.
+- The CIST's bridge priority is `spanning-tree mst 0 priority`, an MSTI's `spanning-tree mst <n> priority`, 32768 by default, with the instance added.
+- Two MST switches are one region where their name, revision and VLAN-to-instance digest (HMAC-MD5 with the 802.1s key) match. In a region the CIST and every MSTI run across the link; between regions and against PVST only the CIST does.
+- The CIST's root is the lowest bridge ID across the lab; the regional root is the region's bridge with the best path to it. The external cost counts links outside the region, the internal cost links inside it.
+- An MSTI's port on a region's boundary takes the CIST's role, `Mstr` where the CIST's is `Root`.
+- MST costs ports by the long method whatever is configured, and the summary prints `short (Operational value is long)` under the short method.
+- Hops left are `spanning-tree mst max-hops` (20) less the root ports crossed inside the region.
+- Against PVST or Rapid PVST, the CIST is VLAN 1 on a trunk and the access VLAN on an access port.
+- PVST simulation: an MST boundary port facing a PVST-family trunk is held `BKN*` with `*PVST_Inc` in every instance where it is the CIST's root port and another VLAN's root path at the far port is worse than VLAN 1's, or where it is designated and the far port is designated in another VLAN (inferred).
+- An MSTI port the far switch's CIST blocks gets no BPDUs and prints `Desg BLK`, a dispute.
+
+### Guards
+
+- Root guard (`spanning-tree guard root`) ignores the port's BPDUs; where they are better than its own the port prints `Desg BKN*` and `*ROOT_Inc`.
+- Loop guard (`spanning-tree guard loop`, or `spanning-tree loopguard default` on every port, inferred) holds a designated port `BKN*` with `*LOOP_Inc` where the far end runs the instance behind its BPDU filter and the far end's root path is better: the port would be root or alternate if BPDUs arrived.
+- An inconsistent port prints `BKN*` with its cost after the asterisk, no space between.
+
+### Type
+
+| Text | When |
+|---|---|
+| `P2p`, `Shr` | `Shr` on half duplex or under `spanning-tree link-type shared` |
+| `Edge` | PortFast that hears no BPDU |
+| `Peer(STP)` | a Rapid PVST port facing PVST, also behind the far end's BPDU filter; facing an MST port that is not the CIST's alternate or backup, or is held inconsistent; facing a device that sends STP BPDUs |
+| `Bound(PVST)` | an MST port facing a PVST or Rapid PVST trunk |
+| `Bound(RSTP)`, `Bound(STP)` | an MST port facing a Rapid PVST or PVST access port (inferred), another region's designated port (`RSTP`), or a device by its BPDUs |
+| `*ROOT_Inc`, `*LOOP_Inc`, `*PVST_Inc` | the guard or simulation holding the port |
 
 ### Port numbers
 
 | Port | Number |
 |---|---|
 | IOS XE switch port | its place in its member: front ports, slot 1's listing, the application port (Ap1/0/1 is 41 on a C9300-24T); 168 more per member after the first |
-| IOS XE port-channel | 3048 plus its number (Po1 is 3049) |
+| IOS XE port-channel | 3048 plus its number (Po10 is 3058) |
 | classic two-part port | its place (Gi0/1 is 1) |
+| classic two-part port-channel | 63 plus its number (Po1 is 64) |
 | classic stack member's port | its place in its member, 56 more per member after the first |
 
-A Catalyst 9400's ports and a classic port-channel have no known number: the forms that print one print the no-output-model line.
+A Catalyst 9400's ports and a classic stack's port-channels have no known number: the forms that print one print the no-output-model line.
 
 ### Forms
 
 | Form | Output |
 |---|---|
-| `show spanning-tree`, `active`, `vlan <list>` | a block per VLAN: protocol (`rstp`, `ieee`), the root, the bridge, the ports by number; three blank lines between |
-| `summary`, `summary totals` | the settings, then each VLAN's blocking and forwarding counts |
-| `root`, `bridge` | a row per VLAN |
-| `blockedports` | each VLAN's blocked ports and their count |
-| `inconsistentports` | the empty table |
+| `show spanning-tree`, `active`, `vlan <list>` | a block per VLAN or MST instance: protocol (`rstp`, `ieee`, `mstp`), the root, the bridge, the ports by number; three blank lines between |
+| `summary`, `summary totals` | the mode, the settings, then each instance's blocking and forwarding counts |
+| `root`, `bridge`, `vlan <list> bridge` | a row per VLAN or instance; the last for the instances the list maps to (inferred) |
+| `blockedports` | each instance's blocked ports and their count |
+| `inconsistentports` | each instance's held ports, the reason (`Root Inconsistent`, `Loop Inconsistent`, `PVST Sim. Inconsistent`) and their count |
 | `pathcost method` | the method in use |
-| `interface <port>`, `interface <port> portfast` | the port's row per VLAN; `enabled` or `disabled` per VLAN |
+| `interface <port>`, `interface <port> portfast` | the port's row per instance; `enabled` or `disabled` per instance |
+| `mst`, `mst <n>` | MST mode: each instance's or one instance's bridge, root, regional root, hops and ports |
+| `mst configuration` | the name, revision and VLANs per instance, in any mode |
 
-- A bridge that is not the root adds `Cost` and `Port <n> (<name>)` under the root's address.
+- A bridge that is not the root adds `Cost` and `Port <n> (<name>)` under the root's address. Under MST the cost is the CIST's external one, the internal one where the CIST's root is in the region (inferred), and an MSTI's internal one.
 - IOS XE pads the summary's labels to two widths and lists EtherChannel misconfig guard first. Classic IOS pads them to one width and lists it after Loopguard Default.
-- The summary counts `1 vlan` in the singular.
-- `detail`, `interface <port> detail` where the release's grammar takes it, a VLAN with no instance, a port not in the tables and MST print the no-output-model line. No BPDU counter, topology change or age is invented.
-- Aging Time is `mac address-table aging-time` for the VLAN or the switch, else 300.
+- The summary counts `1 vlan` and `1 mst` in the singular.
+- UplinkFast and BackboneFast set outside PVST print `enabled but inactive in <mode> mode`.
+- A port in no tree prints `no spanning tree info available for <port> `; a VLAN list with no instance prints `Spanning tree instance(s) for vlan <list> does not exist.`
+- `detail`, `interface <port> detail`, `mst interface <port>`, `mst configuration digest`, MST forms outside MST mode and a switch with no instance print the no-output-model line. No BPDU counter, topology change or age is invented.
+- Aging Time is `mac address-table aging-time` for the VLAN or the switch, else 300; MST blocks print none.
 
 ## show ip interface brief
 

@@ -1379,6 +1379,17 @@ impl<'a> Session<'a> {
             Some(sub) if cli::is_config(sub) && p.negated => {
                 // `no interface ...`, `no vlan ...`: the block goes
                 for header in headers(p) {
+                    // classic IOS takes the MST region back to its defaults first, its header kept, and
+                    // drops it at a second `no` (the lab C2960G, 15.0(2)SE11); the
+                    // lab C9300 (17.6.4) dropped it at the first
+                    if header == "spanning-tree mst configuration"
+                        && self.device.stack.classic()
+                        && let Some(b) = self.device.blocks.iter_mut().find(|b| b.header == header)
+                        && !b.lines.is_empty()
+                    {
+                        b.lines.clear();
+                        continue;
+                    }
                     self.device.remove_block(&header);
                 }
             }
@@ -1991,6 +2002,68 @@ impl<'a> Session<'a> {
                 .has(&crate::live::kind(header), &p.canonical())
         };
         let whole = self.whole(&top.mode, p);
+        // `root primary` and `root secondary` store the priority each VLAN takes against the root
+        // the switch knows now (the lab C9300, 17.6.4), VLANs taking the same one on one line
+        if top.blocks.is_empty()
+            && !p.negated
+            && let Some((list, primary)) = crate::device::root_request(p)
+        {
+            let mut by: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+            for v in crate::generate::vlan_ids(&list) {
+                let prio =
+                    crate::spanning::root_priority(&self.device, self.lab.as_ref(), v, primary);
+                by.entry(prio).or_default().insert(v);
+            }
+            for (prio, vlans) in by {
+                let q = crate::device::as_priority(p, &crate::target::ios_list(&vlans), prio);
+                self.write(&q);
+            }
+            return;
+        }
+        // a VLAN setting is kept per VLAN, VLANs holding one value printed on one line (the lab
+        // C2960G, 15.0(2)SE11: `no spanning-tree vlan 10 priority` after `spanning-tree vlan 1,10
+        // priority 4096` left VLAN 1 at 4096; the lab C9300 prints VLANs 1 and 10 apart)
+        if top.blocks.is_empty()
+            && let Some((list, setting, value)) = crate::device::vlan_setting(p)
+        {
+            let mut by_vlan: BTreeMap<u32, String> = BTreeMap::new();
+            self.device.global.retain(|e| {
+                let w: Vec<&str> = e.text.split_whitespace().collect();
+                match w[..] {
+                    ["spanning-tree", "vlan", l, s, val] if s == setting => {
+                        for v in crate::generate::vlan_ids(l) {
+                            by_vlan.insert(v, val.to_string());
+                        }
+                        false
+                    }
+                    _ => true,
+                }
+            });
+            for v in crate::generate::vlan_ids(&list) {
+                match &value {
+                    Some(x) => by_vlan.insert(v, x.clone()),
+                    None => by_vlan.remove(&v),
+                };
+            }
+            let mut by_value: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+            for (v, x) in by_vlan {
+                by_value.entry(x).or_default().insert(v);
+            }
+            let mut groups: Vec<(String, BTreeSet<u32>)> = by_value.into_iter().collect();
+            groups.sort_by_key(|(_, vlans)| vlans.first().copied());
+            for (x, vlans) in groups {
+                let text = format!(
+                    "spanning-tree vlan {} {setting} {x}",
+                    crate::target::ios_list(&vlans)
+                );
+                if let Outcome::Ok(q) = self.engine.parse("config", &text) {
+                    let kept = self.engine.held.has("", &q.canonical());
+                    let whole = self.whole(&top.mode, &q);
+                    self.device.apply_as(&q, None, kept, whole);
+                }
+            }
+            return;
+        }
         if top.blocks.is_empty() {
             let kept = printed(&self.device, None);
             self.device.apply_as(p, None, kept, whole);
@@ -2021,10 +2094,11 @@ impl<'a> Session<'a> {
         {
             let header = format!("interface Port-channel{n}");
             // a configuration printed by IOS has the port-channel before its members, so replaying
-            // one makes nothing here
+            // one makes nothing here; an empty one takes them too (the lab C2960G, 15.0(2)SE11:
+            // its Po1 had no lines)
             let made = !self.device.blocks.iter().any(|b| b.header == header);
             let po = self.device.block(&header);
-            if made {
+            if made || self.device.blocks[po].lines.is_empty() {
                 let lines: Vec<_> = self.device.blocks[member]
                     .lines
                     .iter()
