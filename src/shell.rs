@@ -964,7 +964,9 @@ impl<'a> Session<'a> {
                 Result::Error,
             );
         }
-        let modifier = match bar.map(|b| crate::filter::parse(&whole[b + 1..], b + 1)) {
+        // the expression keeps a space typed at the end of the line, as the lab C9300 (17.6.4) does
+        let typed = line.trim_end_matches(['\r', '\n']);
+        let modifier = match bar.map(|b| crate::filter::parse(&typed[b + 1..], b + 1)) {
             None => None,
             Some(Ok(m)) => Some(m),
             Some(Err(o)) => return (self.error(prompt_len, whole, &o), Result::Error),
@@ -1024,6 +1026,24 @@ impl<'a> Session<'a> {
             && let Some(made) = self.vlan_made(&p.canonical())
         {
             out.insert(0, made);
+        }
+        // an address typed at the console reads Method `manual` (the lab C9300, 17.6.4)
+        if r == Result::Ok
+            && !self.redacted
+            && !p.negated
+            && crate::device::key(&p).starts_with("ip address")
+        {
+            let typed: Vec<String> = self
+                .frames
+                .last()
+                .map(|f| {
+                    f.blocks
+                        .iter()
+                        .map(|&b| self.device.blocks[b].header.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.device.manual.extend(typed);
         }
         // IOS reads a certificate's hex after `certificate` in a chain, until `quit`
         if r == Result::Ok
@@ -1859,20 +1879,34 @@ impl<'a> Session<'a> {
             self.raise_parents(p);
             return;
         }
-        // a member's `channel-group <n>` makes its port-channel interface, as IOS does; the interface
-        // stays when its members leave
+        // a member's `channel-group <n>` makes its port-channel interface, as IOS does, with the
+        // member's switch port lines (the lab C9300, 17.6.4: Po1 took ` switchport mode trunk`); the
+        // interface stays when its members leave
         if !p.negated
-            && top
+            && let Some(&member) = top
                 .blocks
                 .iter()
-                .any(|&b| self.device.blocks[b].header.starts_with("interface "))
+                .find(|&&b| self.device.blocks[b].header.starts_with("interface "))
             && let Some(n) = p
                 .canonical()
                 .strip_prefix("channel-group ")
                 .and_then(|r| r.split_whitespace().next())
                 .filter(|n| n.chars().all(|c| c.is_ascii_digit()))
         {
-            self.device.block(&format!("interface Port-channel{n}"));
+            let header = format!("interface Port-channel{n}");
+            // a configuration printed by IOS has the port-channel before its members, so replaying
+            // one makes nothing here
+            let made = !self.device.blocks.iter().any(|b| b.header == header);
+            let po = self.device.block(&header);
+            if made {
+                let lines: Vec<_> = self.device.blocks[member]
+                    .lines
+                    .iter()
+                    .filter(|e| e.key.starts_with("switchport"))
+                    .cloned()
+                    .collect();
+                self.device.blocks[po].lines = lines;
+            }
         }
         for &b in &top.blocks {
             let kept = printed(&self.device, Some(b));
@@ -2931,7 +2965,33 @@ mod tests {
                 "switchport access vlan 10",
             ],
         );
-        // IOS makes the port-channel when its first member joins, and keeps it
+        // IOS makes the port-channel when its first member joins, with the member's switch port
+        // lines, and keeps it
+        assert_eq!(
+            block_of(&s, "interface Port-channel5"),
+            ["interface Port-channel5"]
+        );
+        let mut t = configured(
+            &e,
+            &[
+                "interface GigabitEthernet1/0/2",
+                "switchport mode trunk",
+                "description x",
+                "channel-group 6 mode on",
+            ],
+        );
+        assert_eq!(
+            block_of(&t, "interface Port-channel6"),
+            ["interface Port-channel6", " switchport mode trunk"]
+        );
+        // one that exists keeps its own
+        t.type_line("interface GigabitEthernet1/0/3");
+        t.type_line("switchport mode access");
+        t.type_line("channel-group 6 mode on");
+        assert_eq!(
+            block_of(&t, "interface Port-channel6"),
+            ["interface Port-channel6", " switchport mode trunk"]
+        );
         assert_eq!(s.type_line("no channel-group").1, Result::Ok);
         let run = show::running_config(&s.device);
         assert!(
@@ -2949,7 +3009,7 @@ mod tests {
         );
         assert!(s.type_line("switchport access vlan 30").0.is_empty());
         let run = show::running_config(&s.device);
-        assert!(run.contains(&"vlan 30".to_string()) && run.contains(&"vlan 40".to_string()));
+        assert!(run.contains(&"vlan 30 ".to_string()) && run.contains(&"vlan 40 ".to_string()));
         // a replayed configuration defines its own VLANs
         let (replayed, _) = crate::check::type_config(
             &e,

@@ -33,6 +33,9 @@ pub struct Device {
     pub held_after: crate::live::After,
     /// cabled ports with a link, by full name (`lab.rs`)
     pub links: std::collections::BTreeMap<String, Link>,
+    /// interface headers whose address was typed at the console, which `show ip interface brief`
+    /// reads as Method `manual` (the lab C9300, 17.6.4)
+    pub manual: std::collections::BTreeSet<String>,
 }
 
 /// A port's link: the far end, the transceiver, and how the port runs once both ends have
@@ -461,6 +464,7 @@ impl Device {
             held_top: Default::default(),
             held_after: Default::default(),
             links: Default::default(),
+            manual: Default::default(),
         }
     }
 
@@ -538,6 +542,9 @@ impl Device {
                 self.hostname = h;
             }
         }
+        // IOS XE disables a stand-alone LACP member by default and prints `no port-channel
+        // standalone-disable` under a port-channel (the lab C9300, 17.6.4); classic IOS does not
+        let standalone_off = k == "port-channel standalone-disable" && !self.stack.classic();
         let keeps_no = printed
             || match at {
                 // `no spanning-tree vlan 1` (c2960x 15.2(7)E capture 8) is kept per VLAN
@@ -548,6 +555,7 @@ impl Device {
                     k == "vtp"
                         || k == "switchport"
                         || KEEPS_NO_IN_BLOCK.contains(&k.as_str())
+                        || standalone_off
                         || (k == "ip address" || k == "ip route-cache")
                             && routed(&self.blocks[b].header, &self.blocks[b].lines)
                 }
@@ -574,7 +582,7 @@ impl Device {
         // a default turned back on prints nothing, unless a real switch printed it so; an argument
         // sets something else (`keepalive 10`), but an instance's names the default's instance
         let bare = k.contains(" #") || !p.items.iter().any(|i| matches!(i, Item::Arg { .. }));
-        if !p.negated && !printed && bare && default_on(&k, at.is_none()) {
+        if !p.negated && !printed && bare && (default_on(&k, at.is_none()) || standalone_off) {
             lines.retain(|e| e.key != k);
             return;
         }

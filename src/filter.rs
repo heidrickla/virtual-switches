@@ -104,7 +104,9 @@ pub fn parse(text: &str, at: usize) -> Result<Modifier, Outcome> {
     let Some(first) = toks.get(if sub.is_some() { 2 } else { 1 }) else {
         return Err(Outcome::Incomplete);
     };
-    let pattern = text[first.at..].trim_end();
+    // a space typed at the end is part of the expression (the lab C9300, 17.6.4: `| include Gi1/0/2 `
+    // leaves out Gi1/0/20-24)
+    let pattern = &text[first.at..];
     let re = ios_regex(pattern).ok_or(Outcome::Invalid(at + first.at))?;
     Ok(match (keyword, sub) {
         ("include", _) => Modifier::Include(re),
@@ -128,7 +130,7 @@ pub fn apply(m: &Modifier, output: Vec<String>) -> Vec<String> {
             "Number of lines which match regexp = {}",
             output.iter().filter(|l| re.is_match(l)).count()
         )],
-        Modifier::Section(re) => sections(output, |lines| lines.iter().any(|l| re.is_match(l))),
+        Modifier::Section(re) => matching_sections(output, re),
         Modifier::SectionExclude(re) => {
             sections(output, |lines| !lines.iter().any(|l| re.is_match(l)))
         }
@@ -141,18 +143,38 @@ fn sections(output: Vec<String>, keep: impl Fn(&[String]) -> bool) -> Vec<String
     let mut out = Vec::new();
     let mut i = 0;
     while i < output.len() {
-        let mut end = i + 1;
-        if !output[i].starts_with(' ') {
-            while end < output.len() && output[end].starts_with(' ') {
-                end += 1;
-            }
-        }
+        let end = i + 1 + under(&output[i..]);
         if keep(&output[i..end]) {
             out.extend_from_slice(&output[i..end]);
         }
         i = end;
     }
     out
+}
+
+/// `section <expression>`: each line that matches and the lines indented deeper under it; a line
+/// under a matching one is printed once with it (the lab C9300, 17.6.4: `| section exec-timeout`
+/// printed ` exec-timeout 0 0` alone, not its `line con 0` section)
+fn matching_sections(output: Vec<String>, re: &Regex) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < output.len() {
+        if re.is_match(&output[i]) {
+            let end = i + 1 + under(&output[i..]);
+            out.extend_from_slice(&output[i..end]);
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// How many lines after `lines[0]` are indented deeper than it.
+fn under(lines: &[String]) -> usize {
+    let depth = |l: &str| l.len() - l.trim_start_matches(' ').len();
+    let d = depth(&lines[0]);
+    lines[1..].iter().take_while(|l| depth(l) > d).count()
 }
 
 #[cfg(test)]
@@ -194,11 +216,29 @@ mod tests {
             run("section line", CONFIG),
             ["line con 0", " stopbits 1", "no line auto-consolidation"]
         );
-        // a line under a section shows its whole section
+        // a matching line under a section shows itself and its own lines, not the section
         assert_eq!(
             run("section 10.0.0.1", CONFIG),
-            ["interface Vlan10", " ip address 10.0.0.1 255.255.255.0"]
+            [" ip address 10.0.0.1 255.255.255.0"]
         );
+        let call_home = "call-home\n contact-email-addr x\n profile \"CiscoTAC-1\"\n  active\n  destination transport-method http\nend";
+        assert_eq!(
+            run("section CiscoTAC", call_home),
+            [
+                " profile \"CiscoTAC-1\"",
+                "  active",
+                "  destination transport-method http"
+            ]
+        );
+        // a header that matches shows its lines once, a matching line under it included
+        assert_eq!(run("section call|active", call_home).len(), 5);
+    }
+
+    #[test]
+    fn a_space_typed_at_the_end_is_part_of_the_expression() {
+        let text = "Gi1/0/2   connected\nGi1/0/20  notconnect";
+        assert_eq!(run("include Gi1/0/2 ", text), ["Gi1/0/2   connected"]);
+        assert_eq!(run("include Gi1/0/2", text).len(), 2);
     }
 
     #[test]

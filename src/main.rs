@@ -3849,14 +3849,15 @@ mod show_tests {
             line("Vlan1 "),
             "Vlan1                  unassigned      YES unset  administratively down down    "
         );
-        // VLAN 10 exists and no running port carries it: up, its protocol down (the C2960G's Vlan1)
+        // VLAN 10 exists and no running port carries it: up, its protocol down (the C2960G's Vlan1);
+        // an address typed at the console reads `manual` (the lab C9300, 17.6.4)
         assert_eq!(
             line("Vlan10 "),
-            "Vlan10                 10.0.10.1       YES NVRAM  up                    down    "
+            "Vlan10                 10.0.10.1       YES manual up                    down    "
         );
         assert_eq!(
             line("Loopback0 "),
-            "Loopback0              10.255.0.1      YES NVRAM  up                    up      "
+            "Loopback0              10.255.0.1      YES manual up                    up      "
         );
         assert!(s.type_line("show interfaces trunk").0.is_empty());
         // every port is listed, those never configured as an empty block
@@ -3880,7 +3881,7 @@ mod show_tests {
         assert!(out.contains(&"Number of channel-groups in use: 1".to_string()));
         assert_eq!(
             out[out.len() - 2],
-            "10     Po10(SD)        LACP      Twe1/0/1(D) Twe2/0/1(D)"
+            "10     Po10(SD)        LACP        Twe1/0/1(D)     Twe2/0/1(D)     "
         );
         // `switchport mode trunk` typed on the port-channel reached its members, as IOS applies it
         let member = s.type_line("show running-config interface Twe2/0/1").0;

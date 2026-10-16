@@ -28,6 +28,7 @@ const BATCH: &str = "76 switches captured, each cabled as it ran: 2960-X at 15.2
 
 const SHOW_TECH: &str = "the show techs of 39 switches: 2960-Plus at 15.2(6)E, C9200L at 17.15, C9300 at 17.15, IE-3300 at 17.6; 2026-10-07";
 const C2960G: &str = "the lab C2960G (WS-C2960G-8TC-L, 15.0(2)SE11) over SSH";
+const LAB: &str = "the lab C9300-24T with a C9300-NM-4G (17.6.4) on its console and the lab C2960G (15.0(2)SE11) over SSH, each case configured, read and reset, 2026-10-16";
 
 pub const RULES: &[Rule] = &[
     Rule {
@@ -44,15 +45,15 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces switchport",
-        rule: "a bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`); a voice VLAN of `dot1p`, `untagged` or `none` as typed; the pruning lines read in turn as the allowed list reads `all`, `none`, `add`, `remove` and `except`, within 2-1001, `NONE` when empty",
-        source: Source::Inferred,
-        evidence: "no capture has a bundled member's switchport block, a voice VLAN or a pruning list",
+        rule: "a bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`); IOS XE calls an LACP member it has not bundled, linked or not, `down (suspended member of bundle Po1)` with no operational encapsulation; a voice VLAN of `dot1p`, `untagged` or `none` as typed; the pruning lines read in turn as the allowed list reads, within 2-1001; one port's block alone with no blank line after it",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show interfaces switchport",
-        rule: "a trunk: `Administrative Mode: trunk`, negotiation On, the native VLAN and the allowed list; operational `trunk` and encapsulation `dot1q` once it links; a port with no mode `dynamic auto`; an access VLAN no block defines `(Inactive)`; the voice VLAN",
-        source: Source::Example,
-        evidence: "the 9300 command reference's `show interfaces gigabitethernet1/0/1 switchport` (a trunk with no link); an up trunk and `(Inactive)` inferred",
+        rule: "a trunk: `Administrative Mode: trunk`, negotiation On, the native VLAN and the allowed list; operational `trunk` and encapsulation `dot1q` once it links; a port with no mode `dynamic auto`; an access VLAN no block defines `(Inactive)`; the voice VLAN; a port-channel with no capture lines, and while no member bundles `Access Mode VLAN: unassigned` and `Trunking Native Mode VLAN: 0 (Inactive)` whatever its mode; AppGigabitEthernet `static access`, encapsulation `native`",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show vlan",
@@ -104,9 +105,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "VLANs and VTP lines print only in VTP transparent mode; a VTP server keeps them in vlan.dat",
-        source: Source::Example,
-        evidence: "9300 17.15 command reference (vtp mode, vlan); the cores, VTP servers, print neither",
+        rule: "VLANs and VTP lines print only in VTP transparent mode; a VTP server keeps them in vlan.dat; an unnamed VLAN's line ends with a space",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show running-config",
@@ -116,15 +117,21 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "`router` blocks after the last interface, before `ip forward-protocol` and `ip route`; `vlan access-map` and `vlan configuration` blocks among the global blocks in every VTP mode",
+        rule: "`router` blocks after the last interface, before `ip forward-protocol` and `ip route`; `vlan access-map` blocks among the global blocks in every VTP mode",
         source: Source::Inferred,
-        evidence: "no capture holds a routing process, a VLAN access map or a VLAN configuration",
+        evidence: "no capture holds a routing process or a VLAN access map",
+    },
+    Rule {
+        output: "show running-config",
+        rule: "a `vlan configuration` with nothing under it is not kept; a blank line after `end`, the interface form's too; IOS XE keeps `no port-channel standalone-disable` under a port-channel; a member's `channel-group` typed makes its port-channel with the member's switch port lines",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show running-config",
         rule: "`no switchport` kept on a routed port",
-        source: Source::Example,
-        evidence: "9300 17.15 configuration guide (`show running-config interface GigabitEthernet1/0/9`)",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show running-config",
@@ -170,15 +177,15 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces status",
-        rule: "a port-channel with no link as `notconnect ... auto auto N/A`",
-        source: Source::Inferred,
-        evidence: "the cores' port-channels were all connected",
+        rule: "a port-channel no member bundles in: `notconnect unassigned auto auto N/A` on IOS XE and on classic IOS before 15.2 (no Type there, its trailing space kept), whatever its mode; classic IOS from 15.2 shows the access VLAN",
+        source: Source::Live,
+        evidence: "the lab C9300 (17.6.4) and the lab C2960G (15.0(2)SE11), 2026-10-16; a 2960-X capture at 15.2",
     },
     Rule {
         output: "show interfaces status",
-        rule: "in VTP transparent mode, a port not trunking whose access VLAN no block defines is `inactive`; a VTP server's or client's ports are not judged, its vlan.dat being outside the configuration",
-        source: Source::Inferred,
-        evidence: "the cores' `inactive` rows are supervisor uplinks; no capture shows a port in a missing VLAN",
+        rule: "an access port whose VLAN the database lacks shows that VLAN, `connected` or `notconnect`, never `inactive`; IOS XE shows an LACP member it has not bundled `suspended`, duplex `auto`; AppGigabitEthernet up `a-full a-1000 App-hosting port` (the cores' 9400s print Type `unknown`)",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show interfaces status",
@@ -278,9 +285,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show etherchannel summary",
-        rule: "with no link: the bundle `(SD)` or `(RD)`, each member `(D)`",
-        source: Source::Inferred,
-        evidence: "the flags legend; no capture of a down bundle",
+        rule: "with no link: the bundle `(SD)` or `(RD)`, each member `(D)`; LACP members cabled to each other in one channel do not bundle (`(SD)`, members `(I)`); no protocol prints ` -`",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show etherchannel summary",
@@ -296,9 +303,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show etherchannel summary",
-        rule: "a member with a link that does not bundle `(I)`, or `(s)` under `port-channel standalone-disable`",
-        source: Source::Inferred,
-        evidence: "the flags legend and the guide's standalone-disable task; no example shows it",
+        rule: "a member with a link that does not bundle: `(s)` on IOS XE, where standalone-disable is the default, `(I)` under `no port-channel standalone-disable` and on classic IOS; IOS XE pads each member to 16, two a line, the rest under the Ports column at 35, at any terminal width, trailing spaces kept; classic IOS keeps a memberless group's padding",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show interfaces trunk",
@@ -314,9 +321,15 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces trunk",
-        rule: "Mode `desirable` or `auto` for a dynamic port; a port-channel in place of its members; the active VLANs as the allowed ones the VLAN database holds, all forwarding (no spanning-tree blocking modelled)",
+        rule: "Mode `desirable` or `auto` for a dynamic port; a port-channel in place of its members, Mode `on` when it inherited `switchport mode trunk`; IOS XE pads the header's `Native vlan` with two spaces",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show interfaces trunk",
+        rule: "the active VLANs as the allowed ones the VLAN database holds, all forwarding (no spanning-tree blocking modelled)",
         source: Source::Inferred,
-        evidence: "the reference's example and its field table; no capture",
+        evidence: "the lab C9300 shows `none` forwarding on a port spanning tree blocks; vswitch runs no spanning tree",
     },
     Rule {
         output: "show ip interface brief",
@@ -326,9 +339,15 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show ip interface brief",
-        rule: "Vlan1 administratively down while no block configures it; up: loopbacks, AppGigabitEthernet, a port-channel with a bundled member; Method `DHCP` for `ip address dhcp`; a name 22 characters or wider followed by one space",
+        rule: "Vlan1 administratively down while no block configures it; up: loopbacks, AppGigabitEthernet, a port-channel with a bundled member; Method `manual` for an address typed at the console, DHCP's with no lease too; IOS XE prints a name wider than 22 short (Te1/1/1, Fo1/1/1, Ap1/0/1); a front-panel port's `no ip address` `unset`",
+        source: Source::Live,
+        evidence: LAB,
+    },
+    Rule {
+        output: "show ip interface brief",
+        rule: "Method `DHCP` for `ip address dhcp` in a configuration loaded; classic IOS prints a name 22 characters or wider whole, followed by one space",
         source: Source::Inferred,
-        evidence: "the reference's example; no capture has a name of 22 characters or more, or an address from DHCP; Method and autostate are live (below)",
+        evidence: "the reference's example; no capture has an address from DHCP or a classic name of 22 characters",
     },
     Rule {
         output: "show ip interface brief",
@@ -371,6 +390,12 @@ pub const RULES: &[Rule] = &[
         rule: "from IOS XE 17.6 the pruning line adds its operational state (`Enabled (Operationally Enabled)`); a transparent switch names no updater",
         source: Source::Live,
         evidence: "c9200 17.6 capture 1 (17.6.4) and c9200 17.15 capture 27 (17.15.2); the cores at 17.5 print `Enabled` alone",
+    },
+    Rule {
+        output: "show vtp status",
+        rule: "the updater skips a VLAN interface with no address (DHCP with no lease); with none, the first layer 3 interface with an address (`on interface Lo0 (first layer3 interface found)`); VTP mode off names no updater",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "show vtp status",
@@ -422,27 +447,27 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "| include, exclude, begin, section",
-        rule: "a space typed at the very end of the line is not part of the expression",
-        source: Source::Inferred,
-        evidence: "the line is trimmed before the modifier is read; `show running-config | include hostname ` on a switch settles it",
+        rule: "a space typed at the end of the line is part of the expression (`| include Gi1/0/2 ` skips Gi1/0/20)",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "| section",
-        rule: "a section whose indented line matches is shown whole",
-        source: Source::Inferred,
-        evidence: "the guides show only a matching first line",
+        rule: "a matching line prints with the lines indented under it, once; a matching indented line prints without its parent",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "| count",
         rule: "`Number of lines which match regexp = N`",
-        source: Source::Example,
-        evidence: "IOS XE general command reference",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "write memory, copy running-config startup-config",
         rule: "`Destination filename [startup-config]?`, `Building configuration...`, `[OK]`",
-        source: Source::Example,
-        evidence: "IOS XE general command reference",
+        source: Source::Live,
+        evidence: LAB,
     },
     Rule {
         output: "terminal length, terminal width",

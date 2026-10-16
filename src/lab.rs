@@ -1126,7 +1126,7 @@ mod tests {
         // the table's row, then the blank line that closes it
         assert_eq!(
             summary[summary.len() - 2],
-            "1      Po1(SU)         LACP      Twe1/0/1(P) Twe1/0/2(P)"
+            "1      Po1(SU)         LACP        Twe1/0/1(P)     Twe1/0/2(P)     "
         );
         let (built, r) = lab(&e, (X, &ch(1, "passive")), (X, &ch(1, "passive")), two);
         assert!(
@@ -1136,7 +1136,8 @@ mod tests {
         let summary = crate::show::etherchannel_summary(&built[0].session.device);
         assert_eq!(
             &summary[summary.len() - 2],
-            "1      Po1(SD)         LACP      Twe1/0/1(I) Twe1/0/2(I)"
+            // IOS XE suspends a member with no LACP partner (the lab C9300, 17.6.4)
+            "1      Po1(SD)         LACP        Twe1/0/1(s)     Twe1/0/2(s)     "
         );
         let (built, r) = lab(&e, (X, &ch(1, "on")), (X, &ch(1, "active")), two);
         assert!(
