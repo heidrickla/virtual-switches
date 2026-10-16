@@ -209,9 +209,40 @@ pub fn stack_named(ex: &[crate::capture::Exchange]) -> Option<String> {
     }
 }
 
+/// Each top-level line of a capture from `version` to `end`, with the `!` lines printed between it
+/// and the top-level line before it; a banner's text belongs to its banner line.
+pub fn separated(text: &str) -> Vec<(&str, usize)> {
+    let mut out = vec![];
+    let mut bangs = 0;
+    let mut closes: Option<String> = None;
+    for l in text.lines().skip_while(|l| !l.starts_with("version ")) {
+        let l = l.trim_end();
+        if let Some(d) = &closes {
+            if l.contains(d.as_str()) {
+                closes = None;
+            }
+            continue;
+        }
+        if l == "!" {
+            bangs += 1;
+            continue;
+        }
+        if l.is_empty() || l.starts_with([' ', '\t']) {
+            continue;
+        }
+        out.push((l, bangs));
+        bangs = 0;
+        if l == "end" {
+            break;
+        }
+        closes = banner_opens(l);
+    }
+    out
+}
+
 /// The delimiter a `banner <kind> <delimiter>` line opens text with that runs on to later lines: `^C`
 /// as a running configuration prints it, else the first character.
-fn banner_opens(line: &str) -> Option<String> {
+pub(crate) fn banner_opens(line: &str) -> Option<String> {
     let (_, text) = line.strip_prefix("banner ")?.split_once(' ')?;
     let text = text.trim_start();
     let d = if text.starts_with("^C") {
@@ -1097,6 +1128,22 @@ mod tests {
         assert_eq!(at("policy-map", "police"), None);
         // captures that disagree give no rule
         assert_eq!(at("line", "exec-timeout"), None);
+    }
+
+    #[test]
+    fn each_top_level_line_counts_the_separators_before_it() {
+        let text = "Building configuration...\n!\nversion 17.6\nhostname a\n!\n!\nvrf definition v\n !\n address-family ipv4\n exit-address-family\n!\nbanner motd ^C\n!\nhi\n^C\n!\nline con 0\n stopbits 1\nend\n!\n";
+        assert_eq!(
+            separated(text),
+            vec![
+                ("version 17.6", 0),
+                ("hostname a", 0),
+                ("vrf definition v", 2),
+                ("banner motd ^C", 1),
+                ("line con 0", 1),
+                ("end", 0),
+            ]
+        );
     }
 
     #[cfg(all(test, captures))]

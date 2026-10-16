@@ -4417,6 +4417,28 @@ mod tests {
         assert!(!text.contains("! If contact"), "{text}");
     }
 
+    #[test]
+    fn separators_between_top_level_lines_are_as_many_as_ios_prints() {
+        // the lab C9300 (17.6.4): one class-map follows another with no `!` between them, where
+        // each block used to close with one
+        let e = books_17_6();
+        let s = configured(
+            &e,
+            &[
+                "class-map match-any lab-a",
+                "description one",
+                "exit",
+                "class-map match-any lab-b",
+                "description two",
+            ],
+        );
+        let text = crate::show::configuration(&s.device).join("\n");
+        assert!(
+            text.contains("  description one\nclass-map match-any lab-b\n"),
+            "{text}"
+        );
+    }
+
     /// A C9300 at 17.6 on its books and the captures' held lines, without the crawls' answers.
     fn books_17_6() -> Engine {
         let r = crate::release::Release::parse("17.6").unwrap();

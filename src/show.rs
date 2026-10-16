@@ -181,6 +181,11 @@ struct Orders {
     line: Precedence,
     /// commands whose site values the corpus characterized, by number (`live::fits`)
     fitted: Vec<(String, usize)>,
+    /// the `!` lines between two top-level commands that a release's captures printed most often,
+    /// by book, release and the two commands' numbers
+    release_gaps: std::collections::HashMap<(String, String, usize, usize), usize>,
+    /// the same over every release of a family, classic IOS then IOS XE
+    family_gaps: [std::collections::HashMap<(usize, usize), usize>; 2],
 }
 
 impl Orders {
@@ -224,8 +229,98 @@ fn orders() -> &'static Orders {
                 .filter(|(_, cmd)| cmd.contains('«'))
                 .map(|(n, cmd)| (cmd.clone(), n))
                 .collect(),
+            release_gaps: most_often(
+                c.gaps
+                    .iter()
+                    .map(|(b, r, x, y, n, t)| ((b.clone(), r.clone(), *x, *y), *n, *t)),
+            ),
+            family_gaps: [true, false].map(|classic| {
+                most_often(
+                    c.gaps
+                        .iter()
+                        .filter(|(_, r, ..)| {
+                            crate::release::Release::parse(r).is_some_and(|r| r.classic())
+                                == classic
+                        })
+                        .map(|(_, _, x, y, n, t)| ((*x, *y), *n, *t)),
+                )
+            }),
         }
     })
+}
+
+/// Each key's value seen the most times, the smaller value on a tie.
+fn most_often<K: Eq + std::hash::Hash + Clone>(
+    rows: impl Iterator<Item = (K, usize, usize)>,
+) -> std::collections::HashMap<K, usize> {
+    let mut counts: std::collections::HashMap<(K, usize), usize> = Default::default();
+    for (k, n, times) in rows {
+        *counts.entry((k, n)).or_default() += times;
+    }
+    let mut best: std::collections::HashMap<K, (usize, usize)> = Default::default();
+    for ((k, n), times) in counts {
+        let b = best.entry(k).or_insert((n, times));
+        if times > b.1 || (times == b.1 && n < b.0) {
+            *b = (n, times);
+        }
+    }
+    best.into_iter().map(|(k, (n, _))| (k, n)).collect()
+}
+
+/// The `!` lines between top-level lines as IOS prints them: as many as the switch's release, or
+/// failing that its family, printed most often between the same two commands; as built where no
+/// capture printed the pair. A banner's text and indented lines stay as they are.
+fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
+    let o = orders();
+    let book = crate::grammars::book(d.stack.family());
+    let classic = crate::release::Release::parse(&d.release)
+        .map_or_else(|| d.stack.classic(), |r| r.classic());
+    let gap = |a: usize, b: usize| {
+        o.release_gaps
+            .get(&(book.to_string(), d.release.clone(), a, b))
+            .or_else(|| o.family_gaps[usize::from(!classic)].get(&(a, b)))
+            .copied()
+    };
+    let mut out = Vec::with_capacity(body.len());
+    let mut before: Option<Option<usize>> = None;
+    let mut bangs = 0;
+    let mut closes: Option<String> = None;
+    for l in body {
+        if let Some(d) = &closes {
+            if l.contains(d.as_str()) {
+                closes = None;
+            }
+            out.push(l);
+            continue;
+        }
+        if before.is_none() {
+            before = l.starts_with("version ").then(|| o.number(&command(&l)));
+            out.push(l);
+            continue;
+        }
+        if l == "!" {
+            bangs += 1;
+            continue;
+        }
+        if l.is_empty() || l.starts_with([' ', '\t']) {
+            out.extend(std::iter::repeat_n("!".to_string(), bangs));
+            bangs = 0;
+            out.push(l);
+            continue;
+        }
+        let this = o.number(&command(&l));
+        let n = match (before.flatten(), this) {
+            (Some(a), Some(b)) => gap(a, b).unwrap_or(bangs),
+            _ => bangs,
+        };
+        out.extend(std::iter::repeat_n("!".to_string(), n));
+        bangs = 0;
+        before = Some(this);
+        closes = crate::live::banner_opens(&l);
+        out.push(l);
+    }
+    out.extend(std::iter::repeat_n("!".to_string(), bangs));
+    out
 }
 
 /// `items` in IOS's printing order: each after every item whose command one of `order` puts before
@@ -722,7 +817,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
     }
     place_held(d, &mut body);
     body.push("end".into());
-    body
+    separate(d, body)
 }
 
 /// Puts the lines and blocks taken as a real switch held them where that switch printed them:

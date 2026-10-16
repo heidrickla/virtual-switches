@@ -287,6 +287,10 @@ pub struct Corpus {
     pub nvram: Vec<(String, u64)>,
     /// (book, release, block kind, the keywords of a command a capture used)
     pub forms: Vec<(String, String, String, Vec<String>)>,
+    /// (book, release, command before, command after, `!` lines printed between them, captures
+    /// printing that many), each command by number
+    #[serde(default)]
+    pub gaps: Vec<(String, String, usize, usize, usize, usize)>,
 }
 
 impl Corpus {
@@ -743,6 +747,7 @@ pub fn build(src: &Source) -> Corpus {
         })
     };
     let mut release: BTreeMap<(String, String), Gathering> = BTreeMap::new();
+    let mut gaps: BTreeMap<(String, String, usize, usize, usize), usize> = BTreeMap::new();
     let (mut interface, mut line) = (Gathering::default(), Gathering::default());
     for f in &src.running {
         let mut top = vec![];
@@ -774,11 +779,27 @@ pub fn build(src: &Source) -> Corpus {
             .entry((f.book.clone(), f.release.clone()))
             .or_default()
             .add(top);
+        let tops = live::separated(&f.text);
+        for (a, b) in tops.iter().zip(tops.iter().skip(1)) {
+            *gaps
+                .entry((
+                    f.book.clone(),
+                    f.release.clone(),
+                    number(a.0),
+                    number(b.0),
+                    b.1,
+                ))
+                .or_insert(0) += 1;
+        }
     }
     let mut family = [Gathering::default(), Gathering::default()];
     for ((_, at), g) in &release {
         family[usize::from(!classic(at))].join(g);
     }
+    c.gaps = gaps
+        .into_iter()
+        .map(|((b, r, x, y, n), times)| (b, r, x, y, n, times))
+        .collect();
     c.numbers = order;
     c.release_order = release
         .iter()
