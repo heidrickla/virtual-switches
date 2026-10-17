@@ -53,6 +53,17 @@ pub fn type_traced(s: &mut shell::Session<'_>, config: &str) -> Vec<Traced> {
         s.type_line("enable");
         s.type_line("configure terminal");
     }
+    // a switch's own printed configuration keeps its layout and its last change
+    if let Some(layout) = device::Layout::of(config) {
+        s.device.layout = Some(layout);
+        if let Some(t) = config
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("! Last configuration change at "))
+            .and_then(crate::shell::parse_stamp)
+        {
+            s.device.last_change = Some(t);
+        }
+    }
     // a kept configuration was swept of its secrets: `<removed>` stands for each value
     let was = std::mem::replace(&mut s.redacted, true);
     let mut typed = Vec::new();

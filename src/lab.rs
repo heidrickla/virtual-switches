@@ -115,6 +115,20 @@ pub struct SwitchSpec {
     /// the base MAC address (`xxxx.xxxx.xxxx`); derived from the name and the stack when absent
     #[serde(default)]
     pub mac: Option<String>,
+    /// transceivers fitted whether or not a cable runs from them
+    #[serde(default)]
+    pub transceiver: Vec<TransceiverSpec>,
+}
+
+/// A transceiver in a port (`Gi1/1/1`): its part number and whether it is third-party, which IOS XE
+/// err-disables as `gbic-invalid` unless the configuration allows it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransceiverSpec {
+    pub port: String,
+    pub optic: String,
+    #[serde(default)]
+    pub third_party: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -147,6 +161,8 @@ pub struct Switch {
     pub existing: BTreeSet<u32>,
     /// its base MAC address
     pub mac: crate::stp::Mac,
+    /// the transceivers fitted in its ports, by full name, and whether each is third-party
+    pub transceivers: BTreeMap<String, (&'static Optic, bool)>,
 }
 
 /// The engines a lab has loaded, by book and release: a grammar loads once per lab.
@@ -299,8 +315,24 @@ pub fn ready(
         Some(t) => crate::stp::Mac::parse(t.trim()).map_err(|e| format!("{}: {e}", sw.name))?,
         None => crate::stp::Mac::derive(&format!("{}\n{spec}", sw.name)),
     };
+    let mut transceivers = BTreeMap::new();
+    for t in &sw.transceiver {
+        let full = generate::full(t.port.trim());
+        if !stack.physical().contains(&full) {
+            return Err(format!(
+                "{}: transceiver in {}: no such port",
+                sw.name, t.port
+            ));
+        }
+        let optic = platform::optic(&t.optic).ok_or(format!(
+            "{}: transceiver in {}: {} is not a transceiver vswitch knows",
+            sw.name, t.port, t.optic
+        ))?;
+        transceivers.insert(full, (optic, t.third_party));
+    }
     Ok(Switch {
         mac,
+        transceivers,
         name: sw.name.clone(),
         stack_spec: spec,
         stack,
@@ -329,6 +361,7 @@ pub fn engine(
 pub fn build(sw: &Switch) -> Built<'_> {
     let mut device = Device::new(sw.stack.clone());
     device.mac = sw.mac;
+    device.transceivers = sw.transceivers.clone();
     let mut s = shell::Session::new(&sw.engine, device);
     let mut typed = 0;
     let mut refused = Vec::new();
@@ -524,6 +557,12 @@ fn physical(
         .uplink_off(&e.port, &crate::show::enabled_uplinks(d))
     {
         return Err(format!("{} is inactive: {why}", e.label));
+    }
+    if d.gbic_invalid().contains(&e.port) {
+        return Err(format!(
+            "{} is err-disabled (gbic-invalid): its third-party transceiver needs `service unsupported-transceiver`",
+            e.label
+        ));
     }
     // the media-type line that fixed a dual-purpose port's side
     let side = value(&conf, "media-type ")

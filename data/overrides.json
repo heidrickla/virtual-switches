@@ -949,6 +949,20 @@
       "lines": ["show running-config interface <interface-id>"],
       "args": {"interface-id": {"kind": "Interface"}},
       "evidence": "the 12.2 and 15.0 books give no interface form, which refused it; the lab C2960G (15.0(2)SE11) answered 'show running-config interface GigabitEthernet0/3' and 'show running-config interface Port-channel1' with the port's block; the 15.2 guides type it at (config-if) as well (inferred for the earlier releases)"
+    },
+    {
+      "name": "show license summary",
+      "platform": "Catalyst 9300",
+      "modes": ["privileged"],
+      "lines": [],
+      "evidence": "every 9300 command reference lists it with no command mode, which refused it; the lab C9300-24T (17.6.4) answered it at the privileged prompt with its License Usage table"
+    },
+    {
+      "name": "service unsupported-transceiver",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["service unsupported-transceiver", "no service unsupported-transceiver"],
+      "evidence": "no 9300 book documents it; the lab C9300-24T (17.6.4) took it, printed it after 'service call-home' in its running configuration, and brought up the third-party SFP in Gi1/1/1 that it err-disabled as gbic-invalid without it"
     }
   ]
 }

@@ -117,6 +117,9 @@ pub struct Session<'a> {
     /// the switch's clock, as seconds since 1970 UTC, which a VLAN database change stamps; the
     /// computer's clock when `None`
     pub clock: Option<u64>,
+    /// when the switch booted, as seconds since 1970 UTC: the session's start on the computer's
+    /// clock; `show version` counts its uptime from it
+    pub booted: u64,
     /// the VLAN database as it stood when VTP last counted a change
     vlans_seen: Option<Vec<(String, Vec<String>)>>,
 }
@@ -126,7 +129,23 @@ pub struct Session<'a> {
 pub fn vtp_stamp(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rest = secs % 86_400;
-    // civil date from days since 1970 (Howard Hinnant's algorithm)
+    let (year, month, day) = civil(days);
+    format!(
+        "{month}-{day}-{:02} {:02}:{:02}:{:02}",
+        year.rem_euclid(100),
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Days since 1970 as a civil year, month (1-12) and day (Howard Hinnant's algorithm).
+fn civil(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -135,14 +154,50 @@ pub fn vtp_stamp(secs: u64) -> String {
     let mp = (5 * doy + 2) / 153;
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
+}
+
+/// A time as the running configuration's last-change line prints it: `12:34:56 UTC Thu Mar 5
+/// 2026` (the lab C9300, 17.6.4, at two-digit days; a day under 10 unpadded, inferred).
+pub fn config_stamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rest = secs % 86_400;
+    let (year, month, day) = civil(days);
     format!(
-        "{month}-{day}-{:02} {:02}:{:02}:{:02}",
-        year.rem_euclid(100),
+        "{:02}:{:02}:{:02} UTC {} {} {day} {year}",
         rest / 3600,
         rest % 3600 / 60,
-        rest % 60
+        rest % 60,
+        DAYS[days.rem_euclid(7) as usize],
+        MONTHS[(month - 1) as usize]
     )
+}
+
+/// The time a last-change line names (`12:34:56 UTC Thu Mar 5 2026`, a classic switch's `... by
+/// vswitch` after it), as seconds since 1970 UTC.
+pub fn parse_stamp(text: &str) -> Option<u64> {
+    let w: Vec<&str> = text.split_whitespace().collect();
+    let (time, month, day, year) = (w.first()?, w.get(3)?, w.get(4)?, w.get(5)?);
+    let hms: Vec<u64> = time
+        .split(':')
+        .map(|x| x.parse().ok())
+        .collect::<Option<_>>()?;
+    let [h, m, s] = hms[..] else {
+        return None;
+    };
+    let month = MONTHS.iter().position(|x| x == month)? as i64 + 1;
+    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
+    // days from civil (Howard Hinnant's algorithm)
+    let y = year - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days)
+        .ok()
+        .map(|d| d * 86_400 + h * 3600 + m * 60 + s)
 }
 
 /// What a typed line did.
@@ -182,6 +237,9 @@ impl<'a> Session<'a> {
             replayed: false,
             lab: None,
             clock: None,
+            booted: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
             vlans_seen: None,
         }
     }
@@ -190,7 +248,14 @@ impl<'a> Session<'a> {
     /// models that default (`startup::factory`): its lines taken as the switch's own, the startup
     /// configuration still absent, the session at `>`.
     pub fn factory_default(&mut self) {
-        let Some(lines) = crate::startup::factory(&self.device) else {
+        self.factory_default_at(crate::startup::FACTORY_LEVEL);
+    }
+
+    /// `factory_default` at a licence level (`network-essentials addon dna-essentials`): the switch
+    /// boots now on its clock, which is the configuration's last change.
+    pub fn factory_default_at(&mut self, level: &str) {
+        let at = self.now();
+        let Some(lines) = crate::startup::factory(&self.device, level, at) else {
             return;
         };
         crate::check::type_into(self, &lines.join("\n"));
@@ -198,11 +263,13 @@ impl<'a> Session<'a> {
         self.replayed = false;
         self.accepted.clear();
         self.device.factory = true;
+        self.device.last_change = Some(at);
+        self.booted = at;
         self.vlans_seen = Some(self.device.vlan_contents());
     }
 
     /// The switch's clock, as seconds since 1970 UTC.
-    fn now(&self) -> u64 {
+    pub fn now(&self) -> u64 {
         self.clock.unwrap_or_else(|| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -864,8 +931,13 @@ impl<'a> Session<'a> {
             self.vlans_seen = Some(self.device.vlan_contents());
         }
         let before = self.device.vtp_settings();
+        let taken = self.accepted.len();
         let out = self.typed(line);
         self.vtp_after(before);
+        // a line taken at the console is the configuration's last change
+        if !self.redacted && self.accepted.len() > taken {
+            self.device.last_change = Some(self.now());
+        }
         out
     }
 

@@ -361,6 +361,7 @@ fn lab_findings(
             stack: c.stack.clone(),
             release: Some(train),
             mac: None,
+            transceiver: vec![],
         };
         switches.push(lab::ready(&spec, vec![(file, body)], engines)?);
     }

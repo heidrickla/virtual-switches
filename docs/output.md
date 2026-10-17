@@ -81,6 +81,8 @@ The place of the caret in a word comes from a 2960-X session, checked against th
 
 The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too. n counts each line from the first `!` through `end` with its newline, plus one.
 
+IOS XE 17.6 prints `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` and a `!` line after the first `!`, counted in n: the time the switch booted, a replayed configuration's own line, else the last line typed, on the switch's clock. Other releases print no such line.
+
 `show running-config interface <name>` prints that block alone: a `!` line, the block, `end`. A port never configured prints as an empty block, and the byte count is that of the lines printed, plus one.
 
 ### Contents
@@ -93,6 +95,16 @@ The output begins `Building configuration...`, a blank line and `Current configu
 - An interface is one block however its name is spaced (`interface vlan 20` is `interface Vlan20`).
 - A typed `version` line prints once, as the release the switch runs.
 - A new switch's default lines (`vrf definition Mgmt-vrf`, GigabitEthernet0/0's, `service timestamps`) print once typed.
+
+### Layout of a replayed configuration
+
+A configuration a switch printed (one with a `version` line) keeps its layout when replayed, as the lab C9300 at 17.6.4 printed it after a configuration replace and after factory boots.
+
+- Two of its top-level lines that meet again keep the `!` and comment lines printed between them, a `! ` with its space included.
+- An indented `!` before a line in a block stays before that line.
+- A line that ended in spaces keeps them (certificate hex, class map descriptions).
+- Lines added between two of its own take the printed `!` lines before the first added line, all of them less those computed after it where those are fewer; the rest take their computed ones.
+- At 17.6 a static route follows the `ip http` lines with no `!`, an access list follows the route after one, and `control-plane` follows the access list after three, the block's own closing `!` counted.
 
 ### Settings and instances
 
@@ -179,10 +191,15 @@ Classic IOS is a 2960-X at 15.2(7)E0a for the 15.2 rules, the 2960 family for th
 
 ## Factory default
 
-A C9300 at IOS XE 17.6 started by `vswitch shell` or `vswitch run` boots its factory default, as the lab C9300-24T at 17.6.4 did after `write erase`, vlan.dat deleted and a reload. Other platforms and releases start blank.
+A C9300 at IOS XE 17.6 started by `vswitch shell` or `vswitch run` boots its factory default, printed whole as the lab C9300-24T at 17.6.4 printed it after `write erase`, vlan.dat deleted and a reload, at network-essentials and at network-advantage. Other platforms and releases start blank.
 
-- Lines: `service timestamps debug` and `log datetime msec`, `hostname Switch`, `vrf definition Mgmt-vrf` with both address families, `no aaa new-model`, `license boot level network-advantage addon dna-advantage`, `spanning-tree mode rapid-pvst`, `spanning-tree extend system-id`, GigabitEthernet0/0 in Mgmt-vrf with `no ip address`, `shutdown` and `negotiation auto`, Vlan1 with `no ip address` and `shutdown`, `ip forward-protocol nd`, the three `ip http` lines, `line con 0` with `stopbits 1`, and `line vty 0 4` and `5 31` with `login` and `transport input ssh`.
-- The factory's call-home, control-plane policy, class maps and self-signed trustpoint are not printed.
+- Lines: `service timestamps`, the call-home comment and `service call-home`, `platform punt-keepalive disable-kernel-core`, `hostname Switch`, `vrf definition Mgmt-vrf`, `no aaa new-model`, `switch 1 provision <model>`, `login on-success log`, both trustpoints and their certificate chains, the licence line, `diagnostic bootup level minimal`, rapid-pvst with extend system-id, `memory free low-watermark processor 131696`, `redundancy` with `mode sso`, `transceiver type all` with `monitoring`, 22 control-plane class maps and the `system-cpp-policy` policy map, GigabitEthernet0/0 in Mgmt-vrf, every port, Vlan1 with `no ip address` and `shutdown`, `ip forward-protocol nd`, the three `ip http` lines, `control-plane` with its service policy, the line blocks and the call-home block.
+- The `!` runs follow the level booted: after `switch 1 provision` 8 at network-essentials and 12 at network-advantage, before the trustpoints 6 and 9, before the licence line 1 and 2, before the first port 11 and 12 (the second a `! `), after `ip http secure-server` 4 and 6.
+- `license boot level` survives `write erase`: the default prints the level booted, network-advantage with dna-advantage on a new switch.
+- The self-signed trustpoint is `TP-self-signed-<n>`, n ten digits derived from the base MAC address. Its certificate (820 bytes, SHA-1, serial 01, a CA's basic constraints and key identifiers) is valid for 3652 days from two seconds before boot.
+- The licensing root's certificate (805 bytes, SHA-256) keeps its names, dates and extensions. In both, the key, key identifiers and signature are bytes derived from the base MAC address, so each switch prints the same structure, line lengths and line counts as the lab's, its own values in them.
+- The certificate hex prints 32 bytes a line in groups of four, each group followed by a space but the last, then a tab and `quit`.
+- The last-change line names the boot.
 - `show startup-config` prints `startup-config is not present`.
 - VTP version 1, mode Server, no domain, revision 0, 5 VLANs.
 - A `license boot level` typed in configuration mode prints `% use 'write' command to make license boot config take effect on next boot` and leaves the configuration's line, the level booted. A configuration loaded states the level the switch booted at.
@@ -206,6 +223,7 @@ The columns and rows follow the Catalyst 9400 captures (17.5), cabled as they ra
 
 - A port is `disabled` when shut down, `inactive` when it is a supervisor uplink that is off, `notconnect` otherwise. An AppGigabitEthernet port or a cabled one is `connected`.
 - A port BPDU guard err-disabled is `err-disabled`, and the far end of its cable `notconnect`.
+- On IOS XE a lab file's third-party transceiver (`third_party = true`) is `err-disabled` with its type, reason `gbic-invalid`, until `service unsupported-transceiver` or `no errdisable detect cause gbic-invalid` (or `all`). The lab C9300 at 17.6.4 showed it with a third-party copper SFP.
 - IOS XE shows an LACP member it has not bundled as `suspended`, duplex `auto`.
 - The Vlan column holds the access VLAN, `trunk` while trunking, `routed` on a routed port. An access VLAN the database lacks shows as typed, `connected` or `notconnect`, never `inactive`.
 - A port-channel no member bundles in prints `notconnect unassigned auto auto N/A` on IOS XE and on classic IOS before 15.2 (no Type there, its trailing space kept), whatever its mode. Classic IOS from 15.2 shows the access VLAN.
@@ -316,7 +334,18 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 
 ## show vtp status
 
-Versions 1 and 2 print the MD5 digest. Its input is unpublished and no reconstruction reproduced the lab's digests, so those forms answer `% vswitch has no output model for 'show vtp status' yet`. The layout behind them is kept and tested against the captures.
+Versions 1 and 2 print the MD5 digest in two rows of eight `0xNN ` bytes. With no password it is MD5 over:
+
+| Part | Bytes |
+|---|---|
+| secret | 16 zero bytes |
+| summary advertisement | version (1, or 2 at version 2), code 1, followers 0, domain length, domain padded to 32, revision (4 bytes), updater IPv4, 12 zero timestamp bytes, 16 zero digest bytes |
+| each VLAN 1-1005 in order | record length, status (1 suspended), type (1 Ethernet, 2 FDDI, 3 Token Ring, 4 FDDI-net, 5 Token Ring-net), name length, VLAN ID, MTU 1500, SAID 100000 + ID, the name padded to 4 bytes, then its TLVs |
+| secret | 16 zero bytes |
+
+- TLVs are type, length in 2-byte words, a 2-byte value: 1002 and 1003 carry (1, 0) and (4, 0); 1004 (2, 0) and (3, 1); 1005 (2, 0) and (3, 2).
+- Measured on the lab C9300 (17.6.4) in nine VLAN databases, the lab C2960G (15.0(2)SE11) and two Catalyst 9400 cores at revision 263 with 50 named VLANs.
+- A VTP password's secret is unmodelled: that form answers `% vswitch has no output model for 'show vtp status' yet`.
 
 - Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1, Server and pruning off by default). Traps come from `snmp-server enable traps vtp`.
 - The VLANs count with 1 and 1002-1005.
@@ -457,8 +486,19 @@ The layout and column widths follow C9200L captures at 17.6 and 17.15, with no b
 - The expression is the rest of the line as typed. A space at the end is part of it (`| include Gi1/0/2 ` skips Gi1/0/20).
 - A missing expression answers `% Incomplete command.`.
 
+## show version and show license summary
+
+A single C9300 at IOS XE 17.6 prints them as the lab C9300-24T at 17.6.4 did. Other platforms, releases and stacks answer the no-output-model line.
+
+- `show version`: the 17.6.4 image's banner and the GPL and export notices, the uptime, the licence table, the hardware lines, the interface counts, the identity fields and the ports and model row.
+- The uptime runs from the boot on the switch's clock: years, weeks, days and hours where not zero, then minutes always (`1 year, 47 weeks, 4 days, 3 hours, 0 minutes`). The control processor's is 90 seconds longer.
+- The licence table and `show license summary` name the level booted: `license boot level`, network-advantage with dna-advantage without one.
+- The interface counts are the VLAN interfaces as Virtual Ethernet, then the ports by speed, the management port left out.
+- The base MAC address prints colon-separated from the switch's own. The serial numbers are derived from it: three letters, a year and week, four letters or digits.
+- `show license summary` lists the base level and its addon, each `1 IN USE`, with an entitlement tag of the model's first eight characters and the level's title, cut to 22 characters and `...` past 25.
+
 ## Padding and unmodelled commands
 
 - Every platform keeps IOS's trailing spaces (`act/unsup `, the VTP digest, a padded last column), as every family's show tech prints them. A terminal log loses them.
-- Other `show` commands print `% vswitch has no output model for '...' yet`, `show version` and `show inventory` among them.
+- Other `show` commands print `% vswitch has no output model for '...' yet`, `show inventory` among them.
 - `show interface ...`, as the books spell it, is taken as `show interfaces ...`.

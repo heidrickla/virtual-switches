@@ -1143,6 +1143,25 @@ impl Deny {
         Deny::from_tokens(tokens)
     }
 
+    /// The list a published file is scanned with: IOS XE's own control-plane class maps and their
+    /// descriptions, which the factory default prints, name nothing of a site. The corpus keeps
+    /// treating them as a configuration's names.
+    pub fn published(self) -> Deny {
+        let mut own: BTreeSet<String> = BTreeSet::new();
+        for (name, description) in crate::startup::CLASS_MAPS {
+            for w in words(name).chain(words(description)) {
+                own.extend(w.split(['-', '.', '/', '@', '_']).map(str::to_string));
+                own.insert(w);
+            }
+        }
+        Deny::from_tokens(
+            self.tokens
+                .into_iter()
+                .filter(|t| !own.contains(t))
+                .collect(),
+        )
+    }
+
     fn from_tokens(tokens: BTreeSet<String>) -> Deny {
         let long: std::collections::HashSet<String> =
             tokens.iter().filter(|t| t.len() >= 6).cloned().collect();
@@ -1646,7 +1665,7 @@ mod tests {
     #[cfg(captures)]
     #[test]
     fn no_published_file_names_the_site() {
-        let deny = Deny::of(&Source::embedded());
+        let deny = Deny::of(&Source::embedded()).published();
         let hits = scan_tree(Path::new(env!("CARGO_MANIFEST_DIR")), &deny, false);
         let shown: Vec<String> = hits
             .iter()

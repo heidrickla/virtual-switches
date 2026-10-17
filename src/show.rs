@@ -269,20 +269,33 @@ fn most_often<K: Eq + std::hash::Hash + Clone>(
 
 /// The `!` lines between top-level lines as IOS prints them: as many as the switch's release, or
 /// failing that its family, printed most often between the same two commands; as built where no
-/// capture printed the pair. A banner's text and indented lines stay as they are.
+/// capture printed the pair. A banner's text and indented lines stay as they are. Where the switch's
+/// own configuration was replayed (`Layout`), two of its lines that meet again keep the `!` and
+/// comment lines it printed between them, and lines added between two of them take the computed
+/// lines, the rest of its own going before the first added line (the lab C9300, 17.6.4: `vtp
+/// domain` typed before a replayed `vtp mode off`, a loopback before the first port).
 fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
     let o = orders();
     let book = crate::grammars::book(d.stack.family());
     let classic = crate::release::Release::parse(&d.release)
         .map_or_else(|| d.stack.classic(), |r| r.classic());
+    let lab = lab_gap(d);
     let gap = |a: usize, b: usize| {
         o.release_gaps
             .get(&(book.to_string(), d.release.clone(), a, b))
             .or_else(|| o.family_gaps[usize::from(!classic)].get(&(a, b)))
             .copied()
     };
-    let mut out = Vec::with_capacity(body.len());
+    // each top-level line with the `!` lines computed before it and the lines under it
+    struct Unit {
+        line: String,
+        bangs: usize,
+        under: Vec<String>,
+    }
+    let mut head: Vec<String> = vec![];
+    let mut units: Vec<Unit> = vec![];
     let mut before: Option<Option<usize>> = None;
+    let mut prev_text = String::new();
     let mut bangs = 0;
     let mut closes: Option<String> = None;
     for l in body {
@@ -290,12 +303,17 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
             if l.contains(d.as_str()) {
                 closes = None;
             }
-            out.push(l);
+            if let Some(u) = units.last_mut() {
+                u.under.push(l);
+            }
             continue;
         }
         if before.is_none() {
             before = l.starts_with("version ").then(|| o.number(&command(&l)));
-            out.push(l);
+            if before.is_some() {
+                prev_text = l.clone();
+            }
+            head.push(l);
             continue;
         }
         if l == "!" {
@@ -303,24 +321,131 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
             continue;
         }
         if l.is_empty() || l.starts_with([' ', '\t']) {
-            out.extend(std::iter::repeat_n("!".to_string(), bangs));
+            let u = units.last_mut();
+            match u {
+                Some(u) => {
+                    u.under.extend(std::iter::repeat_n("!".to_string(), bangs));
+                    u.under.push(l);
+                }
+                None => {
+                    head.extend(std::iter::repeat_n("!".to_string(), bangs));
+                    head.push(l);
+                }
+            }
             bangs = 0;
-            out.push(l);
             continue;
         }
         let this = o.number(&command(&l));
-        let n = match (before.flatten(), this) {
+        let n = lab(&prev_text, &l).unwrap_or_else(|| match (before.flatten(), this) {
             (Some(a), Some(b)) => gap(a, b).unwrap_or(bangs),
             _ => bangs,
-        };
-        out.extend(std::iter::repeat_n("!".to_string(), n));
+        });
         bangs = 0;
         before = Some(this);
         closes = crate::live::banner_opens(&l);
-        out.push(l);
+        prev_text = l.clone();
+        units.push(Unit {
+            line: l,
+            bangs: n,
+            under: vec![],
+        });
     }
-    out.extend(std::iter::repeat_n("!".to_string(), bangs));
+    let tail = bangs;
+    let bang = |n: usize| std::iter::repeat_n("!".to_string(), n);
+    let Some(layout) = &d.layout else {
+        let mut out = head;
+        for u in units {
+            out.extend(bang(u.bangs));
+            out.push(u.line);
+            out.extend(u.under);
+        }
+        out.extend(bang(tail));
+        return out;
+    };
+    let key = |l: &str| l.trim_end().to_string();
+    let version = head
+        .iter()
+        .find(|l| l.starts_with("version "))
+        .cloned()
+        .unwrap_or_default();
+    let tops: Vec<String> = units.iter().map(|u| key(&u.line)).collect();
+    let prev_of = |i: usize| {
+        if i == 0 {
+            key(&version)
+        } else {
+            tops[i - 1].clone()
+        }
+    };
+    // the separator lines before each unit
+    let mut seps: Vec<Vec<String>> = units.iter().map(|u| bang(u.bangs).collect()).collect();
+    let mut i = 0;
+    while i < units.len() {
+        if let Some(own) = layout.pairs.get(&(prev_of(i), tops[i].clone())) {
+            seps[i] = own.clone();
+            i += 1;
+            continue;
+        }
+        // a run of added lines between two of the replayed configuration's own: the first takes
+        // the replayed `!` lines (all of them less those computed after it, where those are fewer),
+        // the rest their computed ones (the lab C9300, 17.6.4)
+        let start = i;
+        let mut end = i;
+        while end < units.len() && !layout.tops.contains(&tops[end]) {
+            end += 1;
+        }
+        let own = (end < units.len())
+            .then(|| layout.pairs.get(&(prev_of(start), tops[end].clone())))
+            .flatten();
+        if let Some(own) = own.filter(|_| end > start) {
+            let rest: usize = (start + 1..=end).map(|j| seps[j].len()).sum();
+            let first = if rest + seps[start].len() < own.len() {
+                own.len() - rest
+            } else {
+                seps[start].len().min(own.len())
+            };
+            seps[start] = own[..first].to_vec();
+            i = end + 1;
+        } else {
+            i = start.max(end) + usize::from(end == start);
+        }
+    }
+    let mut out: Vec<String> = head;
+    let trailing = |l: String| layout.trailing.get(l.trim_end()).cloned().unwrap_or(l);
+    for (u, s) in units.into_iter().zip(seps) {
+        out.extend(s);
+        let header = key(&u.line);
+        out.push(trailing(u.line));
+        for l in u.under {
+            if let Some(inner) = layout.inner.get(&(header.clone(), key(&l)))
+                && !out.ends_with(inner)
+            {
+                out.extend(inner.iter().cloned());
+            }
+            out.push(trailing(l));
+        }
+    }
+    out.extend(bang(tail));
     out
+}
+
+/// The `!` lines the lab C9300 (17.6.4) printed between two top-level lines where its replayed
+/// configuration had none between them: a static route after the `ip http` lines, an extended
+/// access list after the route, and the control-plane block after the access list.
+fn lab_gap(d: &Device) -> impl Fn(&str, &str) -> Option<usize> {
+    let at = !d.stack.classic()
+        && crate::release::Release::parse(&d.release).is_some_and(|r| r.config_version() == "17.6");
+    move |a: &str, b: &str| {
+        if !at {
+            return None;
+        }
+        let (a, b) = (command(a), command(b));
+        match (a.as_str(), b.as_str()) {
+            ("ip http", "ip route") => Some(0),
+            ("ip route", "ip access-list") => Some(1),
+            ("ip access-list", "control-plane") => Some(3),
+            _ => None,
+        }
+    }
 }
 
 /// `items` in IOS's printing order: each after every item whose command one of `order` puts before
@@ -588,6 +713,19 @@ pub fn running_config(d: &Device) -> Vec<String> {
 /// The configuration's lines from the first `!` to `end`, as `write memory` keeps them.
 pub fn configuration(d: &Device) -> Vec<String> {
     let mut body = vec!["!".to_string()];
+    // IOS XE 17.6 names the last change between two `!` lines, counted in the size (the lab C9300,
+    // 17.6.4); other releases print none here (inferred)
+    if let Some(at) = d.last_change.filter(|_| {
+        !d.stack.classic()
+            && crate::release::Release::parse(&d.release)
+                .is_some_and(|r| r.config_version() == "17.6")
+    }) {
+        body.push(format!(
+            "! Last configuration change at {}",
+            crate::shell::config_stamp(at)
+        ));
+        body.push("!".to_string());
+    }
     // the train the switch runs (`version 17.5`, a classic `version 15.2`); the 26.x book documents 26.1
     if !d.release.is_empty() {
         let train = if d.release == "26.x" {
@@ -1074,6 +1212,7 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
             // the switch as the lab leaves it: ports BPDU guard err-disabled, and their far ends
             // without a link
             let eff = crate::spanning::effective(&s.device, view);
+            let eff = transceivers_checked(eff);
             let d: &Device = &eff;
             // every platform keeps IOS's trailing spaces (`act/unsup `): every family's show tech
             // has them; only a terminal log loses them
@@ -1104,6 +1243,8 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 "show vtp status" => vtp_status(d),
                 "show vtp counters" => vtp_counters(d),
                 "show vtp password" => vtp_password(d),
+                "show license summary" => crate::version::license_summary(d),
+                "show version" => crate::version::show_version(d, s.now(), s.booted),
                 // the configuration saved or booted from, as NVRAM keeps it (`startup`); a switch
                 // with none answers as IOS does with its NVRAM erased
                 "show startup-config" => match &s.saved {
@@ -1124,6 +1265,22 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
         }
         _ => vec![],
     }
+}
+
+/// The switch with each port a third-party transceiver err-disables (`Device::gbic_invalid`)
+/// err-disabled with that transceiver and without its link.
+fn transceivers_checked(d: std::borrow::Cow<'_, Device>) -> std::borrow::Cow<'_, Device> {
+    let bad = d.gbic_invalid();
+    if bad.is_empty() {
+        return d;
+    }
+    let mut d = d.into_owned();
+    for p in bad {
+        let optic = d.transceivers.get(&p).map(|t| t.0);
+        d.links.remove(&p);
+        d.errdisabled.insert(p, optic);
+    }
+    std::borrow::Cow::Owned(d)
 }
 
 fn config_of<'d>(d: &'d Device, name: &str) -> Vec<&'d str> {
@@ -1300,8 +1457,14 @@ fn interfaces_status_errdisabled(d: &Device) -> Vec<String> {
             .chars()
             .take(12)
             .collect();
+        // a third-party transceiver's reason is its cause's name (the lab C9300's log, 17.6.4)
+        let reason = if d.gbic_invalid().contains(&p) {
+            "gbic-invalid"
+        } else {
+            "bpduguard"
+        };
         out.push(format!(
-            "{:<13}{name:<13}{:<13}bpduguard",
+            "{:<13}{name:<13}{:<13}{reason}",
             short(&p),
             "err-disabled"
         ));
@@ -1440,9 +1603,12 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
                     }
                 }
             },
-            // an err-disabled port still names its transceiver (the lab C9300, 17.6.4)
+            // an err-disabled port still names its transceiver (the lab C9300, 17.6.4), and so does
+            // one with a transceiver fitted and no link (inferred)
             None => {
                 if let Some(Some(o)) = d.errdisabled.get(&p) {
+                    ty = optic_type(d, o);
+                } else if let Some((o, _)) = d.transceivers.get(&p) {
                     ty = optic_type(d, o);
                 }
             }
@@ -2244,9 +2410,106 @@ pub fn vtp_updater(d: &Device) -> Option<(String, String, &'static str)> {
         })
 }
 
+/// One VLAN's record as a VTP subset advertisement carries it: length, status, type, name length,
+/// ID, MTU, 802.10 SAID (100000 plus the ID), the name padded to four bytes, then the type's
+/// attributes (type, length in two-byte words, value): 1002 and 1003 a ring number and a parent of
+/// 0, 1004 a bridge number of 0 and STP `ieee`, 1005 a bridge number of 0 and STP `ibm`.
+pub fn vtp_vlan_record(id: u16, name: &str, status: u8, mtu: u16) -> Vec<u8> {
+    let (kind, attrs): (u8, &[(u8, u16)]) = match id {
+        1002 => (2, &[(1, 0), (4, 0)]),
+        1003 => (3, &[(1, 0), (4, 0)]),
+        1004 => (4, &[(2, 0), (3, 1)]),
+        1005 => (5, &[(2, 0), (3, 2)]),
+        _ => (1, &[]),
+    };
+    let name = name.as_bytes();
+    let padded = name.len().div_ceil(4) * 4;
+    let mut r = vec![0, status, kind, name.len() as u8];
+    r.extend(id.to_be_bytes());
+    r.extend(mtu.to_be_bytes());
+    r.extend((100_000 + u32::from(id)).to_be_bytes());
+    r.extend(name);
+    r.resize(12 + padded, 0);
+    for (t, v) in attrs {
+        r.extend([*t, 1]);
+        r.extend(v.to_be_bytes());
+    }
+    r[0] = r.len() as u8;
+    r
+}
+
+/// The VTP version 1 and 2 MD5 digest: MD5 over the 16-byte secret, the summary advertisement
+/// (version, code 1, followers and timestamp 0, the domain padded to 32 bytes, revision, updater,
+/// a zero digest), each VLAN's record in VLAN order, and the secret again. With no password the
+/// secret is 16 zero bytes. Measured on the lab C9300 (17.6.4) and the lab C2960G (15.0(2)SE11).
+pub fn vtp_digest(
+    version: u8,
+    domain: &str,
+    revision: u32,
+    updater: std::net::Ipv4Addr,
+    vlans: &[Vec<u8>],
+    secret: [u8; 16],
+) -> [u8; 16] {
+    use md5::{Digest, Md5};
+    let mut m = Md5::new();
+    m.update(secret);
+    let d = &domain.as_bytes()[..domain.len().min(32)];
+    let mut dom = [0u8; 32];
+    dom[..d.len()].copy_from_slice(d);
+    m.update([version, 1, 0, d.len() as u8]);
+    m.update(dom);
+    m.update(revision.to_be_bytes());
+    m.update(updater.octets());
+    m.update([0u8; 12 + 16]);
+    for v in vlans {
+        m.update(v);
+    }
+    m.update(secret);
+    m.finalize().into()
+}
+
+/// The digest `show vtp status` prints for the switch's VLAN database, or None with a password
+/// set, whose secret no switch here has shown.
+fn vtp_device_digest(d: &Device, version: &str, domain: &str) -> Option<[u8; 16]> {
+    if d.global_value("vtp password ").is_some() {
+        return None;
+    }
+    // versions 1 and 2 carry the normal range only; a suspended VLAN's status 1 and a VLAN's own
+    // MTU are inferred from the advertisement's fields
+    let records: Vec<Vec<u8>> = vlan_list(d)
+        .into_iter()
+        .filter(|(id, _, _)| *id <= 1005)
+        .map(|(id, name, _)| {
+            let block = d.blocks.iter().find(|b| {
+                vlan_ids_of(&b.header)
+                    .is_some_and(|ids| crate::generate::vlan_ids(ids).contains(&id))
+            });
+            let has =
+                |p: &str| block.and_then(|b| b.lines.iter().find_map(|e| e.text.strip_prefix(p)));
+            let status = u8::from(has("state ") == Some("suspend"));
+            let mtu = has("mtu ").and_then(|m| m.parse().ok()).unwrap_or(1500);
+            vtp_vlan_record(id as u16, &name, status, mtu)
+        })
+        .collect();
+    let updater = d
+        .vtp
+        .modified_by
+        .parse()
+        .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
+    let v = if version == "2" { 2 } else { 1 };
+    Some(vtp_digest(
+        v,
+        domain,
+        d.vtp.revision,
+        updater,
+        &records,
+        [0; 16],
+    ))
+}
+
 /// `show vtp status` as the lab C9300 (17.6.4), the lab C2960G (15.0(2)SE11) and the cores print it,
-/// with the index of the MD5 digest's first row where the layout prints one (its two rows left
-/// blank). Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1,
+/// with the index of the MD5 digest's first row where it cannot be computed (a VTP password set;
+/// its two rows left blank). Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1,
 /// server and pruning off by default), traps from `snmp-server enable traps vtp`; the VLANs are
 /// counted with 1 and 1002-1005, Device ID is the base MAC address, and the revision and the last
 /// change are the VLAN database's own (`Device::vtp`).
@@ -2356,14 +2619,23 @@ pub fn vtp_layout(d: &Device) -> (Vec<String>, Option<usize>) {
     ]);
     // the digest's two rows, each ending with a space on every platform
     let at = out.len();
-    out.push(feature("MD5 digest", ""));
-    out.push(String::new());
-    (out, Some(at))
+    match vtp_device_digest(d, &version, &domain) {
+        Some(md5) => {
+            let row = |b: &[u8]| b.iter().map(|x| format!("0x{x:02X} ")).collect::<String>();
+            out.push(feature("MD5 digest", &row(&md5[..8])));
+            out.push(format!("{:36}{}", "", row(&md5[8..])));
+            (out, None)
+        }
+        None => {
+            out.push(feature("MD5 digest", ""));
+            out.push(String::new());
+            (out, Some(at))
+        }
+    }
 }
 
-/// `show vtp status`. Under VTP versions 1 and 2 it prints the MD5 digest, whose input Cisco never
-/// published and which no reconstruction reproduced against the lab's: those forms answer the
-/// no-output-model line.
+/// `show vtp status`. With a VTP password set, versions 1 and 2 print a digest keyed by the
+/// password's secret, which no switch here has shown: that form answers the no-output-model line.
 pub fn vtp_status(d: &Device) -> Vec<String> {
     match vtp_layout(d) {
         (lines, None) => lines,
@@ -3003,6 +3275,88 @@ mod tests {
         s
     }
 
+    /// The digest rows for a version 1 database with no password, updater 0.0.0.0, `vlans` and
+    /// 1002-1005, built byte by byte from the advertisement's layout.
+    fn hand_vtp_digest(domain: &[u8], revision: u32, vlans: &[(u16, &str)]) -> [String; 2] {
+        use md5::{Digest, Md5};
+        let mut b = vec![0u8; 16];
+        b.extend([1, 1, 0, domain.len() as u8]);
+        b.extend(domain);
+        b.resize(16 + 4 + 32, 0);
+        b.extend(revision.to_be_bytes());
+        b.resize(b.len() + 4 + 12 + 16, 0);
+        let mut all: Vec<(u16, &str, u8, &[u8])> =
+            vlans.iter().map(|(i, n)| (*i, *n, 1, &[][..])).collect();
+        all.extend([
+            (1002, "fddi-default", 2, &[1, 1, 0, 0, 4, 1, 0, 0][..]),
+            (1003, "token-ring-default", 3, &[1, 1, 0, 0, 4, 1, 0, 0][..]),
+            (1004, "fddinet-default", 4, &[2, 1, 0, 0, 3, 1, 0, 1][..]),
+            (1005, "trnet-default", 5, &[2, 1, 0, 0, 3, 1, 0, 2][..]),
+        ]);
+        for (id, name, kind, tlv) in all {
+            let pad = (4 - name.len() % 4) % 4;
+            b.push((12 + name.len() + pad + tlv.len()) as u8);
+            b.extend([0, kind, name.len() as u8]);
+            b.extend(id.to_be_bytes());
+            b.extend(1500u16.to_be_bytes());
+            b.extend((100_000 + u32::from(id)).to_be_bytes());
+            b.extend(name.as_bytes());
+            b.extend(vec![0; pad]);
+            b.extend(tlv);
+        }
+        b.extend([0u8; 16]);
+        let d = Md5::digest(&b);
+        let row = |x: &[u8]| x.iter().map(|y| format!("0x{y:02X} ")).collect::<String>();
+        [
+            format!("MD5 digest                        : {}", row(&d[..8])),
+            format!("{:36}{}", "", row(&d[8..])),
+        ]
+    }
+
+    #[test]
+    fn a_vtp_vlan_record_follows_the_subset_advertisement_layout() {
+        // VLAN 1: length 20, active, Ethernet, name length 7, ID, MTU 1500, SAID 100001, the name
+        // padded to 8
+        assert_eq!(
+            vtp_vlan_record(1, "default", 0, 1500),
+            [
+                20, 0, 1, 7, 0, 1, 0x05, 0xDC, 0, 0x01, 0x86, 0xA1, b'd', b'e', b'f', b'a', b'u',
+                b'l', b't', 0
+            ]
+        );
+        // 1005: the TrBRF type, a bridge number of 0 and STP `ibm` after the padded name
+        let r = vtp_vlan_record(1005, "trnet-default", 0, 1500);
+        assert_eq!((r[0], r[2], r.len()), (36, 5, 36));
+        assert_eq!(r[28..], [2, 1, 0, 0, 3, 1, 0, 2]);
+        // the summary's fields each move the digest
+        let v = [vtp_vlan_record(1, "default", 0, 1500)];
+        let base = vtp_digest(1, "", 0, [0, 0, 0, 0].into(), &v, [0; 16]);
+        for other in [
+            vtp_digest(2, "", 0, [0, 0, 0, 0].into(), &v, [0; 16]),
+            vtp_digest(1, "A", 0, [0, 0, 0, 0].into(), &v, [0; 16]),
+            vtp_digest(1, "", 1, [0, 0, 0, 0].into(), &v, [0; 16]),
+            vtp_digest(1, "", 0, [192, 0, 2, 1].into(), &v, [0; 16]),
+            vtp_digest(1, "", 0, [0, 0, 0, 0].into(), &[], [0; 16]),
+        ] {
+            assert_ne!(other, base);
+        }
+    }
+
+    #[test]
+    fn a_factory_vlan_database_prints_its_digest() {
+        let e = engine("c9300", "17.6");
+        let s = vtp_switch(&e, &[]);
+        let status = vtp_status(&s.device);
+        assert_eq!(
+            status[status.len() - 2..],
+            hand_vtp_digest(b"", 0, &[(1, "default")])
+        );
+        assert_eq!(
+            status[6],
+            "Configuration last modified by 0.0.0.0 at 0-0-00 00:00:00"
+        );
+    }
+
     #[test]
     fn a_vtp_server_counts_a_revision_per_vlan_change_and_stamps_it() {
         let e = engine("c9300", "17.6");
@@ -3024,10 +3378,16 @@ mod tests {
         );
         assert!(lines.contains(&"Configuration Revision            : 1".to_string()));
         assert!(lines.contains(&"Number of existing VLANs          : 6".to_string()));
-        // the digest's input is unpublished: the command answers the no-output-model line
-        assert_eq!(digest, Some(lines.len() - 2));
+        // the digest over the summary and the six VLANs' records, each row ending with a space
+        assert_eq!(digest, None);
+        let want = hand_vtp_digest(b"LAB", 1, &[(1, "default"), (140, "VLAN0140")]);
+        assert_eq!(lines[lines.len() - 2..], want);
+        assert_eq!(vtp_status(&s.device), lines);
+        // a password's secret is unmeasured: that form answers the no-output-model line
+        let mut p = vtp_switch(&e, &["vtp password SECRET"]);
+        p.device.vtp.revision = 0;
         assert_eq!(
-            vtp_status(&s.device),
+            vtp_status(&p.device),
             ["% vswitch has no output model for 'show vtp status' yet"]
         );
         // a VLAN named in its submode is one change; the server keeps its VLANs out of the running
@@ -3689,5 +4049,136 @@ mod tests {
             switchport_field(&out, "Gi1/0/2", "Operational Mode: "),
             "Operational Mode: trunk"
         );
+    }
+
+    /// A C9300-24T with a network module at 17.6, a third-party SFP in its first module port.
+    fn with_third_party_sfp<'e>(e: &'e cli::Engine, lines: &[&str]) -> shell::Session<'e> {
+        let mut s = typed(e, "C9300-24T+C9300-NM-4G", lines);
+        s.device.transceivers.insert(
+            "GigabitEthernet1/1/1".into(),
+            (platform::optic("GLC-T").unwrap(), true),
+        );
+        s
+    }
+
+    #[test]
+    fn a_third_party_transceiver_is_err_disabled_until_the_switch_allows_it() {
+        let e = engine("c9300", "17.6");
+        let mut s = with_third_party_sfp(&e, &[]);
+        s.type_line("enable");
+        let status = s.type_line("show interfaces status").0;
+        assert_eq!(
+            row(&status, "Gi1/1/1"),
+            "Gi1/1/1                         err-disabled 1            auto   auto 10/100/1000BaseTX SFP"
+        );
+        let errdisabled = s.type_line("show interfaces status err-disabled").0;
+        assert!(row(&errdisabled, "Gi1/1/1").ends_with("err-disabled gbic-invalid"));
+        for allow in [
+            "service unsupported-transceiver",
+            "no errdisable detect cause gbic-invalid",
+        ] {
+            let mut s = with_third_party_sfp(&e, &[allow]);
+            s.type_line("enable");
+            let status = s.type_line("show interfaces status").0;
+            assert!(row(&status, "Gi1/1/1").contains(" notconnect "), "{allow}");
+            assert!(
+                configuration(&s.device).contains(&allow.to_string()),
+                "{allow}"
+            );
+        }
+        // a Cisco optic in the same port is never checked
+        let mut s = with_third_party_sfp(&e, &[]);
+        s.device
+            .transceivers
+            .get_mut("GigabitEthernet1/1/1")
+            .unwrap()
+            .1 = false;
+        s.type_line("enable");
+        let status = s.type_line("show interfaces status").0;
+        assert!(row(&status, "Gi1/1/1").contains(" notconnect "));
+    }
+
+    /// A configuration as a switch printed it: comment and `!` lines, a `! ` with its space, an
+    /// indented `!` and a line ending in a space.
+    const PRINTED: &str = "!\nversion 17.6\nservice timestamps debug datetime msec\n! Call-home is enabled by Smart-Licensing.\nservice call-home\n!\nhostname Lab\n!\n!\n!\nvrf definition Mgmt-vrf\n !\n address-family ipv4\n exit-address-family\n!\n! \n!\nspanning-tree mode rapid-pvst\n!\nclass-map match-any system-cpp-default\n  description EWLC Data, Inter FED Traffic \n!\n!\nline con 0\n stopbits 1\n!\n!\n!\nend";
+
+    #[test]
+    fn a_replayed_configuration_prints_its_own_layout_and_keeps_it_around_added_lines() {
+        let e = engine("c9300", "17.6");
+        let mut s = shell::Session::new(
+            &e,
+            device::Device::new(platform::parse_stack("C9300-24T").unwrap()),
+        );
+        crate::check::type_into(&mut s, PRINTED);
+        let run = configuration(&s.device);
+        let at = |l: &str| run.iter().position(|x| x == l).unwrap();
+        // the printed lines between `version` and `end` come back as printed
+        let commands = |lines: Vec<&str>| -> Vec<String> {
+            lines
+                .into_iter()
+                .filter(|l| !l.starts_with("interface ") && !l.starts_with('!'))
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(
+            commands(
+                run[at("version 17.6")..]
+                    .iter()
+                    .map(String::as_str)
+                    .collect()
+            ),
+            commands(PRINTED.lines().skip(1).collect())
+        );
+        assert_eq!(
+            run[at("service call-home") - 1],
+            "! Call-home is enabled by Smart-Licensing."
+        );
+        assert_eq!(
+            run[at("vrf definition Mgmt-vrf") - 3..at("vrf definition Mgmt-vrf")],
+            ["!", "!", "!"]
+        );
+        assert_eq!(run[at(" address-family ipv4") - 1], " !");
+        assert_eq!(run[at("class-map match-any system-cpp-default") - 1], "!");
+        assert!(run.contains(&"  description EWLC Data, Inter FED Traffic ".to_string()));
+        assert!(run.contains(&"! ".to_string()));
+        assert_eq!(run[at("end") - 3..at("end")], ["!", "!", "!"]);
+        // a line added between two printed ones takes the printed `!` lines before it
+        s.type_line("configure terminal");
+        s.type_line("ip domain name example.com");
+        s.type_line("end");
+        let run = configuration(&s.device);
+        let at = |l: &str| run.iter().position(|x| x == l).unwrap();
+        assert!(at("hostname Lab") < at("ip domain name example.com"));
+    }
+
+    #[test]
+    fn at_17_6_the_last_change_is_named_and_counted() {
+        let e = engine("c9300", "17.6");
+        let mut s = typed(&e, "C9300-24T", &["hostname Lab"]);
+        // 2026-03-05 12:34:56 UTC
+        s.device.last_change = Some(1_772_714_096);
+        let run = running_config(&s.device);
+        assert_eq!(
+            run[3..7],
+            [
+                "!",
+                "! Last configuration change at 12:34:56 UTC Thu Mar 5 2026",
+                "!",
+                "version 17.6"
+            ]
+        );
+        let bytes: usize = run[3..].iter().map(|l| l.len() + 1).sum::<usize>();
+        assert_eq!(run[2], format!("Current configuration : {bytes} bytes"));
+        // a typed line moves it to the switch's clock
+        s.clock = Some(1_772_714_160);
+        s.type_line("configure terminal");
+        s.type_line("hostname Lab2");
+        s.type_line("end");
+        assert_eq!(s.device.last_change, Some(1_772_714_160));
+        // 17.15 prints no such line
+        let e = engine("c9300", "17.15");
+        let mut s = typed(&e, "C9300-24T", &["hostname Lab"]);
+        s.device.last_change = Some(1_772_714_096);
+        assert_eq!(configuration(&s.device)[1], "version 17.15");
     }
 }

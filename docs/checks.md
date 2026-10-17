@@ -73,6 +73,21 @@ optic = "SFP-10G-SR"
 
 A `release` that disagrees with one a file names is refused. A malformed or multicast `mac`, and two switches with the same MAC, are refused.
 
+| Transceiver field (`[[switch.transceiver]]`) | Meaning |
+|---|---|
+| `port` | the switch's port holding it, short or long name |
+| `optic` | its part number, one of the accepted optics |
+| `third_party` | `true` for a transceiver Cisco did not make: on IOS XE the port is err-disabled `gbic-invalid` until `service unsupported-transceiver` or `no errdisable detect cause gbic-invalid` |
+
+```toml
+[[switch.transceiver]]
+port = "Gi1/1/1"
+optic = "GLC-T"
+third_party = true
+```
+
+An unknown port or optic is refused. A cable on a port err-disabled `gbic-invalid` comes up with no link, and the lab says why.
+
 | Cable field | Meaning |
 |---|---|
 | `a`, `b` | `switch:port`; a name alone is a device the lab does not model, taken to run what the port expects (a trunk, LACP or a static bundle, no DTP or PAgP) |

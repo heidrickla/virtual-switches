@@ -50,6 +50,91 @@ pub struct Device {
     /// ports whose forced speed `no speed` removed, by full name, with that speed:
     /// the lab C9300, 17.6.4 kept costing them at it (`spanning.rs`)
     pub held_speed: std::collections::BTreeMap<String, u32>,
+    /// transceivers fitted in ports, by full name, and whether each is third-party (a lab's
+    /// `[[switch.transceiver]]`)
+    pub transceivers: std::collections::BTreeMap<String, (&'static crate::platform::Optic, bool)>,
+    /// how the configuration replayed last laid itself out, where it was a switch's own (`Layout`)
+    pub layout: Option<Layout>,
+    /// when the configuration last changed, as seconds since 1970 UTC: a replayed configuration's
+    /// own line, a factory boot, else the last line typed at the console
+    pub last_change: Option<u64>,
+}
+
+/// A switch's own printed configuration as replayed: the `!` and comment lines between each two
+/// top-level lines as it printed them, the ` !` lines inside a block before a line, and the lines
+/// it ended with spaces. The running configuration prints them where the same lines meet again.
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    /// the separator lines between two top-level lines that followed each other, by their text
+    /// (`version 17.6` first; `end` last)
+    pub pairs: std::collections::BTreeMap<(String, String), Vec<String>>,
+    /// the top-level lines it held
+    pub tops: std::collections::BTreeSet<String>,
+    /// the separator lines inside a block before one of its lines, by the block's header and line
+    pub inner: std::collections::BTreeMap<(String, String), Vec<String>>,
+    /// the lines it ended with spaces, by their text without them
+    pub trailing: std::collections::BTreeMap<String, String>,
+}
+
+impl Layout {
+    /// The layout of a configuration as a switch printed it: its `version` line opens it, its
+    /// `end` closes it. None for a configuration with no `version` line, written by hand.
+    pub fn of(text: &str) -> Option<Layout> {
+        let mut lines = text.lines().map(|l| l.trim_end_matches('\r'));
+        let version = lines
+            .find(|l| l.starts_with("version "))?
+            .trim_end()
+            .to_string();
+        let mut out = Layout::default();
+        let mut prev = version;
+        let mut header = String::new();
+        let mut seps: Vec<String> = vec![];
+        let mut inner: Vec<String> = vec![];
+        let mut banner: Option<String> = None;
+        for raw in lines {
+            let l = raw.trim_end();
+            let t = l.trim_start();
+            if let Some(d) = &banner {
+                if l.contains(d.as_str()) {
+                    banner = None;
+                }
+                continue;
+            }
+            if t.starts_with('!') {
+                if l.starts_with([' ', '\t']) {
+                    inner.push(raw.to_string());
+                } else {
+                    seps.append(&mut inner);
+                    seps.push(raw.to_string());
+                }
+                continue;
+            }
+            if t.is_empty() {
+                continue;
+            }
+            if raw != l {
+                out.trailing.insert(l.to_string(), raw.to_string());
+            }
+            if l.starts_with([' ', '\t']) {
+                if !inner.is_empty() {
+                    out.inner
+                        .insert((header.clone(), l.to_string()), std::mem::take(&mut inner));
+                }
+                continue;
+            }
+            seps.append(&mut inner);
+            out.pairs
+                .insert((prev.clone(), l.to_string()), std::mem::take(&mut seps));
+            out.tops.insert(l.to_string());
+            if l == "end" {
+                break;
+            }
+            banner = crate::live::banner_opens(l);
+            prev = l.to_string();
+            header = l.to_string();
+        }
+        Some(out)
+    }
 }
 
 /// The VLAN database's history, as `show vtp status` prints it: the configuration revision, and the
@@ -121,6 +206,7 @@ fn default_on(k: &str, at_top: bool) -> bool {
         ["cdp run", "ip domain-lookup", "ip domain lookup", "ip igmp snooping"].contains(&k)
             // `spanning-tree vlan 5`, not `spanning-tree vlan 5 priority 4096`
             || k.starts_with("spanning-tree vlan #")
+            || k.starts_with("errdisable detect cause ")
     } else {
         KEEPS_NO_IN_BLOCK.contains(&k)
     }
@@ -596,7 +682,30 @@ impl Device {
             vtp: Vtp::default(),
             factory: false,
             held_speed: Default::default(),
+            transceivers: Default::default(),
+            layout: None,
+            last_change: None,
         }
+    }
+
+    /// The ports a third-party transceiver err-disables as `gbic-invalid`: IOS XE refuses it while
+    /// neither `service unsupported-transceiver` nor `no errdisable detect cause gbic-invalid` is
+    /// configured (the lab C9300, 17.6.4, with both and with neither; either one alone keeping
+    /// the port up is inferred from what each command does).
+    pub fn gbic_invalid(&self) -> Vec<String> {
+        let has = |l: &str| self.global.iter().any(|e| e.text == l);
+        if self.stack.classic()
+            || has("service unsupported-transceiver")
+            || has("no errdisable detect cause gbic-invalid")
+            || has("no errdisable detect cause all")
+        {
+            return vec![];
+        }
+        self.transceivers
+            .iter()
+            .filter(|(_, (_, third))| *third)
+            .map(|(p, _)| p.clone())
+            .collect()
     }
 
     /// A global line's value after `prefix` (`vtp mode `), as stored.
@@ -713,7 +822,13 @@ impl Device {
         let keeps_no = printed
             || match at {
                 // `no spanning-tree vlan 1` (c2960x 15.2(7)E capture 8) is kept per VLAN
-                None => KEEPS_NO.contains(&k.as_str()) || k.starts_with("spanning-tree vlan #"),
+                // an err-disable cause is detected by default: `no errdisable detect cause
+                // gbic-invalid` is kept (the lab C9300, 17.6.4)
+                None => {
+                    KEEPS_NO.contains(&k.as_str())
+                        || k.starts_with("spanning-tree vlan #")
+                        || k.starts_with("errdisable detect cause ")
+                }
                 // `no vtp` on a port (c9400 17.5 capture 2 prints it); `no switchport` on a routed port (the 9300
                 // configuration guide's `show running-config interface GigabitEthernet1/0/9`)
                 Some(b) => {

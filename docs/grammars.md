@@ -209,8 +209,9 @@ A patch reaches every command of its name. `compile` lists the overrides a relea
 | Use | Example |
 |---|---|
 | A hardware document the release books do not cover | the supervisor installation note's `enable` on the 9400 |
+| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command |
 | A correction to every release of one book | the 2960-X `channel-group` |
-| A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables` and `key-hash` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960 |
+| A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables`, `key-hash` and `service unsupported-transceiver` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960 |
 
 ## Matching
 

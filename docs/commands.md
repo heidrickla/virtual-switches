@@ -75,7 +75,7 @@ Removes passwords and secrets from configuration files and session logs, in plac
 
 ### shell
 
-A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default ([output.md](output.md#factory-default)); other platforms and releases start blank. The keys are in [terminal.md](terminal.md).
+A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default at network-advantage with dna-advantage ([output.md](output.md#factory-default)), its boot the computer's clock, which `show version` counts its uptime from; other platforms and releases start blank. The keys are in [terminal.md](terminal.md).
 
 ### run
 

@@ -39,6 +39,7 @@ mod target;
 mod topology;
 mod tui;
 mod verify;
+mod version;
 
 use release::Release;
 use std::io::Write;
@@ -1925,6 +1926,7 @@ fn run(args: &[String]) -> Result<bool, String> {
             let deny = corpus::Deny::of(&src);
             if let Some(tree) = arg(args, "--scan") {
                 // every published file under the tree that names the site, by file, line and word
+                let deny = deny.published();
                 let hits = corpus::scan_tree(std::path::Path::new(tree), &deny, loose);
                 for (file, line, word) in &hits {
                     println!("{file}:{line}: {word}");
