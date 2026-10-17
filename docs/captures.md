@@ -329,7 +329,7 @@ A backup whose version line names another release is typed at that release. A fi
 
 1. It reads the switch: release, hardware, `show ip interface brief`, `show interfaces status` and the running configuration. The target's name resolves to addresses, and one interface must hold one of them, else nothing is sent.
 2. `--map Twe1/0/=Gi1/0/` renames the script's ports onto ports the lab switch has, before the script is checked.
-3. It refuses the script when a line could cut the session (below) and sends nothing.
+3. It refuses the script when a line could cut the session or is known to crash the switch (below) and sends nothing.
 4. It copies the running configuration to `flash:vswitch-probe-before.cfg` in a session of its own.
 5. It types the script after IOS answers `bytes copied`, then reads the running configuration.
 6. It puts the configuration back with `configure replace flash:vswitch-probe-before.cfg force`.
@@ -348,6 +348,7 @@ A line is read as IOS reads it: abbreviated, spaced, in its `no` and `default` f
 | `hostname`, `boot`, `reload`, `license`, `archive`, `event manager` | the switch's identity |
 | `no ip routing`, `default ip routing` | routing turned off |
 | `write`, `copy`, `erase`, `delete`, `format` | files |
+| a command known to crash the switch's model ([output.md](output.md#commands-known-to-crash-a-switch)), bare or after `do`; any model's when the model is not known | a crash ends the session and skips the `configure replace` rollback |
 | `do`, `do-exec` (typed whole or as a start of three characters or more) | EXEC from configuration mode |
 | `exit`, `logout`, `quit`, `disable`, `clear` | leaves configuration mode, so later lines run at the EXEC prompt |
 | `interface range macro` | ports the probe does not read |

@@ -122,6 +122,8 @@ pub struct Session<'a> {
     pub booted: u64,
     /// the VLAN database as it stood when VTP last counted a change
     vlans_seen: Option<Vec<(String, Vec<String>)>>,
+    /// the lines entered that are known to crash a switch of this family (`enter`)
+    pub warned: usize,
 }
 
 /// A time as VTP's last-change line prints it: month and day unpadded, the year in two digits
@@ -241,6 +243,7 @@ impl<'a> Session<'a> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
             vlans_seen: None,
+            warned: 0,
         }
     }
 
@@ -939,6 +942,33 @@ impl<'a> Session<'a> {
             self.device.last_change = Some(self.now());
         }
         out
+    }
+
+    /// The warning for a line known to crash a switch of this family (`hazards`), as the line reads
+    /// in the current mode; none for the text a banner, certificate, key or question takes.
+    pub fn warning(&self, line: &str) -> Option<String> {
+        if self.asking
+            || self.banner.is_some()
+            || self.certificate.is_some()
+            || self.pubkey.is_some()
+        {
+            return None;
+        }
+        let family = self.device.stack.family()?;
+        crate::hazards::typed(Some(family), self.mode(), line)
+            .map(|h| h.warning(&self.device.release))
+    }
+
+    /// A line entered at the console or in a script: `type_line`, with the warning for a line known
+    /// to crash the switch before the answer, which is unchanged.
+    pub fn enter(&mut self, line: &str) -> (Vec<String>, Result) {
+        let warning = self.warning(line);
+        let (mut out, r) = self.type_line(line);
+        if let Some(w) = warning {
+            self.warned += 1;
+            out.insert(0, w);
+        }
+        (out, r)
     }
 
     fn typed(&mut self, line: &str) -> (Vec<String>, Result) {
@@ -2468,7 +2498,7 @@ impl<'a> Session<'a> {
                 out.extend(self.help(before));
                 continue;
             }
-            let (o, r) = self.type_line(l);
+            let (o, r) = self.enter(l);
             if r == Result::Error {
                 refused += 1;
             }
@@ -5832,6 +5862,70 @@ mod tests {
                 );
                 println!("  first refused: {:?}", &refused[..refused.len().min(30)]);
             }
+        }
+    }
+
+    #[test]
+    fn a_line_known_to_crash_the_switch_is_warned_of_before_its_answer() {
+        let script = "enable\nsh ipv6 pim gi\nshow ip pim gir\nshow ipv6 pim gir?\nconfigure terminal\ndo show platform software tdl-database content bp config nodes 0 | include x\nshow ipv6 pim gir\nend\n";
+        let at = |book: &str, model: &str, release: &str| {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar(book, r).unwrap());
+            let stack = crate::platform::parse_stack(model).unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            let (transcript, refused) = s.script(script);
+            (transcript, refused, s.warned)
+        };
+        let warning = "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4)";
+        let (t, refused, warned) = at("c9300", "C9300-24T", "17.6");
+        // each warned line's answer follows its warning as it would without one
+        let i = t.iter().position(|l| l == "Switch#sh ipv6 pim gi").unwrap();
+        assert_eq!(t[i + 1], warning, "{t:#?}");
+        assert!(
+            t[i + 2..]
+                .iter()
+                .take_while(|l| !l.starts_with("Switch"))
+                .any(|l| l.starts_with("% Invalid input"))
+        );
+        let j = t
+            .iter()
+            .position(|l| l.starts_with("Switch(config)#do show platform"))
+            .unwrap();
+        assert_eq!(t[j + 1], warning, "{t:#?}");
+        // `?`, the forms that answer, and a bare line in configuration mode are not warned of
+        assert_eq!(
+            t.iter()
+                .filter(|l| l.starts_with("% vswitch: this command"))
+                .count(),
+            2,
+            "{t:#?}"
+        );
+        assert_eq!(warned, 2);
+        // the warnings add no refusal: the two hazard lines and `show ip pim gir` are refused as before
+        let plain = {
+            let r = crate::release::Release::parse("17.6").unwrap();
+            let e = Engine::new(crate::grammars::grammar("c9300", r).unwrap());
+            let stack = crate::platform::parse_stack("C9300-24T").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            let mut n = 0;
+            for l in script.lines().filter(|l| !l.ends_with('?')) {
+                n += usize::from(s.type_line(l).1 == Result::Error);
+            }
+            n
+        };
+        assert_eq!(refused, plain);
+        // on another release of the family, what it did at the release measured
+        let (t, _, _) = at("c9300", "C9300-24T", "17.15");
+        assert!(t.contains(&"% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)".to_string()), "{t:#?}");
+        // on another family, nothing
+        for (book, model) in [("c9200", "C9200-24T"), ("c2960", "WS-C2960G-24TC-L")] {
+            let release = crate::grammars::default_release(book).to_string();
+            let (t, _, warned) = at(book, model, &release);
+            assert!(
+                !t.iter().any(|l| l.contains("% vswitch: this command")),
+                "{model}: {t:#?}"
+            );
+            assert_eq!(warned, 0);
         }
     }
 }

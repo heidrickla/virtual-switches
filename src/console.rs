@@ -1011,7 +1011,7 @@ fn plain_from(
         let o = match line.strip_suffix('?').filter(|_| !s.in_banner()) {
             Some(before) if matches!(s.width, 0 | usize::MAX) => s.help(before),
             Some(before) => fit_help(s.help(before), s.width),
-            None => s.type_line(line).0,
+            None => s.enter(line).0,
         };
         for l in o {
             writeln!(out, "{l}").map_err(io)?;
@@ -1041,7 +1041,7 @@ pub fn interact(s: &mut Session<'_>) -> Result<(), String> {
     loop {
         match read(&mut ed, s)? {
             Input::Typed(line) => {
-                let (o, _) = s.type_line(&line);
+                let (o, _) = s.enter(&line);
                 paged(o, s.length)?;
                 if s.closed {
                     return Ok(());
@@ -1050,7 +1050,7 @@ pub fn interact(s: &mut Session<'_>) -> Result<(), String> {
             Input::Pasted(lines) => {
                 for line in lines {
                     writeln!(out, "{}{}", s.prompt(), line).map_err(|e| e.to_string())?;
-                    let (o, _) = s.type_line(&line);
+                    let (o, _) = s.enter(&line);
                     paged(o, s.length)?;
                     if s.closed {
                         return Ok(());
@@ -1512,6 +1512,29 @@ mod tests {
         let mut out = Vec::new();
         plain_from(&mut s, "show cl?\n".as_bytes(), &mut out).unwrap();
         assert!(String::from_utf8_lossy(&out).contains("class-map"));
+    }
+
+    #[test]
+    fn enter_on_a_line_known_to_crash_the_switch_warns_and_help_does_not() {
+        let e = engine();
+        let mut s = session(&e);
+        let mut out = Vec::new();
+        plain_from(
+            &mut s,
+            "show ipv6 pim gir?\nshow ipv6 pim gir\n".as_bytes(),
+            &mut out,
+        )
+        .unwrap();
+        let out = String::from_utf8_lossy(&out);
+        let warning = "% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)\n";
+        assert_eq!(out.matches(warning).count(), 1, "{out}");
+        // after the line entered, before the switch's answer
+        assert!(
+            out.split(warning)
+                .nth(1)
+                .is_some_and(|after| after.contains("% Invalid input")),
+            "{out}"
+        );
     }
 
     #[test]

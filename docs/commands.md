@@ -75,11 +75,11 @@ Removes passwords and secrets from configuration files and session logs, in plac
 
 ### shell
 
-A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default at network-advantage with dna-advantage ([output.md](output.md#factory-default)), its boot the computer's clock, which `show version` counts its uptime from; other platforms and releases start blank. The keys are in [terminal.md](terminal.md).
+A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default at network-advantage with dna-advantage ([output.md](output.md#factory-default)), its boot the computer's clock, which `show version` counts its uptime from; other platforms and releases start blank. The keys are in [terminal.md](terminal.md). A line known to crash the switch's model prints a warning before its answer, here, in the switch list's console and in `lab --shell` ([output.md](output.md#commands-known-to-crash-a-switch)).
 
 ### run
 
-Types each line of a script at its prompt and prints the session, each line after its prompt. The switch starts as `shell` starts it, a C9300 at 17.6 from its factory default. Lines starting with `!` are skipped in configuration modes, and a banner's text is typed as written. A line ending in `?` prints the help for what precedes it and is not entered. `--quiet` prints only the count. The count `<n> line(s) refused` goes to stderr, and exit is 1 when it is above 0. A byte order mark at the start of the file is dropped.
+Types each line of a script at its prompt and prints the session, each line after its prompt. The switch starts as `shell` starts it, a C9300 at 17.6 from its factory default. Lines starting with `!` are skipped in configuration modes, and a banner's text is typed as written. A line ending in `?` prints the help for what precedes it and is not entered. `--quiet` prints only the count. The count `<n> line(s) refused` goes to stderr, and exit is 1 when it is above 0. A line known to crash the switch's model prints its warning in the session ([output.md](output.md#commands-known-to-crash-a-switch)); with `--quiet`, `<n> line(s) known to crash this model` goes to stderr before the refused count when n is above 0. The warnings do not change the exit code. A byte order mark at the start of the file is dropped.
 
 ## Designs
 
@@ -124,7 +124,7 @@ With `--change`, every check command and rollback line is typed into the switch,
 
 ### explain
 
-Prints the command a line matches in a mode: its name, source, syntax line, modes, the mode it enters, how it is shown, and the evidence where a real switch held it. A line that does not match prints its outcome (invalid, incomplete or ambiguous). `--platform` names a book or a model; the 9300 is the default.
+Prints the command a line matches in a mode: its name, source, syntax line, modes, the mode it enters, how it is shown, and the evidence where a real switch held it. A line that does not match prints its outcome (invalid, incomplete or ambiguous). A line known to crash the platform's model adds a `hazard` line: the command, what it does at the release, and the day it was measured ([output.md](output.md#commands-known-to-crash-a-switch)). `--platform` names a book or a model; the 9300 is the default.
 
 | `--platform` value | Book |
 |---|---|
@@ -215,7 +215,7 @@ For `--folder`, a switch captured already gains what the new files hold that its
 
 ### probe
 
-Types a script on a private lab switch and compares each line's answer, and what IOS keeps, with vswitch. `--lab` is required and states that the switch is a private lab reservation. The switch's configuration is saved to flash first and put back after with `configure replace`; the output says whether `Rollback Done` was seen. Lines that could cut the session are refused before anything is sent, and `--skip-unsafe` leaves them out. `--map Twe1/0/=Gi1/0/` renames the script's ports onto the lab switch's. The session log and the configuration IOS kept are written under `--out` beside the capture, swept. Exit is 1 on a difference, when the replace did not answer `Rollback Done`, and when the script is refused.
+Types a script on a private lab switch and compares each line's answer, and what IOS keeps, with vswitch. `--lab` is required and states that the switch is a private lab reservation. The switch's configuration is saved to flash first and put back after with `configure replace`; the output says whether `Rollback Done` was seen. Lines that could cut the session are refused before anything is sent, and `--skip-unsafe` leaves them out. So is a line known to crash the switch's model ([output.md](output.md#commands-known-to-crash-a-switch)), bare or after `do`: a crash ends the session and skips the `configure replace` rollback. `--map Twe1/0/=Gi1/0/` renames the script's ports onto the lab switch's. The session log and the configuration IOS kept are written under `--out` beside the capture, swept. Exit is 1 on a difference, when the replace did not answer `Rollback Done`, and when the script is refused.
 
 ## Labs
 

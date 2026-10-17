@@ -19,6 +19,7 @@ mod evidence;
 mod filter;
 mod generate;
 mod grammars;
+mod hazards;
 mod lab;
 mod library;
 mod license;
@@ -1021,10 +1022,13 @@ fn run(args: &[String]) -> Result<bool, String> {
             let mut s = shell::Session::new(&engine, device::Device::new(st));
             s.factory_default();
             let (transcript, refused) = s.script(&text);
+            // the transcript holds each warning; `--quiet` counts them
             if !args.iter().any(|a| a == "--quiet") {
                 for l in &transcript {
                     println!("{l}");
                 }
+            } else if s.warned > 0 {
+                eprintln!("{} line(s) known to crash this model", s.warned);
             }
             eprintln!("{refused} line(s) refused");
             Ok(refused == 0)
@@ -1217,6 +1221,11 @@ fn run(args: &[String]) -> Result<bool, String> {
                     }
                 }
                 other => println!("{other:?}"),
+            }
+            // the 9300 is the platform when none is named
+            let hardware = family.unwrap_or(platform::Family::C9300);
+            if let Some(h) = hazards::typed(Some(hardware), mode, line) {
+                println!("hazard   {}", h.described(&r.to_string()));
             }
             Ok(true)
         }

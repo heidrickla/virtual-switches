@@ -503,3 +503,24 @@ A single C9300 at IOS XE 17.6 prints them as the lab C9300-24T at 17.6.4 did. Ot
 - Every platform keeps IOS's trailing spaces (`act/unsup `, the VTP digest, a padded last column), as every family's show tech prints them. A terminal log loses them.
 - Other `show` commands print `% vswitch has no output model for '...' yet`, `show inventory` among them.
 - `show interface ...`, as the books spell it, is taken as `show interfaces ...`.
+
+## Commands known to crash a switch
+
+A line a lab switch crashed on prints a warning when Enter is pressed on it, before the switch's answer, which is unchanged. `?` and Tab print none. The line is read as IOS reads it: each word a start of its keyword in any case, a whole shorter keyword read as itself (`show ip` is not `show ipv6`), what follows `|` ignored, and in configuration mode only after `do` or `do-exec`. The table is `src/hazards.rs`.
+
+| Command | Model | Release | Effect |
+|---|---|---|---|
+| `show ipv6 pim gir` | Catalyst 9300 | IOS XE 17.6.4 | IOSd segfault and reload |
+| `show platform software tdl-database content bp`, with any words after it | Catalyst 9300 | IOS XE 17.6.4 | IOSd segfault and reload |
+
+| Switch | Warning |
+|---|---|
+| that model on the release's train (17.6) | `% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4)` |
+| that model on another release | `% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)` |
+| another model | none |
+
+Each command was typed alone on one SSH session of a C9300-24T at network-advantage on 2026-10-17. IOSd segfaulted (`linux_iosd_image has failed (rc 139)`) and the switch reloaded with `Critical software exception`, answering SSH again about 4 minutes later. Each crash wrote a crashinfo file and a 58 MB system report to `crashinfo:`. `show ipv6 pim gir` faulted in the process running it, `SSH Process` over SSH; every `bp` form tried (`config local`, `config nodes`, `config nodes 0`, `oper local`, `oper nodes`) faulted in `Sched`. No published Cisco bug names either command.
+
+These answered normally on the same switch: `show ip pim gir`, `show ip igmp gir`, `show ipv6 mld gir`, and the other `show platform software tdl-database content` forms (`cfgmgr`, `fpmd`, `ftm`, `ios`, `ompd`, `vdaemon`).
+
+`run` prints the warning in the session; `probe` refuses the line, and `explain` names it ([commands.md](commands.md)).

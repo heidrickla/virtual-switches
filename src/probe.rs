@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use crate::capture::{self, Exchange};
-use crate::{check, cli, platform, shell, show};
+use crate::{check, cli, hazards, platform, shell, show};
 
 pub const ARCHIVE: &str = "flash:vswitch-probe-before.cfg";
 
@@ -96,10 +96,14 @@ fn typed(script: &str) -> impl Iterator<Item = (usize, &str)> {
         })
 }
 
-/// A configuration made into a probe script for a lab switch: it stops at `end`, and drops each line
-/// `refused` would refuse with the lines under it. Returns the script and each dropped line with its
-/// reason.
-pub fn adapt(config: &str, management: &[String]) -> (String, Vec<(usize, String)>) {
+/// A configuration made into a probe script for a lab switch of `family`: it stops at `end`, and
+/// drops each line `refused` would refuse with the lines under it. Returns the script and each dropped
+/// line with its reason.
+pub fn adapt(
+    config: &str,
+    management: &[String],
+    family: Option<platform::Family>,
+) -> (String, Vec<(usize, String)>) {
     let mut out = String::new();
     let mut dropped = vec![];
     let mut dropping_block = false;
@@ -109,7 +113,7 @@ pub fn adapt(config: &str, management: &[String]) -> (String, Vec<(usize, String
             dropped.push((n, "under a dropped block".to_string()));
             continue;
         }
-        if let Some(why) = unsafe_line(line, management) {
+        if let Some(why) = unsafe_line(line, management, family) {
             dropping_block = top;
             dropped.push((n, why));
             continue;
@@ -166,17 +170,37 @@ pub fn renamed(script: &str, maps: &[(String, String)]) -> String {
     script.lines().map(|l| rename(l, &maps) + "\n").collect()
 }
 
-/// The lines of a script a probe refuses, with the reason: a command of `UNSAFE` (or its `no` or
-/// `default` form), one that leaves configuration mode, or one naming the management interface or its
-/// VRF.
-pub fn refused(script: &str, management: &[String]) -> Vec<(usize, String)> {
+/// The lines of a script a probe refuses on a switch of `family`, with the reason: a command known to
+/// crash it, a command of `UNSAFE` (or its `no` or `default` form), one that leaves configuration
+/// mode, or one naming the management interface or its VRF.
+pub fn refused(
+    script: &str,
+    management: &[String],
+    family: Option<platform::Family>,
+) -> Vec<(usize, String)> {
     typed(script)
-        .filter_map(|(n, line)| unsafe_line(line, management).map(|why| (n, why)))
+        .filter_map(|(n, line)| unsafe_line(line, management, family).map(|why| (n, why)))
         .collect()
 }
 
-/// Why one script line could cut the session or change the switch's identity; none when it cannot.
-fn unsafe_line(line: &str, management: &[String]) -> Option<String> {
+/// Why one script line could crash the switch, cut the session or change the switch's identity; none
+/// when it cannot.
+fn unsafe_line(
+    line: &str,
+    management: &[String],
+    family: Option<platform::Family>,
+) -> Option<String> {
+    // a crash ends the session before `configure replace` puts the configuration back. With the
+    // family not known, a command known to crash any family is refused. The line is read bare too,
+    // though IOS takes EXEC in configuration mode only after `do`.
+    if let Some(h) = hazards::find(family, line).or_else(|| hazards::typed(family, "config", line))
+    {
+        return Some(format!(
+            "`{}` {}: a crash ends the session and skips the `configure replace` rollback",
+            h.command,
+            h.crashed()
+        ));
+    }
     if line.chars().any(|c| c.is_control() && c != '\t') {
         return Some("holds a control character, which the terminal acts on".into());
     }
@@ -573,12 +597,13 @@ pub fn sessions(
         &before,
         addresses,
     )?;
+    let family = platform::parse_stack(&spec).ok().and_then(|s| s.family());
     let script = renamed(script, maps);
-    let bad = refused(&script, &management);
+    let bad = refused(&script, &management, family);
     if !bad.is_empty() && !skip {
         return Ok(Probed::Refused(bad));
     }
-    let (script, dropped) = adapt(&script, &management);
+    let (script, dropped) = adapt(&script, &management, family);
     let copy = session(
         &copy_commands()
             .iter()
@@ -770,12 +795,25 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
         )
         .unwrap();
         assert!(vlan.contains(&"Vlan1".to_string()) && vlan.contains(&"Vl1".to_string()));
-        assert_eq!(refused("interface Vlan1\n shutdown\n", &vlan).len(), 1);
-        assert!(refused("interface Vlan10\n shutdown\ninterface vlan 100\n", &vlan).is_empty());
-        assert_eq!(refused("interface GigabitEthernet 0/0\n", &mgmt).len(), 1);
+        assert_eq!(
+            refused("interface Vlan1\n shutdown\n", &vlan, None).len(),
+            1
+        );
+        assert!(
+            refused(
+                "interface Vlan10\n shutdown\ninterface vlan 100\n",
+                &vlan,
+                None
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            refused("interface GigabitEthernet 0/0\n", &mgmt, None).len(),
+            1
+        );
         let script = "vlan 77\n name test\ninterface Gi0/0\n shutdown\nno username developer\nline vty 0 4\ninterface TwentyFiveGigE1/0/1\n switchport mode trunk\n";
         assert_eq!(
-            refused(script, &mgmt)
+            refused(script, &mgmt, None)
                 .iter()
                 .map(|(n, _)| *n)
                 .collect::<Vec<_>>(),
@@ -784,7 +822,8 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
         assert!(
             refused(
                 "vlan 77\ninterface Vlan77\n ip address 10.7.7.1 255.255.255.0\n",
-                &mgmt
+                &mgmt,
+                None
             )
             .is_empty()
         );
@@ -822,11 +861,14 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
             assert!(!names.contains(&name.to_string()), "{name}: {names:?}");
         }
         assert_eq!(
-            refused("interface GigabitEthernet0/1\n shutdown\n", &names).len(),
+            refused("interface GigabitEthernet0/1\n shutdown\n", &names, None).len(),
             1
         );
-        assert_eq!(refused("interface range Gi0/1 - 8\n", &names).len(), 1);
-        assert!(refused("interface Gi0/2\n shutdown\n", &names).is_empty());
+        assert_eq!(
+            refused("interface range Gi0/1 - 8\n", &names, None).len(),
+            1
+        );
+        assert!(refused("interface Gi0/2\n shutdown\n", &names, None).is_empty());
         // with no ports listed, the ports carrying the SVI are unknown
         assert!(management(&lines(brief), &[], "", &["192.0.2.60".into()]).is_err());
         // a routed port-channel's members carry its traffic
@@ -855,8 +897,8 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
             &[("Gi1/0/".to_string(), "Gi0/".to_string())],
         );
         assert_eq!(script, "interface GigabitEthernet0/3\n shutdown\n");
-        assert_eq!(refused(&script, &mgmt).len(), 1);
-        let (sent, dropped) = adapt(&script, &mgmt);
+        assert_eq!(refused(&script, &mgmt, None).len(), 1);
+        let (sent, dropped) = adapt(&script, &mgmt, None);
         assert!(
             sent.is_empty() && dropped.len() == 2,
             "{sent:?} {dropped:?}"
@@ -916,13 +958,17 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
     #[test]
     fn an_abbreviated_spaced_or_default_form_of_a_refused_command_is_refused() {
         let script = "ip default-g 10.0.0.1\nno ip default-g\nlin vty 0 4\n access-class 1 in\nhostn x\nusern bob privilege 15 secret 0 $9$INVENTED\nboo system flash:x.bin\nno  ip default-gateway\nip  route 0.0.0.0 0.0.0.0 Null0\ndefault ip default-gateway\ndefault line vty 0 4\ndefault aaa new-model\nhostname\tx\nenable sec 0 $9$INVENTED\nsnmp com x RO\n\u{feff}aaa new-model\n";
-        let lines: Vec<usize> = refused(script, &vlan54()).iter().map(|r| r.0).collect();
+        let lines: Vec<usize> = refused(script, &vlan54(), None)
+            .iter()
+            .map(|r| r.0)
+            .collect();
         assert_eq!(lines, [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
         // `ip routing` turns routing on, and a VLAN or interface beside the management one is free
         assert!(
             refused(
                 "vlan 77\n name test\nip routing\ninterface Vlan77\n ip address 10.7.7.1 255.255.255.0\n",
-                &vlan54()
+                &vlan54(),
+                None
             )
             .is_empty()
         );
@@ -931,13 +977,20 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
     #[test]
     fn do_exec_whole_or_abbreviated_is_refused_as_do_is() {
         let script = "do reload\ndo-exec reload\ndo-ex reload\nDO-E show version\ndo- write\ndot1x system-auth-control\n";
-        let r: Vec<usize> = refused(script, &vlan54()).iter().map(|r| r.0).collect();
+        let r: Vec<usize> = refused(script, &vlan54(), None)
+            .iter()
+            .map(|r| r.0)
+            .collect();
         assert_eq!(r, [1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn turning_routing_off_is_refused() {
-        let r = refused("no ip routing\ndefault ip routing\nip routing\n", &vlan54());
+        let r = refused(
+            "no ip routing\ndefault ip routing\nip routing\n",
+            &vlan54(),
+            None,
+        );
         assert_eq!(r.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
     }
 
@@ -945,7 +998,10 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
     fn a_line_that_leaves_configuration_mode_is_refused() {
         // what follows a top-level `exit` runs at the EXEC prompt, where nothing is refused
         let script = "vlan 77\n name test\nexit\nexit\nclear line vty 0\nlogout\nquit\ndisable\nvlan 78\n\u{1a}\n";
-        let r: Vec<usize> = refused(script, &vlan54()).iter().map(|r| r.0).collect();
+        let r: Vec<usize> = refused(script, &vlan54(), None)
+            .iter()
+            .map(|r| r.0)
+            .collect();
         assert_eq!(r, [3, 4, 5, 6, 7, 8, 10]);
     }
 
@@ -962,18 +1018,18 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
             "int ran gi0/1-4",
             "interface range macro uplinks",
         ] {
-            assert_eq!(refused(line, &mgmt).len(), 1, "{line}");
+            assert_eq!(refused(line, &mgmt, None).len(), 1, "{line}");
         }
-        assert!(refused("interface range GigabitEthernet0/4 - 8\n", &mgmt).is_empty());
+        assert!(refused("interface range GigabitEthernet0/4 - 8\n", &mgmt, None).is_empty());
         for line in [
             "vlan 10,54",
             "vlan 50-60",
             "no vlan 54",
             "interface range vlan 50 - 60",
         ] {
-            assert_eq!(refused(line, &vlan54()).len(), 1, "{line}");
+            assert_eq!(refused(line, &vlan54(), None).len(), 1, "{line}");
         }
-        assert!(refused("vlan 10,55-60\n", &vlan54()).is_empty());
+        assert!(refused("vlan 10,55-60\n", &vlan54(), None).is_empty());
     }
 
     #[test]
@@ -987,6 +1043,7 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
         let (script, dropped) = adapt(
             &renamed(config, &[("Twe1/0/".to_string(), "Gi1/0/".to_string())]),
             &mgmt,
+            None,
         );
         assert_eq!(
             script,
@@ -997,8 +1054,71 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
             dropped.iter().map(|d| d.0).collect::<Vec<_>>(),
             [1, 5, 6, 7, 10, 11, 12]
         );
-        assert!(refused(&script, &mgmt).is_empty());
-        assert_eq!(refused("write memory\ndo copy run start\n", &mgmt).len(), 2);
+        assert!(refused(&script, &mgmt, None).is_empty());
+        assert_eq!(
+            refused("write memory\ndo copy run start\n", &mgmt, None).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_command_known_to_crash_the_switch_s_family_is_refused() {
+        use platform::Family;
+        let script = "vlan 77\nshow ipv6 pim gir\ndo sh plat soft tdl-database content bp config nodes 0\ndo show ip pim gir\n";
+        let on = |family| refused(script, &vlan54(), family);
+        let numbers = |r: &[(usize, String)]| r.iter().map(|r| r.0).collect::<Vec<_>>();
+        let c9300 = on(Some(Family::C9300));
+        assert_eq!(numbers(&c9300), [2, 3, 4]);
+        for (_, why) in &c9300[..2] {
+            assert!(
+                why.contains("crashed a Catalyst 9300 at IOS XE 17.6.4")
+                    && why.contains("skips the `configure replace` rollback"),
+                "{why}"
+            );
+        }
+        // `do show ip pim gir` answers on the switch; the line is refused for its `do`
+        assert!(!c9300[2].1.contains("crash"), "{}", c9300[2].1);
+        // another family's switch refuses only the `do` lines, for their `do`
+        for family in [Family::C9200, Family::C2960] {
+            let r = on(Some(family));
+            assert_eq!(numbers(&r), [3, 4], "{family:?}");
+            assert!(r.iter().all(|(_, why)| !why.contains("crash")), "{r:?}");
+        }
+        // a family not known refuses what crashes any
+        assert_eq!(numbers(&on(None)), [2, 3, 4]);
+        let (sent, dropped) = adapt(script, &vlan54(), Some(Family::C9300));
+        assert_eq!(
+            (sent.as_str(), numbers(&dropped)),
+            ("vlan 77\n", vec![2, 3, 4])
+        );
+    }
+
+    #[test]
+    fn a_script_with_a_command_known_to_crash_the_switch_sends_nothing() {
+        let first = "Switch#terminal length 0\nSwitch#show version\nCisco IOS XE Software, Version 17.06.04\nSwitch#show inventory\nNAME: \"Switch 1\", DESCR: \"C9300-24T\"\nPID: C9300-24T         , VID: V01\nSwitch#show ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol\nGigabitEthernet0/0     192.0.2.60      YES NVRAM  up                    up\nSwitch#show interfaces status\nSwitch#show running-config\n!\nversion 17.6\nhostname Switch\n!\nend\n\nSwitch#exit\n";
+        let mut asked = 0;
+        let probed = sessions(
+            "vlan 77\n name test\nshow ipv6 pim gir\n",
+            &[],
+            &["192.0.2.60".into()],
+            false,
+            |_| {
+                asked += 1;
+                Ok(first.to_string())
+            },
+        )
+        .unwrap();
+        let Probed::Refused(bad) = probed else {
+            panic!("the script was typed");
+        };
+        assert_eq!(asked, 1);
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].0, 3);
+        assert!(
+            bad[0].1.contains("`show ipv6 pim gir` crashed"),
+            "{}",
+            bad[0].1
+        );
     }
 
     #[test]
