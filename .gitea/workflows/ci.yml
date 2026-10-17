@@ -85,6 +85,12 @@ jobs:
           "$HOME/.cargo/bin/rustc" --version | grep -F ' 1.98.1 '
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # the crate registry and dependency builds, kept between runs keyed on the toolchain and Cargo.lock
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        timeout-minutes: 10
+        with:
+          cache-bin: "false"
+
       # release binaries checked against the digests their releases publish, not a build on every run
       - name: cargo-deny and cargo-nextest (pinned)
         timeout-minutes: 5
