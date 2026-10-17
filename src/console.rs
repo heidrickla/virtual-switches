@@ -1528,11 +1528,11 @@ mod tests {
         let out = String::from_utf8_lossy(&out);
         let warning = "% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)\n";
         assert_eq!(out.matches(warning).count(), 1, "{out}");
-        // after the line entered, before the switch's answer
+        // after the switch's whole answer, before the next prompt
         assert!(
-            out.split(warning)
-                .nth(1)
-                .is_some_and(|after| after.contains("% Invalid input")),
+            out.ends_with(&format!(
+                "% Invalid input detected at '^' marker.\n\n{warning}Switch#"
+            )),
             "{out}"
         );
     }

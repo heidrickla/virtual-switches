@@ -1,4 +1,4 @@
-//! Commands known to crash a switch, each as a lab switch measured it. The console warns before such
+//! Commands known to crash a switch, each as a lab switch measured it. The console warns after such
 //! a line's answer, `probe` refuses to send one, and `explain` names one.
 
 use crate::cli;
@@ -73,7 +73,7 @@ impl Hazard {
         }
     }
 
-    /// The console's warning, printed before the switch's answer to the line.
+    /// The console's warning, printed after the switch's answer to the line.
     pub fn warning(&self, release: &str) -> String {
         format!("% vswitch: this command {}", self.effect_at(release))
     }

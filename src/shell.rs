@@ -960,13 +960,13 @@ impl<'a> Session<'a> {
     }
 
     /// A line entered at the console or in a script: `type_line`, with the warning for a line known
-    /// to crash the switch before the answer, which is unchanged.
+    /// to crash the switch after the whole answer, so the caret stays under the line it marks.
     pub fn enter(&mut self, line: &str) -> (Vec<String>, Result) {
         let warning = self.warning(line);
         let (mut out, r) = self.type_line(line);
         if let Some(w) = warning {
             self.warned += 1;
-            out.insert(0, w);
+            out.push(w);
         }
         (out, r)
     }
@@ -5866,7 +5866,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_known_to_crash_the_switch_is_warned_of_before_its_answer() {
+    fn a_line_known_to_crash_the_switch_is_warned_of_after_its_answer() {
         let script = "enable\nsh ipv6 pim gi\nshow ip pim gir\nshow ipv6 pim gir?\nconfigure terminal\ndo show platform software tdl-database content bp config nodes 0 | include x\nshow ipv6 pim gir\nend\n";
         let at = |book: &str, model: &str, release: &str| {
             let r = crate::release::Release::parse(release).unwrap();
@@ -5878,20 +5878,23 @@ mod tests {
         };
         let warning = "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4)";
         let (t, refused, warned) = at("c9300", "C9300-24T", "17.6");
-        // each warned line's answer follows its warning as it would without one
-        let i = t.iter().position(|l| l == "Switch#sh ipv6 pim gi").unwrap();
-        assert_eq!(t[i + 1], warning, "{t:#?}");
-        assert!(
-            t[i + 2..]
-                .iter()
-                .take_while(|l| !l.starts_with("Switch"))
-                .any(|l| l.starts_with("% Invalid input"))
-        );
-        let j = t
-            .iter()
-            .position(|l| l.starts_with("Switch(config)#do show platform"))
-            .unwrap();
-        assert_eq!(t[j + 1], warning, "{t:#?}");
+        // the caret line follows the typed line and marks its word; the warning follows the `%`
+        // message and its blank line, before the next prompt
+        for (typed, word) in [
+            ("Switch#sh ipv6 pim gi", "gi"),
+            (
+                "Switch(config)#do show platform software tdl-database content bp config nodes 0 | include x",
+                "tdl-database",
+            ),
+        ] {
+            let i = t.iter().position(|l| l == typed).unwrap();
+            assert_eq!(t[i + 1].trim(), "^", "{t:#?}");
+            assert_eq!(t[i + 1].find('^'), typed.find(word), "{t:#?}");
+            assert_eq!(t[i + 2], "% Invalid input detected at '^' marker.");
+            assert_eq!(t[i + 3], "");
+            assert_eq!(t[i + 4], warning, "{t:#?}");
+            assert!(t[i + 5].starts_with("Switch"), "{t:#?}");
+        }
         // `?`, the forms that answer, and a bare line in configuration mode are not warned of
         assert_eq!(
             t.iter()
@@ -5901,19 +5904,28 @@ mod tests {
             "{t:#?}"
         );
         assert_eq!(warned, 2);
-        // the warnings add no refusal: the two hazard lines and `show ip pim gir` are refused as before
+        // without its warnings the session is line for line what it is without the check, refusals
+        // included
         let plain = {
             let r = crate::release::Release::parse("17.6").unwrap();
             let e = Engine::new(crate::grammars::grammar("c9300", r).unwrap());
             let stack = crate::platform::parse_stack("C9300-24T").unwrap();
             let mut s = Session::new(&e, Device::new(stack));
-            let mut n = 0;
-            for l in script.lines().filter(|l| !l.ends_with('?')) {
-                n += usize::from(s.type_line(l).1 == Result::Error);
+            let (mut out, mut n) = (vec![], 0);
+            for l in script.lines() {
+                out.push(format!("{}{l}", s.prompt()));
+                if let Some(before) = l.strip_suffix('?') {
+                    out.extend(s.help(before));
+                    continue;
+                }
+                let (o, r) = s.type_line(l);
+                n += usize::from(r == Result::Error);
+                out.extend(o);
             }
-            n
+            (out, n)
         };
-        assert_eq!(refused, plain);
+        let unwarned: Vec<String> = t.iter().filter(|l| *l != warning).cloned().collect();
+        assert_eq!((unwarned, refused), plain);
         // on another release of the family, what it did at the release measured
         let (t, _, _) = at("c9300", "C9300-24T", "17.15");
         assert!(t.contains(&"% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)".to_string()), "{t:#?}");

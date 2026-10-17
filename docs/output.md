@@ -506,7 +506,7 @@ A single C9300 at IOS XE 17.6 prints them as the lab C9300-24T at 17.6.4 did. Ot
 
 ## Commands known to crash a switch
 
-A line a lab switch crashed on prints a warning when Enter is pressed on it, before the switch's answer, which is unchanged. `?` and Tab print none. The line is read as IOS reads it: each word a start of its keyword in any case, a whole shorter keyword read as itself (`show ip` is not `show ipv6`), what follows `|` ignored, and in configuration mode only after `do` or `do-exec`. The table is `src/hazards.rs`.
+A line a lab switch crashed on prints a warning when Enter is pressed on it, as a line of its own after the switch's whole answer, which is unchanged: the caret stays under the typed line, and the warning follows the `%` message and its blank line, before the next prompt. `?` and Tab print none. The line is read as IOS reads it: each word a start of its keyword in any case, a whole shorter keyword read as itself (`show ip` is not `show ipv6`), what follows `|` ignored, and in configuration mode only after `do` or `do-exec`. The table is `src/hazards.rs`.
 
 | Command | Model | Release | Effect |
 |---|---|---|---|
