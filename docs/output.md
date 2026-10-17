@@ -334,18 +334,18 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 
 ## show vtp status
 
-Versions 1 and 2 print the MD5 digest in two rows of eight `0xNN ` bytes. With no password it is MD5 over:
+Versions 1 and 2 print the MD5 digest in two rows of eight `0xNN ` bytes. It is MD5 over:
 
 | Part | Bytes |
 |---|---|
-| secret | 16 zero bytes |
+| secret | 16 zero bytes, or with a VTP password MD5 over the password repeated to 100,032 bytes (1563 blocks of 64) |
 | summary advertisement | version (1, or 2 at version 2), code 1, followers 0, domain length, domain padded to 32, revision (4 bytes), updater IPv4, 12 zero timestamp bytes, 16 zero digest bytes |
 | each VLAN 1-1005 in order | record length, status (1 suspended), type (1 Ethernet, 2 FDDI, 3 Token Ring, 4 FDDI-net, 5 Token Ring-net), name length, VLAN ID, MTU 1500, SAID 100000 + ID, the name padded to 4 bytes, then its TLVs |
-| secret | 16 zero bytes |
+| secret | the same 16 bytes |
 
 - TLVs are type, length in 2-byte words, a 2-byte value: 1002 and 1003 carry (1, 0) and (4, 0); 1004 (2, 0) and (3, 1); 1005 (2, 0) and (3, 2).
 - Measured on the lab C9300 (17.6.4) in nine VLAN databases, the lab C2960G (15.0(2)SE11) and two Catalyst 9400 cores at revision 263 with 50 named VLANs.
-- A VTP password's secret is unmodelled: that form answers `% vswitch has no output model for 'show vtp status' yet`.
+- The secret was measured with six passwords on the lab C2960G; repeats of one password (`a`, `aa`, `aaaa`) give one digest.
 
 - Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1, Server and pruning off by default). Traps come from `snmp-server enable traps vtp`.
 - The VLANs count with 1 and 1002-1005.
@@ -363,7 +363,8 @@ Version 3 prints no last change or updater, then a Feature VLAN block: the mode,
 ## show vtp counters and show vtp password
 
 - `show vtp counters` prints every advertisement and error count at 0, then the pruning table with a row per trunking port (`Gi1/1/1`, `Po10`), its three counts at 0.
-- `show vtp password` prints `The VTP password is not configured.`. A password set answers the no-output-model line.
+- `show vtp password` prints `The VTP password is not configured.`, or `VTP Password: <password>` as typed.
+- `vtp password <password>` prints `Setting device VTP password to <password>`, `no vtp password` prints `Clearing device VTP password.`, and `hidden` below version 3 prints `Device is operating in VTP version 1. hidden option is allowed from VTP version 3 only.` and keeps the password set before (the lab C2960G).
 
 ## show spanning-tree
 

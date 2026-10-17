@@ -1237,6 +1237,25 @@ impl<'a> Session<'a> {
                 return (vec![], Result::Ok);
             }
         }
+        // the lab C2960G (15.0(2)SE11): `hidden` waits for version 3 and keeps the password set
+        // before
+        let canonical = p.canonical();
+        let vtp_password = (mode == "config")
+            .then(|| canonical.strip_prefix("vtp password "))
+            .flatten();
+        if let Some(pw) = vtp_password
+            && pw.ends_with(" hidden")
+        {
+            let (version, _, _) = self.device.vtp_settings();
+            if version != "3" {
+                return (
+                    vec![format!(
+                        "Device is operating in VTP version {version}. hidden option is allowed from VTP version 3 only."
+                    )],
+                    Result::Ok,
+                );
+            }
+        }
         // a line that only moves between modes or runs EXEC (`exit`, `end`, `do`) configures
         // nothing; an `exit-` line closes its section, which IOS prints
         let navigates = matches!(
@@ -1264,6 +1283,14 @@ impl<'a> Session<'a> {
             && let Some(made) = self.vlan_made(&p.canonical())
         {
             out.insert(0, made);
+        }
+        // and says what a VTP password line did (on IOS XE inferred)
+        if r == Result::Ok && !self.redacted && mode == "config" {
+            if let Some(pw) = vtp_password {
+                out.insert(0, format!("Setting device VTP password to {pw}"));
+            } else if canonical == "no vtp password" {
+                out.insert(0, "Clearing device VTP password.".into());
+            }
         }
         // an address typed at the console reads Method `manual` (the lab C9300, 17.6.4)
         if r == Result::Ok

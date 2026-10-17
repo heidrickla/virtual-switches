@@ -1726,6 +1726,12 @@ fn range_in(text: &str) -> Option<(i64, i64)> {
         .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == ';')
         .filter(|w| !w.is_empty())
         .collect();
+    // "from 1 to 32 characters" bounds a string's length: the lab C2960G took `vtp password a`
+    let length = |end: usize| {
+        words[end + 1..words.len().min(end + 4)]
+            .iter()
+            .any(|w| w.to_ascii_lowercase().starts_with("character"))
+    };
     for i in 0..words.len() {
         let a = words[i].trim_end_matches('.');
         if let Some((x, y)) = a.split_once('-')
@@ -1736,6 +1742,7 @@ fn range_in(text: &str) -> Option<(i64, i64)> {
                     || w.eq_ignore_ascii_case("from")
                     || w.eq_ignore_ascii_case("between")
             })
+            && !length(i)
         {
             return Some((x, y));
         }
@@ -1746,6 +1753,7 @@ fn range_in(text: &str) -> Option<(i64, i64)> {
                 words[i + 2].trim_end_matches('.').parse::<i64>(),
             )
             && x <= y
+            && !length(i + 2)
         {
             return Some((x, y));
         }
@@ -3380,6 +3388,22 @@ mod tests {
                 "(Optional) Descriptive name of the prefix list, from 1 to 80 characters in length."
             ),
             ArgKind::Text
+        );
+        // a string's length limit is no range of numbers; a value range after one still counts
+        assert_eq!(
+            k(
+                "password",
+                "Password for the VTP domain, an ASCII string from 1 to 32 characters."
+            ),
+            ArgKind::Word
+        );
+        assert_eq!(
+            k("domain-name", "A name from 1-32 alphanumeric characters."),
+            ArgKind::Word
+        );
+        assert_eq!(
+            k("priority", "Up to 8 characters; the priority is 0 to 255."),
+            ArgKind::Number { min: 0, max: 255 }
         );
         // underscores read as hyphens, the guides' soft hyphens as nothing
         assert_eq!(k("ip_address", ""), ArgKind::Ipv4);

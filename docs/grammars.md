@@ -126,6 +126,7 @@ A grammar is written without a timestamp, so a recompile of the same sources wri
 | Names of things (`ipv4-access-list`, `mask-length`) | a word |
 | `ip-address`, `ipv4`, `ipv6`, `vlan list` | an IPv4 address, an IPv6 address, a VLAN list |
 | A range in the Syntax Description (`1 to 4094`) | a number with that range |
+| A range of characters (`from 1 to 32 characters`) | a word: the range bounds its length |
 | `description`, `text`, `character-string` | text to the end of the line |
 
 ### Modes

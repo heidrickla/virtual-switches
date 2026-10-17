@@ -2015,8 +2015,7 @@ mod tests {
         let e = engine();
         let s = switch(&e, T, RAPID, 0x2a);
         assert!(
-            crate::show::vtp_layout(&s.device)
-                .0
+            crate::show::vtp_status(&s.device)
                 .contains(&"Device ID                       : 0011.2233.442a".to_string())
         );
     }

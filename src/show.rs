@@ -2468,12 +2468,32 @@ pub fn vtp_digest(
     m.finalize().into()
 }
 
-/// The digest `show vtp status` prints for the switch's VLAN database, or None with a password
-/// set, whose secret no switch here has shown.
-fn vtp_device_digest(d: &Device, version: &str, domain: &str) -> Option<[u8; 16]> {
-    if d.global_value("vtp password ").is_some() {
-        return None;
+/// The VTP secret a password keys: MD5 over the password repeated through 1563 64-byte blocks
+/// (100,032 bytes, the first block boundary past 100,000). Measured with six passwords on the lab
+/// C2960G (15.0(2)SE11): repeats of one password give one digest.
+pub fn vtp_secret(password: &str) -> [u8; 16] {
+    use md5::{Digest, Md5};
+    let p = password.as_bytes();
+    if p.is_empty() {
+        return [0; 16];
     }
+    let mut m = Md5::new();
+    let mut block = [0u8; 64];
+    let mut at = 0;
+    for _ in 0..1563 {
+        for b in block.iter_mut() {
+            *b = p[at % p.len()];
+            at += 1;
+        }
+        m.update(block);
+    }
+    m.finalize().into()
+}
+
+/// The digest `show vtp status` prints for the switch's VLAN database, keyed by the VTP password's
+/// secret when one is set.
+fn vtp_device_digest(d: &Device, version: &str, domain: &str) -> [u8; 16] {
+    let secret = d.global_value("vtp password ").map_or([0; 16], vtp_secret);
     // versions 1 and 2 carry the normal range only; a suspended VLAN's status 1 and a VLAN's own
     // MTU are inferred from the advertisement's fields
     let records: Vec<Vec<u8>> = vlan_list(d)
@@ -2497,23 +2517,15 @@ fn vtp_device_digest(d: &Device, version: &str, domain: &str) -> Option<[u8; 16]
         .parse()
         .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
     let v = if version == "2" { 2 } else { 1 };
-    Some(vtp_digest(
-        v,
-        domain,
-        d.vtp.revision,
-        updater,
-        &records,
-        [0; 16],
-    ))
+    vtp_digest(v, domain, d.vtp.revision, updater, &records, secret)
 }
 
-/// `show vtp status` as the lab C9300 (17.6.4), the lab C2960G (15.0(2)SE11) and the cores print it,
-/// with the index of the MD5 digest's first row where it cannot be computed (a VTP password set;
-/// its two rows left blank). Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1,
-/// server and pruning off by default), traps from `snmp-server enable traps vtp`; the VLANs are
-/// counted with 1 and 1002-1005, Device ID is the base MAC address, and the revision and the last
-/// change are the VLAN database's own (`Device::vtp`).
-pub fn vtp_layout(d: &Device) -> (Vec<String>, Option<usize>) {
+/// `show vtp status` as the lab C9300 (17.6.4), the lab C2960G (15.0(2)SE11) and the cores print it.
+/// Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1, server and
+/// pruning off by default), traps from `snmp-server enable traps vtp`; the VLANs are counted with 1
+/// and 1002-1005, Device ID is the base MAC address, and the revision and the last change are the
+/// VLAN database's own (`Device::vtp`).
+pub fn vtp_status(d: &Device) -> Vec<String> {
     let has = |line: &str| d.global.iter().any(|e| e.text == line);
     let (version, mode, domain) = d.vtp_settings();
     let mode = match mode.as_str() {
@@ -2585,7 +2597,7 @@ pub fn vtp_layout(d: &Device) -> (Vec<String>, Option<usize>) {
             out.push(feature("VTP Operating Mode", "Transparent"));
         }
         out.push(String::new());
-        return (out, None);
+        return out;
     }
     out.push(format!(
         "Configuration last modified by {} at {}",
@@ -2618,29 +2630,11 @@ pub fn vtp_layout(d: &Device) -> (Vec<String>, Option<usize>) {
         feature("Configuration Revision", &d.vtp.revision.to_string()),
     ]);
     // the digest's two rows, each ending with a space on every platform
-    let at = out.len();
-    match vtp_device_digest(d, &version, &domain) {
-        Some(md5) => {
-            let row = |b: &[u8]| b.iter().map(|x| format!("0x{x:02X} ")).collect::<String>();
-            out.push(feature("MD5 digest", &row(&md5[..8])));
-            out.push(format!("{:36}{}", "", row(&md5[8..])));
-            (out, None)
-        }
-        None => {
-            out.push(feature("MD5 digest", ""));
-            out.push(String::new());
-            (out, Some(at))
-        }
-    }
-}
-
-/// `show vtp status`. With a VTP password set, versions 1 and 2 print a digest keyed by the
-/// password's secret, which no switch here has shown: that form answers the no-output-model line.
-pub fn vtp_status(d: &Device) -> Vec<String> {
-    match vtp_layout(d) {
-        (lines, None) => lines,
-        (_, Some(_)) => vec!["% vswitch has no output model for 'show vtp status' yet".into()],
-    }
+    let md5 = vtp_device_digest(d, &version, &domain);
+    let row = |b: &[u8]| b.iter().map(|x| format!("0x{x:02X} ")).collect::<String>();
+    out.push(feature("MD5 digest", &row(&md5[..8])));
+    out.push(format!("{:36}{}", "", row(&md5[8..])));
+    out
 }
 
 /// `show vtp counters` as the lab C9300 (17.6.4) printed it: no advertisement sent or received, as
@@ -2676,13 +2670,13 @@ pub fn vtp_counters(d: &Device) -> Vec<String> {
     out
 }
 
-/// `show vtp password`: the lab C9300's answer (17.6.4) with none set; a password's form no switch
-/// has shown.
+/// `show vtp password`: the lab C9300's answer (17.6.4) with none set, the lab C2960G's
+/// (15.0(2)SE11) with one set, its text as typed (on IOS XE inferred).
 pub fn vtp_password(d: &Device) -> Vec<String> {
-    if d.global_value("vtp password ").is_some() {
-        return vec!["% vswitch has no output model for 'show vtp password' yet".into()];
+    match d.global_value("vtp password ") {
+        Some(p) => vec![format!("VTP Password: {p}")],
+        None => vec!["The VTP password is not configured.".into()],
     }
-    vec!["The VTP password is not configured.".into()]
 }
 
 /// `show ip interface brief`, laid out as the 9300 command reference's example: the VLAN interfaces,
@@ -3278,8 +3272,25 @@ mod tests {
     /// The digest rows for a version 1 database with no password, updater 0.0.0.0, `vlans` and
     /// 1002-1005, built byte by byte from the advertisement's layout.
     fn hand_vtp_digest(domain: &[u8], revision: u32, vlans: &[(u16, &str)]) -> [String; 2] {
+        hand_keyed_vtp_digest(domain, revision, vlans, "")
+    }
+
+    /// The digest by hand with a password: its secret is MD5 over the password repeated to
+    /// 100,032 bytes, at both ends.
+    fn hand_keyed_vtp_digest(
+        domain: &[u8],
+        revision: u32,
+        vlans: &[(u16, &str)],
+        password: &str,
+    ) -> [String; 2] {
         use md5::{Digest, Md5};
-        let mut b = vec![0u8; 16];
+        let secret: Vec<u8> = if password.is_empty() {
+            vec![0; 16]
+        } else {
+            let fill: Vec<u8> = password.bytes().cycle().take(100_032).collect();
+            Md5::digest(&fill).to_vec()
+        };
+        let mut b = secret.clone();
         b.extend([1, 1, 0, domain.len() as u8]);
         b.extend(domain);
         b.resize(16 + 4 + 32, 0);
@@ -3304,7 +3315,7 @@ mod tests {
             b.extend(vec![0; pad]);
             b.extend(tlv);
         }
-        b.extend([0u8; 16]);
+        b.extend(&secret);
         let d = Md5::digest(&b);
         let row = |x: &[u8]| x.iter().map(|y| format!("0x{y:02X} ")).collect::<String>();
         [
@@ -3361,7 +3372,7 @@ mod tests {
     fn a_vtp_server_counts_a_revision_per_vlan_change_and_stamps_it() {
         let e = engine("c9300", "17.6");
         let s = vtp_switch(&e, &["vtp domain LAB", "vlan 140", "exit"]);
-        let (lines, digest) = vtp_layout(&s.device);
+        let lines = vtp_status(&s.device);
         assert_eq!(
             lines[..9],
             [
@@ -3379,17 +3390,22 @@ mod tests {
         assert!(lines.contains(&"Configuration Revision            : 1".to_string()));
         assert!(lines.contains(&"Number of existing VLANs          : 6".to_string()));
         // the digest over the summary and the six VLANs' records, each row ending with a space
-        assert_eq!(digest, None);
         let want = hand_vtp_digest(b"LAB", 1, &[(1, "default"), (140, "VLAN0140")]);
         assert_eq!(lines[lines.len() - 2..], want);
-        assert_eq!(vtp_status(&s.device), lines);
-        // a password's secret is unmeasured: that form answers the no-output-model line
-        let mut p = vtp_switch(&e, &["vtp password SECRET"]);
-        p.device.vtp.revision = 0;
+        // a password keys the digest; its repeats key the same one
+        let keyed = |pw: &str| {
+            let mut p = vtp_switch(&e, &[&format!("vtp password {pw}")]);
+            p.device.vtp.revision = 0;
+            vtp_status(&p.device)
+        };
+        let lines = keyed("SECRET");
         assert_eq!(
-            vtp_status(&p.device),
-            ["% vswitch has no output model for 'show vtp status' yet"]
+            lines[lines.len() - 2..],
+            hand_keyed_vtp_digest(b"", 0, &[(1, "default")], "SECRET")
         );
+        assert_ne!(lines, keyed("SECRET2"));
+        assert_eq!(keyed("ab"), keyed("abab"));
+        assert_eq!(vtp_secret(""), [0; 16]);
         // a VLAN named in its submode is one change; the server keeps its VLANs out of the running
         // configuration
         let mut s = s;
@@ -3417,7 +3433,7 @@ mod tests {
             s.type_line(l);
         }
         assert_eq!(s.device.vtp.revision, 0);
-        let (lines, _) = vtp_layout(&s.device);
+        let lines = vtp_status(&s.device);
         assert!(!lines.iter().any(|l| l.starts_with("Local updater")));
     }
 
@@ -3505,10 +3521,7 @@ mod tests {
             ["The VTP password is not configured."]
         );
         let s = vtp_switch(&e, &["vtp password secret1"]);
-        assert_eq!(
-            vtp_password(&s.device),
-            ["% vswitch has no output model for 'show vtp password' yet"]
-        );
+        assert_eq!(vtp_password(&s.device), ["VTP Password: secret1"]);
     }
 
     #[test]
@@ -3541,7 +3554,7 @@ mod tests {
         let brief = ip_interface_brief(&s.device);
         assert!(row(&brief, "Vlan1").contains(" YES unset  administratively down down"));
         assert!(row(&brief, "GigabitEthernet0/0").contains(" YES unset "));
-        let (vtp, _) = vtp_layout(&s.device);
+        let vtp = vtp_status(&s.device);
         assert!(vtp.contains(&"Number of existing VLANs          : 5".to_string()));
         // DHCP typed on a shut interface reads manual, DHCP once it is up; `no ip address` after it
         // stays manual
@@ -3910,15 +3923,14 @@ mod tests {
         );
         // the lab C9300 (17.6.4): Vlan10 waits on DHCP, so Lo0
         assert!(
-            vtp_layout(&s.device).0.contains(
+            vtp_status(&s.device).contains(
                 &"Local updater ID is 192.0.2.1 on interface Lo0 (first layer3 interface found)"
                     .to_string()
             )
         );
         let s = typed(&e, "C9300-24T", &["vtp mode off"]);
         assert!(
-            !vtp_layout(&s.device)
-                .0
+            !vtp_status(&s.device)
                 .iter()
                 .any(|l| l.starts_with("Local updater"))
         );
