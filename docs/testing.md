@@ -69,6 +69,7 @@ The job stops at 60 minutes. Each step carries its own limit, and the checks tha
 | line endings: files listed, none stored with CRLF | 2 min | every run |
 | attribution: no co-author or generated-with trailer on any ref, no `refs/original/` or backup ref; commits are counted first and the matcher must find a trailer written to test it | 2 min | push and by hand |
 | toolchain, pinned to Rust 1.98.1 | 10 min | every run |
+| the crate registry and `target`, restored and saved by `actions/cache` under a key of the toolchain and `Cargo.lock` (rust-cache hashes the absolute target path into its cache version, and the runner's workspace path changes every run) | 10 min | every run |
 | cargo-deny 0.20.2 and cargo-nextest 0.9.146 release binaries, checked against their published SHA-256 digests | 5 min | every run |
 | `cargo deny check` | 10 min | every run |
 | `cargo fmt --check` | 5 min | push and by hand |
