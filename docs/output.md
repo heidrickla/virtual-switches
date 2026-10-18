@@ -29,6 +29,91 @@ The place of the caret in a word comes from a 2960-X session, checked against th
 
 `vlan <n>` past 4094 answers two lines with no caret: `Command rejected: Bad VLAN list - character #<k> (EOL) delimits a VLAN` (k the position after the number) and `number which is out of the range 1..4094.`.
 
+### Messages the configuration gives
+
+On IOS XE a line the configuration so far does not let the switch take prints the lab C9300-24T's (17.6.4) message and changes nothing. `no` lines are taken, a service policy's removal excepted. Classic IOS prints none of these.
+
+| Line | State | Message |
+|---|---|---|
+| `router bgp <asn>` | another AS running | `BGP is already running; AS is <asn>` |
+| `class <name>` in a policy map | no class map of the name | `class map <name> not configured` |
+| `service-policy input\|output <name>` on an interface | no policy map of the name | `% policy map <name> not configured` |
+| `service-export mdns-sd controller <name>` | another controller | `Only one Controller is allowed` and a blank line |
+| a line naming a VRF (`vrf forwarding`, `ip multicast-routing vrf`, `ip mroute vrf`, `ntp server vrf`, `snmp-server host ... vrf`, a BGP or OSPFv3 address family; in EXEC `show ip route\|arp vrf`, `show ip vrf detail\|interfaces`, `show ip bgp vpnv4 vrf`, `show mpls forwarding-table vrf`, `show mpls static binding ipv4 vrf`) | no `vrf definition` or `ip vrf` of the name; `Mgmt-vrf` is in the factory default | the command family's own (`% VRF V1 not configured`, `% VPN Routing instance V1 does not exist.`) |
+| `route-target` in a VRF | no `rd` | `% VRF <name> does not have an RD configured, please configure the RD before configuring route-target` |
+| `<feature> attach-policy <name>`: IPv6 source guard and destination guard on an interface; device tracking, DHCPv6 guard, RA guard in a VLAN configuration | no `<feature> policy <name>` | `% Policy <name> not defined for the feature` and a blank line |
+| `ip nat inside\|outside source list ... pool <name>` | no `ip nat pool <name>` | `%Pool <name> not configured ` and a blank line |
+| `ntp access-group ... <acl>` | no access list of the name | `%Access-list <n> is not defined`; a named list `%Access-list <name> not defined` |
+| `cts role-based permissions ... <acl> ...` | no role-based list of the name | `% ACL <acl> is not defined.` for each |
+| `crypto pki certificate chain <tp>` | no trustpoint | `% CA trustpoint for cert chain not known.` and a blank line |
+| `crypto pki enroll <tp>`, `crypto pki import <tp> certificate` | no trustpoint | `% CA server trustpoint '<tp>' is not known.` and a blank line |
+| `local-domain <name>` in the Umbrella profile | no `parameter-map type regex <name>` | `% Parameter-map regex <name> does not exist` |
+| `member vfi <name>` in a VLAN configuration | no `vpn id` in the VFI | `% VFI <name> must be configured with a valid vpn id first.` |
+| `service ipv4\|ipv6` in a LISP instance | `service ethernet` there | `% Instance ID <id> has 'service ethernet' enabled.` and ` L2 and L3 services are exclusive, remove L2 service first.` |
+| `ipv6 router ospf <n>` | `router ospfv3 <n>` | `% OSPFv3: Use "router ospfv3 <n>" to configure this process` and `% Failed to create routing protocol ospf` |
+| `neighbor <peer> inherit peer-session <t>` | no `template peer-session <t>` | `%Template not found. Please create a template first.` |
+| a neighbor's policy in `router bgp` | the process has an address family | `% Policy commands not allowed without an address family` |
+| a neighbor's policy or `activate` in an address family, any neighbor line but `remote-as`, `peer-group` and `inherit` in `router bgp` | no `remote-as`, `peer-group` or `inherit peer-session` for the peer | `% Specify remote-as or peer-group commands first` |
+| `neighbor <peer> remote-as <asn>` in `router bgp` | an IPv6 link-local peer | `% Link local peer outside address-family scope` |
+| `neighbor <peer> remote-as <asn>` in `router bgp` | an interface's own address | `% Cannot configure the local system as neighbor` |
+| a private VLAN association or mapping | a VLAN the switch lacks | `%Command rejected: invalid private vlan association between vlan<p> and vlan<s>. VLAN <n> data is not available.` |
+| `private-vlan isolated\|community` | the VLAN's SVI up | `%Command rejected: invalid private vlan type assignment. VLAN <n>'s interface is not administratively down and cannot be set to secondary VLAN.` |
+| `interface Tunnel<n>` | a tunnel PIM registers through: one per RP and one more where the switch is its own RP, numbered from the lowest free | `%Tunnel<n> used by PIM for Registering, configuration not allowed` |
+| `device classifier condition\|device-type` | `device classifier` | `% Device classifier is enabled.Please disable it and execute the command again.` (`device-type`: a space after the period, then a blank line) |
+| `ip address <a> <m>` on an interface | another interface in the VRF holds an overlapping subnet | `% <network> overlaps with <interface>`, the lowest such subnet's |
+| `monitor session <n> source interface <port>` | the port is a session's destination | `% Interface(s) <port> already configured as monitor destinations` |
+| `monitor session <n> destination interface <port>` | the session has a remote destination VLAN | `% Cannot add ports as destination for session <n> - a RSPAN Source session` |
+| `monitor session <n> destination interface <port>` | the port is a session's source | `% Interface(s) <port> already configured as monitor sources` |
+| `monitor session <n> destination interface <port>` | the port is another session's destination | `% Interface(s) <port> already configured as monitor destinations in other monitor sessions`, after `% Warning: specified default VLAN (<v>) for ingress on dest port does not exist.` where an ingress VLAN is missing |
+| `monitor session <n> destination remote vlan <v>` | the session has a destination port | `% Session - <n> is a not a Remote Source session. Can't add RSPAN VLAN as destination` |
+| `monitor session <n> destination remote vlan <v>` | `<v>` is the session's filter VLAN | `% Configuring Destination RSPAN VLANs <v>, but the same vlan is ` and `% already configured as filter vlan` |
+| `monitor session <n> source remote vlan <v>` | the session has a remote destination VLAN | `% RSPAN VLAN already exists as destination. The same session cannnot have RSPAN VLAN both as source and destination` |
+| `monitor session <n> source remote vlan <v>` | the session has a source port or VLAN | `% Cannot add RSPAN VLAN as source for SPAN session <n> as it is not a RSPAN Destination session` |
+| `monitor session <n> filter ip\|mac access-group <acl>` | the session filters VLANs | `% vlan filter can not be applied with FSPAN` |
+| `standby <group> ip` | the group has an IPv4 address | `% Failed. Unconfigure existing primary vIP address configured for the group.` |
+| `standby <group> ipv6 ...` | the group has an IPv4 address | `% Group configured for different address family` |
+| `spanning-tree backbonefast` | BackboneFast set | `% Backbonefast already enabled` and a blank line |
+| `spanning-tree port-priority <n>` in a template | `<n>` not a multiple of 16 | `% Port Priority in increments of 16 is required` and a blank line |
+| `match ip address\|route-source <acl> ...` in a route map | the sequence matches a prefix list of the kind | `% prefix-list and access-list can not co-exist in one route-map sequence.` for each list |
+| `ipv6 access-list fqdn <name>` | `ip access-list fqdn <name>` | `% A(n) IP FQDN access list with this name already exists` |
+| `nsf cisco` in `router isis` | no `net` | `%ISIS not running (configure NET)` |
+| `nsf ietf` in `router ospf` | `nsf cisco` | `% OSPF: Cannot enable both Cisco NSF and IETF Graceful Restart` |
+| `mdt default <group>` in a VRF address family | another default group | `% <group> has already been configured for vrf <vrf>`, naming the group set |
+| `mdt log-reuse`, `mdt data threshold` in a VRF address family | no `mdt data <group>` | `% First configure the data MDT group!`; `% MDT data must be configured first` |
+| `snmp-server engineID local <id>` | `<id>` under 10 characters | `%Engine ID must be 10 hexadecimal characters or more` |
+| `duplex half` on an interface | no `speed` line limited to 10 and 100 | a blank line, `% Duplex cannot be set to half when speed autonegotiation subset contains 1Gbps,2.5Gbps,5Gbps or 10Gbps`, a blank line |
+| `switchport nonegotiate` | no `switchport mode access\|trunk` | `Command rejected: Conflict between 'nonegotiate' and 'dynamic' status on this interface: <port>` |
+| `network-policy <n>` on an interface | `switchport mode trunk` | `Command rejected: Network Policy is not supported on a trunk port` |
+| `cts manual` | `dot1x pae authenticator` | `Command rejected (<port>): conflict with Dot1x Auth` and a blank line |
+| `umbrella in <tag>` | `umbrella out` | `% 'umbrella out' already configured on interface` |
+| `ipv6 address dhcp ...` on an interface | `ipv6 dhcp server` there | `% Interface is in DHCP server mode` |
+| `ntp trusted-key <n>` | the key trusted | `%NTP trusted-key is invalid : key already configured ` |
+| `track <n> ...` | track `<n>` of another kind (interface, `ip route`, `ip sla`, list) | `% Cannot change tracked object <n> - delete old config first` |
+| `offset-list <n> in\|out ...` in a router | `<n>` not a standard list number (1-99, 1300-1999) | `% Invalid access list name.` |
+| `ip msdp redistribute list <n>` | `<n>` not an extended list number (100-199, 2000-2699) | `% Invalid access list name.` |
+| `rep stcn ...` on an interface | no `switchport mode trunk` | `Command rejected: conflict with the current Switchport Mode` and a blank line |
+| `show ip ospf interface ... topology <name>` | no OSPF process with `topology <name>` | `%OSPF: Specified topology not found for any OSPF process` |
+| `show ip bgp neighbors <peer> <keyword> ...` | no `neighbor <peer>` in `router bgp` | `% No such neighbor or address family` |
+| `show ip wccp ...` | no `ip wccp` line | `% WCCP version 2 is not enabled` |
+| `show spanning-tree mst <instance> ...` | spanning-tree mode not MST | `% Switch is not in mst mode` and a blank line |
+
+These lines are taken with a warning first:
+
+| Line | State | Warning |
+|---|---|---|
+| `mka policy <name>` | the policy exists | a blank line, `% MKA Policy "<name>" may have associated active MKA Sessions.`, a blank line, `  Changes to MKA Policy "<name>" values`, `  will cause all associated active MKA Sessions to be cleared.`, a blank line |
+| `policy-map type control subscriber <name>` | the policy map exists | `%Warning, modifying policy-map "<name>" may impact sessions hosted on ports for which "<name>" has already been applied.` |
+| `show spanning-tree mst configuration [digest]` | spanning-tree mode not MST | `% Switch is not in mst mode` |
+| `standby [<group>] ip <address>` | the interface's subnets do not hold the address | `% Warning: address is not within a subnet on this interface` |
+| `auto-cost reference-bandwidth <n>` in `router ospf` | the value changes | `% OSPF: Reference bandwidth is changed. ` and `        Please ensure reference bandwidth is consistent across all routers.` |
+| `macsec-cipher-suite ...` in an MKA policy | the suite changes | a blank line, `% If cipher currently being used is not configured, new SAK will be generated`, a blank line |
+| `ipv6 mld static-group ...` on an interface | no `ipv6 multicast-routing` | `%Warning: Enable MLD router-side for this command to be effective` |
+| `ipv6 dhcp server automatic` on an interface | | `% Warning: Pool  not configured globally - configuring anyway.` |
+| `auto qos global compact` | | `%Warning: This command will reset all autoqos generated configurations` |
+| `cts role-based sgt-map 0.0.0.0/0 ...` | no `ip route 0.0.0.0 0.0.0.0` | `%Please ensure default route is created using ip route 0.0.0.0 command` |
+| `spanning-tree portfast [trunk]` | PortFast changes | `%Warning: portfast should only be enabled on ports connected to a single`, ` host. Connecting hubs, concentrators, switches, bridges, etc... to this`, ` interface  when portfast is enabled, can cause temporary bridging loops.`, ` Use with CAUTION`, a blank line; without `trunk` then `%Portfast has been configured on <port> but will only` and ` have effect when the interface is in a non-trunking mode.` |
+| `authentication host-mode\|port-control\|control-direction\|open` on an interface, `authentication mac-move` | | `%Command deprecated (<line>) - use access-session instead` and a blank line |
+
 ## Help and Tab
 
 `?` prints what a switch of the platform and release printed for the same line in the same mode where a capture holds it, whole. An error answer (`% Unrecognized command`) belongs to that switch's configuration and is not kept as the release's help. Otherwise the layout and descriptions below apply.

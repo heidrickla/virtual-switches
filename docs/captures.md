@@ -242,7 +242,18 @@ A donor answers for an image at a level only once that book, release and level i
 - A derived answer is built from one of them alone.
 - Where the donor holds no answer either, the books answer. A donor's keywords and the books' are never merged.
 - A donor's answer does not move the caret of a refused line.
-- No answer to `?` makes a line taken on Enter.
+- A donor's answers refuse no line on Enter.
+
+### Lines refused on Enter
+
+A configuration line the books take is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it.
+
+- A word no row of the answer before it offers is invalid there. A line whose answer after its last word holds no `<cr>` is incomplete, unless that answer offers again what the one before it offered (a list, which ends anywhere).
+- A word with no answer held before it is not read. Reading stops at a held refusal for the line so far and at a `LINE` row.
+- A number range row takes a rate with its unit (`1m`) and a list of numbers and ranges (`31-35,41`).
+- An answer that lists the objects configured offers this session's: `No monitors configured` and its kin, and the crawl's own names, its `User defined` rows after `record`, `exporter`, `monitor` or `sampler`. A flow record counts once it holds a field, and a flow monitor named on an interface once it holds a record, as the lab C9300-24T (17.6.4) refused an empty record in a monitor and a monitor without one on a port. A keyword the answer offers beside the names is read as any other.
+- A routed port's lines and a PoE port's `power` lines are not read: the crawled ports were switchports without PoE.
+- Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides.
 
 ## capture
 

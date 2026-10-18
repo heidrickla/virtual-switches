@@ -185,6 +185,43 @@ pub const STATE_PREDICATES: &[(&str, &str)] = &[
     ("default aaa ", "aaa new-model"),
 ];
 
+/// Lines a crawl's `?` answers do not judge: the lab C9300-24T (17.6.4) took them where its crawl
+/// offered none of their words. Each is a mode, a line's start (past `no` or `default`) and the
+/// configured line under which the switch took them, `""` where the port's own state or hardware
+/// decides or `?` hides the line in every state. The crawl ran without `aaa new-model`, `fhrp version vrrp v3` and `ptp profile
+/// dot1as`, on ports with no dual-purpose media (the captured 2960s set `media-type` on theirs) and
+/// on a sub-interface with no encapsulation.
+pub const UNJUDGED: &[(&str, &str, &str)] = &[
+    ("config", "radius", "aaa new-model"),
+    ("config-line", "login authentication", "aaa new-model"),
+    ("config-subif", "xconnect", ""),
+    ("config", "tacacs", "aaa new-model"),
+    ("config-if", "authentication", "aaa new-model"),
+    ("config-if", "dot1x", "aaa new-model"),
+    ("config-if", "mab", "aaa new-model"),
+    ("config-if", "access-session", "aaa new-model"),
+    ("config-if", "service-policy type control", "aaa new-model"),
+    ("config-if", "vrrp", "fhrp version vrrp v3"),
+    ("config", "ptp", "ptp profile dot1as"),
+    ("config-if", "switchport port-security mac-address", ""),
+    ("config-if", "media-type", ""),
+    ("config-if", "ptp sync", ""),
+    ("config", "vtp file", ""),
+];
+
+/// Whether `line` in `mode` is one a crawl's answers do not judge (`UNJUDGED`) in the state
+/// `configured` describes.
+pub fn unjudged(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> bool {
+    let line = line.trim_start().to_lowercase();
+    let line = ["no ", "default "]
+        .iter()
+        .find_map(|n| line.strip_prefix(n))
+        .unwrap_or(&line);
+    UNJUDGED.iter().any(|(m, start, state)| {
+        *m == mode && line.starts_with(start) && (state.is_empty() || configured(state))
+    })
+}
+
 /// Whether a crawl answer for `key` no longer holds: a predicate names it and `configured` says the
 /// session has the line that changes the answer.
 pub fn stale(key: &str, configured: impl Fn(&str) -> bool) -> bool {

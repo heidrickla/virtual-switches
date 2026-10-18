@@ -270,6 +270,9 @@ enum Names {
     Level,
     /// a route's prefix, mask and next hop: the leading ones, a distance left out
     Route,
+    /// the group number after the command's first word, 0 where the line names none
+    /// (`standby ip 10.0.0.1` sets group 0)
+    Group,
 }
 
 /// Commands that keep one line per instance, and the arguments that name one: a line naming the
@@ -335,12 +338,15 @@ const MULTI: &[(&str, Names)] = &[
     ("permit", Names::All),
     ("deny", Names::All),
     ("sequence", Names::First(1)),
+    // an interface's HSRP groups, each with its own address and settings (the lab C9300-24T,
+    // 17.6.4: `standby 1 ip 10.0.0.3` beside `standby 2 ip 10.0.0.4`)
+    ("standby", Names::Group),
 ];
 
 /// Instances whose keywords after the instance name a setting of it, each kept on its own line:
 /// `spanning-tree vlan 10 priority 4096` beside `spanning-tree vlan 10 forward-time 10`,
 /// `neighbor 10.0.0.1 remote-as 65001` beside `neighbor 10.0.0.1 activate`.
-const SETTINGS: &[&str] = &["spanning-tree vlan", "switch", "neighbor"];
+const SETTINGS: &[&str] = &["spanning-tree vlan", "switch", "neighbor", "standby"];
 
 /// The levels a logging destination takes by name (`logging console informational`).
 const LEVELS: &[&str] = &[
@@ -562,6 +568,7 @@ fn instance(p: &Parse, names: Names) -> Vec<String> {
                         Names::All => true,
                         Names::Level => !previous.is_some_and(|k| k.eq_ignore_ascii_case("level")),
                         Names::Route => !route_done && !word.chars().all(|c| c.is_ascii_digit()),
+                        Names::Group => false,
                     };
                     counted += 1;
                     if names_it {
@@ -572,6 +579,21 @@ fn instance(p: &Parse, names: Names) -> Vec<String> {
         }
     }
     out
+}
+
+/// The group a line names (`Names::Group`): the number after its first keyword, else `0`.
+fn group(p: &Parse) -> Vec<String> {
+    let mut items = p
+        .items
+        .iter()
+        .skip_while(|i| matches!(i, Item::Kw { kw, .. } if kw.eq_ignore_ascii_case("no")));
+    items.next();
+    match items.next() {
+        Some(Item::Arg { value, .. }) if value.chars().all(|c| c.is_ascii_digit()) => {
+            vec![value.clone()]
+        }
+        _ => vec!["0".to_string()],
+    }
 }
 
 /// The replacement key of a line: the command its keywords name, without the value they choose
@@ -594,7 +616,10 @@ pub fn key(p: &Parse) -> String {
     let Some((m, names)) = multi else {
         return command(&words);
     };
-    let named = instance(p, *names);
+    let named = match names {
+        Names::Group => group(p),
+        _ => instance(p, *names),
+    };
     // a value the secret sweep took out tells no instance from another (two `snmp-server
     // community <removed>` lines): the whole line names it, and only a line typed again is the same
     if matches!(names, Names::All) || named.iter().any(|n| n == crate::sweep::REMOVED) {

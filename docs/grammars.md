@@ -227,12 +227,12 @@ A line typed at a prompt is read against the commands the mode runs.
 | Two commands | of two commands that read a line alike, the one named for more of its keywords is taken (`ip access-list standard` over `ip access-list`); a `no` form a book documents as a command of its own never wins over the command it undoes |
 | Ambiguity | an abbreviation two keywords at its point both begin is ambiguous whatever follows; a short spelling and its long form count as one keyword |
 | `no` forms | a `no` form matches the stated `no` line, or names every keyword of its command up to its first argument (`no ip` is incomplete), or is the command's own line after `no` |
-| Numbers | a number or VLAN list is digits, written plain (`010` is `10`); a VLAN is 1 to 4094 |
+| Numbers | a number or VLAN list is digits, written plain (`010` is `10`); a VLAN is 1 to 4094. A VLAN list may be spaced around its `-` and `,` (`1 - 5 , 9`); `101-110, 200` is a list and another word |
 | Interface ranges | a range segment spans at most 4094 numbers; an interface range takes the interface commands and writes them to each member |
 | Top-level blocks | a line that opens a top-level block (an interface, a VLAN), typed in another block's submode, goes to global configuration and opens its own block |
 | Held blocks | a block real switches hold that the books parse opens at the console in the mode the books' examples name |
 | Enclosing modes | a configuration submode hands a line it does not know to the nearest enclosing mode that takes it, global configuration last, and leaves the submode only when that line is accepted |
-| Abbreviated first word | a line a submode takes only as an abbreviation goes to an enclosing mode that takes it whole: `router ospf 1` typed in an interface goes to global configuration |
+| Abbreviated first word | a line a submode takes only as an abbreviation goes to an enclosing mode that takes it whole: `router ospf 1` typed in an interface goes to global configuration. Where the nearest mode that has the word whole refuses the line, its refusal stands in the submode unless a mode further out takes the line: `key rad123` in a key chain's key is refused under `rad123` as the key chain's `key` refuses it, and `key chain K2` goes to global configuration |
 | Removed values | a configuration typed from a file (a switch booting from the list, `check`, `lint`, `verify`, `changes`) takes the secret sweep's `<removed>` for any argument but an interface, where a value was; at a console it is the word it is |
 
 ## Access lists

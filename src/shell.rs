@@ -1095,9 +1095,15 @@ impl<'a> Session<'a> {
             }
         }
         let mut mode = self.mode().to_string();
-        let mut outcome = self.parse(&mode, trimmed);
-        // a line a real switch of this platform and release held in this block is taken as it held it
+        let top = self.frames.len() - 1;
+        let mut outcome = self.read_at(top, &mode, trimmed);
+        // a line a real switch of this platform and release held in this block is taken as it held it,
+        // but for one this image's own answers refused in this mode and context: a held line's block
+        // kind is any interface's (`ip address` held under a VLAN interface, refused on a switchport)
+        let refused_by_held = !matches!(outcome, Outcome::Ok(_))
+            && matches!(self.parse(&mode, trimmed), Outcome::Ok(_));
         if !matches!(outcome, Outcome::Ok(_))
+            && !refused_by_held
             && let Some(done) = self.held_in_block(full)
         {
             return done;
@@ -1108,24 +1114,73 @@ impl<'a> Session<'a> {
         // abbreviation goes to an enclosing mode that takes it word for word: the 17.6 book lists
         // `router ospfv3` under config-if, and the lab C9300 (17.6.4) keeps `router ospf 1` typed there
         let mut back_to = None;
+        // a line every mode refuses is the submode's refusal and the session stays, but a line an
+        // enclosing mode reads past its first word as one that leaves for it (`leaves`) is that
+        // mode's refusal, and the session leaves for it
+        let mut refused_in: Option<(usize, Outcome)> = None;
         let abbreviated = matches!(&outcome, Outcome::Ok(p) if !whole_words(p));
+        // a first word the submode reads only as the start of a longer one (`key` for
+        // `key-string`) is an enclosing mode's word where that mode has it whole: the lab C9300-24T
+        // (17.6.4) refused `key rad123` at (config-keychain-key)# and stayed, as the key chain's
+        // `key` takes a number
+        let first_abbreviated = matches!(&outcome, Outcome::Ok(p) if p.items.iter().find_map(|i| match i {
+            Item::Kw { kw, exact, .. } if !kw.eq_ignore_ascii_case("no") => Some(!*exact),
+            _ => None,
+        }) == Some(true));
+        let first_word = trimmed.split_whitespace().next().unwrap_or("");
+        let mut whole_refusal = None;
         if cli::is_submode(&mode)
             && seq.is_none()
             && (abbreviated || !matches!(outcome, Outcome::Ok(_)))
         {
+            let first = cli::tokens(trimmed)
+                .first()
+                .map_or(0, |t| t.at + t.text.len());
             for i in (0..self.frames.len().saturating_sub(1)).rev() {
                 let m = self.frames[i].mode.clone();
                 if !cli::is_config(&m) {
                     break;
                 }
-                let o = self.parse(&m, trimmed);
+                let o = self.read_at(i, &m, trimmed);
                 if matches!(&o, Outcome::Ok(q) if !abbreviated || whole_words(q)) {
                     back_to = Some(i);
                     mode = m;
                     outcome = o;
+                    refused_in = None;
                     break;
                 }
+                if first_abbreviated
+                    && !matches!(o, Outcome::Ok(_))
+                    && reach(&o, trimmed) > first
+                    && self.engine.grammar.commands.iter().any(|c| {
+                        c.modes.contains(&m)
+                            && c.name
+                                .split_whitespace()
+                                .next()
+                                .is_some_and(|w| w.eq_ignore_ascii_case(first_word))
+                    })
+                    && whole_refusal.is_none()
+                {
+                    whole_refusal = Some(o);
+                    continue;
+                }
+                if !abbreviated
+                    && refused_in.is_none()
+                    && reach(&o, trimmed) > first
+                    && self.leaves(i, trimmed)
+                {
+                    refused_in = Some((i, o));
+                }
             }
+        }
+        if let Some((i, o)) = refused_in {
+            outcome = o;
+            back_to = Some(i);
+        }
+        if back_to.is_none()
+            && let Some(o) = whole_refusal
+        {
+            outcome = o;
         }
         let p = match outcome {
             Outcome::Ok(p) => p,
@@ -1134,6 +1189,9 @@ impl<'a> Session<'a> {
                     return done;
                 }
                 self.frames.extend(closed.drain(..).rev());
+                if let Some(i) = back_to {
+                    self.frames.truncate(i + 1);
+                }
                 // a refused entry's caret stands under the line as typed, past its number
                 let number = full.chars().count() - trimmed.chars().count();
                 return (
@@ -1192,7 +1250,11 @@ impl<'a> Session<'a> {
         // interface argument names one: free text that begins with a name is text (`description
         // Vlan10 uplink`)
         let args = &self.engine.grammar.commands[p.command].args;
-        let refused = p.items.iter().find_map(|it| match it {
+        // a port named by the start of its number, last on the line, is incomplete (the lab C9300-24T,
+        // 17.6.4: `interface gigabitethernet1/1`, whose network module holds Gi1/1/1 to 1/1/4)
+        let last = p.items.len().saturating_sub(1);
+        let mut partial = false;
+        let refused = p.items.iter().enumerate().find_map(|(n, it)| match it {
             Item::Arg {
                 name, value, tok, ..
             } if matches!(
@@ -1200,6 +1262,7 @@ impl<'a> Session<'a> {
                 Some(ArgKind::Interface | ArgKind::InterfaceRange)
             ) && !on_stack(value, &self.device.stack) =>
             {
+                partial = n == last && starts_a_port(value, &self.device.stack);
                 Some(*tok)
             }
             _ => None,
@@ -1222,13 +1285,38 @@ impl<'a> Session<'a> {
         });
         if let Some(tok) = refused {
             self.frames.extend(closed.drain(..).rev());
+            // a line an enclosing mode read is refused there as one that leaves for it (the lab
+            // C9300, 17.6.4: `interface GigabitEthernet1/0/30` in config-if, for (config)#), else
+            // it is the submode's own refusal
+            match back_to {
+                Some(i) if self.leaves(i, trimmed) => self.frames.truncate(i + 1),
+                Some(_) => {
+                    let own = self.read_at(self.frames.len() - 1, self.mode(), trimmed);
+                    if !matches!(own, Outcome::Ok(_)) {
+                        return (self.error(prompt_len, trimmed, &own), Result::Error);
+                    }
+                }
+                None => {}
+            }
             let at = crate::cli::tokens(trimmed)
                 .get(tok)
                 .map_or(0, |t| t.at + past_in_range(&t.text, &self.device.stack));
-            return (
-                self.error(prompt_len, trimmed, &Outcome::Invalid(at)),
-                Result::Error,
-            );
+            let o = if partial {
+                Outcome::Incomplete
+            } else {
+                Outcome::Invalid(at)
+            };
+            return (self.error(prompt_len, trimmed, &o), Result::Error);
+        }
+        // a line the configuration so far leaves IOS unable to take: what IOS says, and the line
+        // changes nothing; one an enclosing mode read leaves for it
+        if let Some(said) = self.unconfigured(&mode, &p) {
+            self.frames.extend(closed.drain(..).rev());
+            if let Some(i) = back_to {
+                self.frames.truncate(i + 1);
+            }
+            let out: Vec<String> = said.lines().map(str::to_string).collect();
+            return (out, Result::Error);
         }
         // the expression keeps a space typed at the end of the line, as the lab C9300 (17.6.4) does
         let typed = line.trim_end_matches(['\r', '\n']);
@@ -1350,7 +1438,14 @@ impl<'a> Session<'a> {
             });
         }
         let speeds = self.forced_speeds(&p);
+        let warned = self.taken_with_warning(&mode, &p);
         let (mut out, r) = self.run(&mode, trimmed, &p);
+        if r == Result::Ok
+            && !self.redacted
+            && let Some(w) = warned
+        {
+            out.splice(0..0, w.lines().map(str::to_string));
+        }
         if r == Result::Ok {
             self.hold_speeds(&p, speeds);
         }
@@ -1370,6 +1465,19 @@ impl<'a> Session<'a> {
             } else if canonical == "no vtp password" {
                 out.insert(0, "Clearing device VTP password.".into());
             }
+        }
+        // a legacy 802.1X line IOS XE takes and calls deprecated (the lab C9300-24T, 17.6.4)
+        if r == Result::Ok
+            && !self.redacted
+            && !p.negated
+            && !self.device.stack.classic()
+            && DEPRECATED
+                .iter()
+                .any(|(m, start)| *m == mode && canonical.starts_with(start))
+        {
+            let said =
+                format!("%Command deprecated ({canonical}) - use access-session instead\n\n");
+            out.splice(0..0, said.lines().map(str::to_string));
         }
         // an address typed at the console reads Method `manual` (the lab C9300, 17.6.4)
         if r == Result::Ok
@@ -1400,6 +1508,826 @@ impl<'a> Session<'a> {
         match modifier {
             Some(m) if r == Result::Ok => (crate::filter::apply(&m, out), r),
             _ => (out, r),
+        }
+    }
+
+    /// What IOS says for a line the configuration so far does not let it take, on IOS XE (the lab
+    /// C9300-24T, 17.6.4): a second BGP process (`BGP is already running; AS is 65000`), a class a
+    /// policy map names before its class map exists (`class map class1 not configured`), a second
+    /// mDNS controller (`Only one Controller is allowed`, then a blank line), a VRF the switch does
+    /// not hold (`NO_VRF`), a BGP neighbor's policy outside an address family once the process has
+    /// one, a template a neighbor inherits before it exists, a private VLAN association naming a
+    /// VLAN the switch does not hold, a secondary type for a VLAN whose SVI is up, a tunnel PIM
+    /// registers through (`pim_tunnels`), an object a line names before it exists (a policy map, a
+    /// first-hop security policy (`ATTACH`), a NAT pool, an access list, a trustpoint, a regex
+    /// parameter map, a VFI's VPN ID), a classifier condition while the classifier runs, an IP
+    /// service on a LISP instance carrying Ethernet, a subnet another interface holds, a BGP
+    /// neighbor line before the neighbor's remote AS, a link-local peer outside an address family,
+    /// the switch's own address as a peer, a SPAN line its sessions refuse (`span_refusal`), an
+    /// HSRP group's second address family, a setting already in force or one another excludes
+    /// (BackboneFast, an NTP trusted key, NSF, an MDT default group, a tracked object's kind, an
+    /// FQDN list's name), a value out of range (a template's port priority, an engine ID, a list
+    /// number of the wrong kind), an interface whose mode or features refuse the line (half duplex,
+    /// `nonegotiate`, network policy, `cts manual`, REP, Umbrella, DHCPv6 client), and the EXEC
+    /// shows of state the switch lacks (MST, WCCP, an OSPF topology, a BGP neighbor).
+    /// `no` lines are taken.
+    fn unconfigured(&self, mode: &str, p: &Parse) -> Option<String> {
+        if self.device.stack.classic() {
+            return None;
+        }
+        let canonical = p.canonical();
+        let words: Vec<&str> = canonical.split_whitespace().collect();
+        let named = |prefix: &str, name: &str| {
+            self.device
+                .blocks
+                .iter()
+                .any(|b| b.header.strip_prefix(prefix) == Some(name))
+        };
+        // a policy map an interface names before it exists, its removal too
+        if let (
+            "config-if",
+            ["service-policy", "input" | "output", name]
+            | ["no", "service-policy", "input" | "output", name],
+        ) = (mode, words.as_slice())
+            && !named("policy-map ", name)
+        {
+            return Some(format!("% policy map {name} not configured"));
+        }
+        if p.negated {
+            return None;
+        }
+        // the block the line is typed into: the router, interface or VLAN of its mode
+        let block = self
+            .frames
+            .iter()
+            .rev()
+            .find(|f| f.mode == mode)
+            .and_then(|f| f.blocks.first())
+            .and_then(|&b| self.device.blocks.get(b));
+        let header = block.map_or("", |b| b.header.as_str());
+        let holds =
+            |text: &str| block.is_some_and(|b| b.lines.iter().any(|e| e.text.trim() == text));
+        // the management port's VRF is in the factory default (`startup::factory`)
+        let vrf = |name: &str| {
+            (name == "Mgmt-vrf" && self.device.stack.management().is_some())
+                || self.device.blocks.iter().any(|b| {
+                    b.header.strip_prefix("vrf definition ") == Some(name)
+                        || b.header.strip_prefix("ip vrf ") == Some(name)
+                })
+        };
+        for (m, start, said) in NO_VRF {
+            if (*m == mode || *m == "exec" && mode == "privileged")
+                && words.len() > start.len()
+                && words[..start.len()] == **start
+                && !vrf(words[start.len()])
+            {
+                return Some(said.replace("{}", words[start.len()]));
+            }
+        }
+        let vlans = || show::defined_vlans(&self.device);
+        for (m, feature) in ATTACH {
+            if *m == mode
+                && words.len() > feature.len() + 1
+                && words[..feature.len()] == **feature
+                && words[feature.len()] == "attach-policy"
+                && !named(
+                    &format!("{} policy ", feature.join(" ")),
+                    words[feature.len() + 1],
+                )
+            {
+                let name = words[feature.len() + 1];
+                return Some(format!("% Policy {name} not defined for the feature\n\n"));
+            }
+        }
+        let global = |prefix: &str| {
+            self.device
+                .global
+                .iter()
+                .any(|e| e.text.starts_with(prefix))
+                || self
+                    .device
+                    .blocks
+                    .iter()
+                    .any(|b| b.header.starts_with(prefix))
+        };
+        // an access list by number or name, numbered ones also as `access-list <n>` lines
+        let acl = |name: &str| {
+            global(&format!("access-list {name} "))
+                || ["standard", "extended"]
+                    .iter()
+                    .any(|k| named(&format!("ip access-list {k} "), name))
+        };
+        let mst = self
+            .device
+            .global
+            .iter()
+            .any(|e| e.text == "spanning-tree mode mst");
+        // a BGP neighbor given a remote AS, a peer group or a session template in the block
+        let peered = |peer: &str| {
+            block.is_some_and(|b| {
+                b.lines.iter().any(|e| {
+                    let t = e.text.trim();
+                    ["remote-as ", "peer-group", "inherit peer-session "]
+                        .iter()
+                        .any(|k| t.starts_with(&format!("neighbor {peer} {k}")))
+                })
+            })
+        };
+        match (mode, words.as_slice()) {
+            (
+                "config",
+                [
+                    "ip",
+                    "nat",
+                    "inside" | "outside",
+                    "source",
+                    "list",
+                    _,
+                    "pool",
+                    name,
+                    ..,
+                ],
+            ) if !global(&format!("ip nat pool {name} ")) => {
+                return Some(format!("%Pool {name} not configured \n\n"));
+            }
+            ("config", ["ntp", "access-group", _, name, ..]) if !acl(name) => {
+                let is = if name.bytes().all(|b| b.is_ascii_digit()) {
+                    "is "
+                } else {
+                    ""
+                };
+                return Some(format!("%Access-list {name} {is}not defined"));
+            }
+            ("config", ["cts", "role-based", "permissions", rest @ ..]) => {
+                let names = match rest {
+                    ["from", _, "to", _, names @ ..] | ["default", names @ ..] => names,
+                    _ => return None,
+                };
+                let said: Vec<String> = names
+                    .iter()
+                    .filter(|n| !["ipv4", "ipv6"].contains(n))
+                    .filter(|n| {
+                        !named("ip access-list role-based ", n)
+                            && !named("ipv6 access-list role-based ", n)
+                    })
+                    .map(|n| format!("% ACL {n} is not defined."))
+                    .collect();
+                return (!said.is_empty()).then(|| said.join("\n"));
+            }
+            ("config", ["crypto", "pki", "certificate", "chain", name])
+                if !named("crypto pki trustpoint ", name) =>
+            {
+                return Some("% CA trustpoint for cert chain not known.\n\n".into());
+            }
+            (_, ["crypto", "pki", "enroll", name]) if !named("crypto pki trustpoint ", name) => {
+                return Some(format!("% CA server trustpoint '{name}' is not known.\n\n"));
+            }
+            ("config-profile", ["local-domain", name])
+                if !named("parameter-map type regex ", name) =>
+            {
+                return Some(format!("% Parameter-map regex {name} does not exist"));
+            }
+            (
+                "config",
+                [
+                    "device",
+                    "classifier",
+                    kind @ ("condition" | "device-type"),
+                    ..,
+                ],
+            ) if self.running_has("device classifier") => {
+                let (gap, end) = if *kind == "device-type" {
+                    (" ", "\n\n")
+                } else {
+                    ("", "")
+                };
+                return Some(format!(
+                    "% Device classifier is enabled.{gap}Please disable it and execute the command \
+                     again.{end}"
+                ));
+            }
+            ("config-router-af", ["neighbor", peer, kw, ..])
+                if header.starts_with("router bgp ")
+                    && (BGP_POLICY.contains(kw) || *kw == "activate")
+                    && !peered(peer) =>
+            {
+                return Some("% Specify remote-as or peer-group commands first".into());
+            }
+            ("config-if", ["ip", "address", a, m]) => {
+                let (a, m) = (v4(a)?, v4(m)?);
+                let vrf_of = |b: &crate::device::Block| {
+                    b.lines
+                        .iter()
+                        .find_map(|e| e.text.trim().strip_prefix("vrf forwarding "))
+                        .map(str::to_string)
+                };
+                let own = block.and_then(vrf_of);
+                // the other interface whose subnet overlaps, the lowest subnet as IOS names it
+                let other = self
+                    .device
+                    .blocks
+                    .iter()
+                    .filter(|b| b.header.starts_with("interface ") && b.header != header)
+                    .filter(|b| vrf_of(b) == own)
+                    .flat_map(|b| {
+                        b.lines
+                            .iter()
+                            .filter_map(|e| ip_address(&e.text))
+                            .map(move |(n, k)| (n & k, k, b))
+                    })
+                    .filter(|&(n, k, _)| n & (k & m) == a & (k & m))
+                    .min_by_key(|&(n, _, _)| n)?;
+                let name = other.2.header.trim_start_matches("interface ");
+                return Some(format!(
+                    "% {} overlaps with {name}",
+                    std::net::Ipv4Addr::from(a & m)
+                ));
+            }
+            // an HSRP group with a primary IPv4 address
+            ("config-if", ["standby", g, "ip"] | ["standby", g, "ipv6", ..])
+                if block.is_some_and(|b| {
+                    b.lines
+                        .iter()
+                        .any(|e| e.text.trim().starts_with(&format!("standby {g} ip ")))
+                }) =>
+            {
+                return Some(if words[2] == "ip" {
+                    "% Failed. Unconfigure existing primary vIP address configured for the group."
+                        .into()
+                } else {
+                    "% Group configured for different address family".into()
+                });
+            }
+            ("config", ["spanning-tree", "backbonefast"])
+                if self
+                    .device
+                    .global
+                    .iter()
+                    .any(|e| e.text == "spanning-tree backbonefast") =>
+            {
+                return Some("% Backbonefast already enabled\n\n".into());
+            }
+            ("config-template", ["spanning-tree", "port-priority", n])
+                if n.parse::<u32>().is_ok_and(|v| v % 16 != 0) =>
+            {
+                return Some("% Port Priority in increments of 16 is required\n\n".into());
+            }
+            // access lists after a prefix list in one sequence: one line for each list named
+            (
+                "config-route-map",
+                [
+                    "match",
+                    "ip",
+                    kind @ ("address" | "route-source"),
+                    lists @ ..,
+                ],
+            ) if lists.first().is_some_and(|l| *l != "prefix-list")
+                && block.is_some_and(|b| {
+                    b.lines.iter().any(|e| {
+                        e.text
+                            .trim()
+                            .starts_with(&format!("match ip {kind} prefix-list "))
+                    })
+                }) =>
+            {
+                return Some(
+                    vec![
+                        "% prefix-list and access-list can not co-exist in one route-map sequence.";
+                        lists.len()
+                    ]
+                    .join("\n"),
+                );
+            }
+            ("config", ["ipv6", "access-list", "fqdn", name])
+                if named("ip access-list fqdn ", name) =>
+            {
+                return Some("% A(n) IP FQDN access list with this name already exists".into());
+            }
+            ("config-router", ["nsf", "cisco", ..])
+                if header.starts_with("router isis")
+                    && !block.is_some_and(|b| {
+                        b.lines.iter().any(|e| e.text.trim().starts_with("net "))
+                    }) =>
+            {
+                return Some("%ISIS not running (configure NET)".into());
+            }
+            ("config-router", ["nsf", "ietf", ..])
+                if header.starts_with("router ospf ")
+                    && block.is_some_and(|b| {
+                        b.lines
+                            .iter()
+                            .any(|e| e.text.trim().starts_with("nsf cisco"))
+                    }) =>
+            {
+                return Some(
+                    "% OSPF: Cannot enable both Cisco NSF and IETF Graceful Restart".into(),
+                );
+            }
+            // a VRF's default MDT group is one group
+            ("config-vrf-af", ["mdt", "default", group])
+                if let Some(other) = block.and_then(|b| {
+                    b.lines
+                        .iter()
+                        .find_map(|e| e.text.trim().strip_prefix("mdt default "))
+                        .filter(|g| g != group)
+                }) =>
+            {
+                let vrf = header.strip_prefix("vrf definition ").unwrap_or(header);
+                return Some(format!(
+                    "% {other} has already been configured for vrf {vrf}"
+                ));
+            }
+            // a data MDT group comes before the lines that tune it
+            ("config-vrf-af", ["mdt", "log-reuse"] | ["mdt", "data", "threshold", ..])
+                if !block.is_some_and(|b| {
+                    b.lines.iter().any(|e| {
+                        e.text
+                            .trim()
+                            .strip_prefix("mdt data ")
+                            .is_some_and(|r| !r.starts_with("threshold"))
+                    })
+                }) =>
+            {
+                return Some(if words[1] == "log-reuse" {
+                    "% First configure the data MDT group!".into()
+                } else {
+                    "% MDT data must be configured first".into()
+                });
+            }
+            ("config", ["crypto", "pki", "import", name, "certificate"])
+                if !named("crypto pki trustpoint ", name) =>
+            {
+                return Some(format!("% CA server trustpoint '{name}' is not known.\n\n"));
+            }
+            ("config", ["snmp-server", "engineID", "local", id]) if id.len() < 10 => {
+                return Some("%Engine ID must be 10 hexadecimal characters or more".into());
+            }
+            // half duplex only where autonegotiation offers no more than 100 Mb/s
+            ("config-if", ["duplex", "half"])
+                if !block.is_some_and(|b| {
+                    b.lines.iter().any(|e| {
+                        let speeds: Vec<&str> = e
+                            .text
+                            .split_whitespace()
+                            .skip(1)
+                            .filter(|w| *w != "auto")
+                            .collect();
+                        e.text.trim().starts_with("speed ")
+                            && !speeds.is_empty()
+                            && speeds.iter().all(|s| matches!(*s, "10" | "100"))
+                    })
+                }) =>
+            {
+                return Some(
+                    "\n% Duplex cannot be set to half when speed autonegotiation subset contains \
+                     1Gbps,2.5Gbps,5Gbps or 10Gbps\n\n"
+                        .into(),
+                );
+            }
+            // a port with no access or trunk mode negotiates (`dynamic auto`)
+            ("config-if", ["switchport", "nonegotiate"])
+                if !holds("switchport mode access") && !holds("switchport mode trunk") =>
+            {
+                let name = header.strip_prefix("interface ")?;
+                return Some(format!(
+                    "Command rejected: Conflict between 'nonegotiate' and 'dynamic' status on this \
+                     interface: {}",
+                    show::short(name)
+                ));
+            }
+            ("config-if", ["network-policy", _]) if holds("switchport mode trunk") => {
+                return Some(
+                    "Command rejected: Network Policy is not supported on a trunk port".into(),
+                );
+            }
+            ("config-if", ["cts", "manual"]) if holds("dot1x pae authenticator") => {
+                let name = header.strip_prefix("interface ")?;
+                return Some(format!(
+                    "Command rejected ({}): conflict with Dot1x Auth\n\n",
+                    show::short(name)
+                ));
+            }
+            ("config-if", ["umbrella", "in", ..]) if holds("umbrella out") => {
+                return Some("% 'umbrella out' already configured on interface".into());
+            }
+            ("config-if", ["ipv6", "address", "dhcp", ..])
+                if block.is_some_and(|b| {
+                    b.lines
+                        .iter()
+                        .any(|e| e.text.trim().starts_with("ipv6 dhcp server "))
+                }) =>
+            {
+                return Some("% Interface is in DHCP server mode".into());
+            }
+            ("config", ["ntp", "trusted-key", key])
+                if self
+                    .device
+                    .global
+                    .iter()
+                    .any(|e| e.text == format!("ntp trusted-key {key}")) =>
+            {
+                return Some("%NTP trusted-key is invalid : key already configured ".into());
+            }
+            // a tracked object keeps its kind: interface, IP route or SLA, list
+            ("config", ["track", n, kind, rest @ ..]) => {
+                let kind_of = |kind: &str, rest: &[&str]| match kind {
+                    "ip" => format!("ip {}", rest.first().copied().unwrap_or("")),
+                    k => k.to_string(),
+                };
+                let mine = kind_of(kind, rest);
+                let other = self.device.blocks.iter().any(|b| {
+                    let w: Vec<&str> = b.header.split_whitespace().collect();
+                    w.len() > 2 && w[0] == "track" && w[1] == *n && kind_of(w[2], &w[3..]) != mine
+                });
+                if other {
+                    return Some(format!(
+                        "% Cannot change tracked object {n} - delete old config first"
+                    ));
+                }
+            }
+            // a numbered list of the wrong kind: offset lists take standard, MSDP extended
+            ("config-router", ["offset-list", n, "in" | "out", ..])
+                if n.parse::<u32>()
+                    .is_ok_and(|n| !matches!(n, 1..=99 | 1300..=1999)) =>
+            {
+                return Some("% Invalid access list name.".into());
+            }
+            ("config", ["ip", "msdp", "redistribute", "list", n, ..])
+                if n.parse::<u32>()
+                    .is_ok_and(|n| !matches!(n, 100..=199 | 2000..=2699)) =>
+            {
+                return Some("% Invalid access list name.".into());
+            }
+            ("config-if", ["rep", "stcn", ..]) if !holds("switchport mode trunk") => {
+                return Some(
+                    "Command rejected: conflict with the current Switchport Mode\n\n".into(),
+                );
+            }
+            ("exec" | "privileged", ["show", "ip", "ospf", "interface", .., "topology", name])
+                if !self.device.blocks.iter().any(|b| {
+                    b.header.starts_with("router ospf ")
+                        && b.lines.iter().any(|e| {
+                            let t = e.text.trim();
+                            t == format!("topology {name}")
+                                || t.starts_with(&format!("topology {name} "))
+                        })
+                }) =>
+            {
+                return Some("%OSPF: Specified topology not found for any OSPF process".into());
+            }
+            ("exec" | "privileged", ["show", "ip", "bgp", "neighbors", peer, _, ..])
+                if peer.parse::<std::net::IpAddr>().is_ok()
+                    && !self.device.blocks.iter().any(|b| {
+                        b.header.starts_with("router bgp ")
+                            && b.lines
+                                .iter()
+                                .any(|e| e.text.trim().starts_with(&format!("neighbor {peer} ")))
+                    }) =>
+            {
+                return Some("% No such neighbor or address family".into());
+            }
+            ("exec" | "privileged", ["show", "ip", "wccp", ..]) if !global("ip wccp ") => {
+                return Some("% WCCP version 2 is not enabled".into());
+            }
+            ("exec" | "privileged", ["show", "spanning-tree", "mst", n, ..])
+                if n.parse::<u32>().is_ok() && !mst =>
+            {
+                return Some("% Switch is not in mst mode\n\n".into());
+            }
+            ("config-vrf" | "config-vrf-af", ["route-target", ..])
+                if !block.is_some_and(|b| {
+                    b.lines
+                        .iter()
+                        .any(|e| e.text.trim_start().starts_with("rd "))
+                }) =>
+            {
+                let name = header
+                    .strip_prefix("vrf definition ")
+                    .or_else(|| header.strip_prefix("ip vrf "))?;
+                return Some(format!(
+                    "% VRF {name} does not have an RD configured, please configure the RD before \
+                     configuring route-target"
+                ));
+            }
+            ("config-vlan-config", ["member", "vfi", name])
+                if !self.device.blocks.iter().any(|b| {
+                    b.header.strip_prefix("l2vpn vfi context ") == Some(*name)
+                        && b.lines
+                            .iter()
+                            .any(|e| e.text.trim_start().starts_with("vpn id "))
+                }) =>
+            {
+                return Some(format!(
+                    "% VFI {name} must be configured with a valid vpn id first."
+                ));
+            }
+            ("config-lisp-inst", ["service", "ipv4" | "ipv6"]) => {
+                // the instance's own lines: those under its `instance-id` line, indented further
+                let entered = &self.frames.iter().rev().find(|f| f.mode == mode)?.entered;
+                let id = entered.split_whitespace().nth(1)?;
+                let lines = &block?.lines;
+                let indent = |t: &str| t.len() - t.trim_start().len();
+                let at = lines
+                    .iter()
+                    .position(|e| e.text.trim() == format!("instance-id {id}"))?;
+                let own = indent(&lines[at].text);
+                let ethernet = lines[at + 1..]
+                    .iter()
+                    .take_while(|e| indent(&e.text) > own)
+                    .any(|e| e.text.trim() == "service ethernet");
+                if ethernet {
+                    return Some(format!(
+                        "% Instance ID {id} has 'service ethernet' enabled.\n L2 and L3 services \
+                         are exclusive, remove L2 service first."
+                    ));
+                }
+            }
+            ("config", ["ipv6", "router", "ospf", n]) if named("router ospfv3 ", n) => {
+                return Some(format!(
+                    "% OSPFv3: Use \"router ospfv3 {n}\" to configure this process\n% Failed to \
+                     create routing protocol ospf"
+                ));
+            }
+            ("config", ["snmp-server", "host", _, "vrf", name, ..]) if !vrf(name) => {
+                return Some(format!("% VRF name {name} does not exist"));
+            }
+            ("config-router", ["address-family", "ipv4" | "ipv6", .., "vrf", name])
+                if !vrf(name) =>
+            {
+                if header.starts_with("router bgp ") {
+                    return Some(format!("% VRF {name} does not exist."));
+                }
+                if header.starts_with("router ospfv3 ") {
+                    return Some(format!("% VRF {name} does not exist"));
+                }
+            }
+            ("config-router", ["neighbor", _, "inherit", "peer-session", name])
+                if header.starts_with("router bgp ")
+                    && !holds(&format!("template peer-session {name}")) =>
+            {
+                return Some("%Template not found. Please create a template first.".into());
+            }
+            ("config-router", ["neighbor", _, kw, rest @ ..])
+                if header.starts_with("router bgp ")
+                    && (BGP_POLICY.contains(kw)
+                        || *kw == "inherit" && rest.first() == Some(&"peer-policy"))
+                    && block.is_some_and(|b| {
+                        b.lines
+                            .iter()
+                            .any(|e| e.text.trim_start().starts_with("address-family "))
+                    }) =>
+            {
+                return Some("% Policy commands not allowed without an address family".into());
+            }
+            // a link-local peer belongs to an address family; the switch's own address is no peer
+            ("config-router", ["neighbor", peer, "remote-as", ..])
+                if header.starts_with("router bgp ") && link_local(peer) =>
+            {
+                return Some("% Link local peer outside address-family scope".into());
+            }
+            ("config-router", ["neighbor", peer, "remote-as", ..])
+                if header.starts_with("router bgp ")
+                    && self.device.blocks.iter().any(|b| {
+                        b.header.starts_with("interface ")
+                            && b.lines.iter().any(|e| {
+                                e.text
+                                    .trim()
+                                    .strip_prefix("ip address ")
+                                    .and_then(|a| a.split_whitespace().next())
+                                    == Some(*peer)
+                            })
+                    }) =>
+            {
+                return Some("% Cannot configure the local system as neighbor".into());
+            }
+            // any other neighbor line before the neighbor has a remote AS or a peer group
+            ("config-router", ["neighbor", peer, kw, ..])
+                if header.starts_with("router bgp ")
+                    && !["remote-as", "peer-group", "inherit"].contains(kw)
+                    && !peered(peer) =>
+            {
+                return Some("% Specify remote-as or peer-group commands first".into());
+            }
+            ("config", ["monitor", "session", n, rest @ ..]) => {
+                // the interfaces the line names, short as the session's lines hold them
+                let named: Vec<String> = p
+                    .items
+                    .iter()
+                    .filter_map(|it| match it {
+                        crate::cli::Item::Arg { value, .. } => Some(value),
+                        _ => None,
+                    })
+                    .flat_map(|v| v.split(','))
+                    .map(|v| v.split(" - ").next().unwrap_or(v).trim())
+                    .filter(|v| crate::cli::interface_name(v, None).is_some())
+                    .map(show::short)
+                    .collect();
+                return span_refusal(&self.device, n, rest, &named, &vlans());
+            }
+            ("config-vlan", ["private-vlan", "association", ..]) => {
+                let primary: u32 = header.strip_prefix("vlan ")?.parse().ok()?;
+                let list = words[2..].join("");
+                let list = ["add", "remove"]
+                    .iter()
+                    .find_map(|k| list.strip_prefix(k))
+                    .unwrap_or(&list);
+                return no_private_association(primary, list, &vlans());
+            }
+            (
+                "config-if",
+                [
+                    "switchport",
+                    "private-vlan",
+                    "mapping" | "association",
+                    "trunk",
+                    primary,
+                    list @ ..,
+                ]
+                | [
+                    "switchport",
+                    "private-vlan",
+                    "host-association" | "mapping",
+                    primary,
+                    list @ ..,
+                ],
+            ) => {
+                let list = list.join("");
+                let list = ["add", "remove"]
+                    .iter()
+                    .find_map(|k| list.strip_prefix(k))
+                    .unwrap_or(&list);
+                return no_private_association(primary.parse().ok()?, list, &vlans());
+            }
+            ("config-vlan", ["private-vlan", "isolated" | "community"]) => {
+                let id = header.strip_prefix("vlan ")?;
+                let svi = self
+                    .device
+                    .blocks
+                    .iter()
+                    .find(|b| b.header == format!("interface Vlan{id}"))?;
+                let down = svi.lines.iter().any(|e| e.text.trim() == "shutdown");
+                return (!down).then(|| {
+                    format!(
+                        "%Command rejected: invalid private vlan type assignment. VLAN {id}'s \
+                         interface is not administratively down and cannot be set to secondary VLAN."
+                    )
+                });
+            }
+            ("config", ["interface", ..]) => {
+                let pim = pim_tunnels(&self.device);
+                for h in headers(p) {
+                    let n = h
+                        .strip_prefix("interface Tunnel")
+                        .and_then(|n| n.parse::<u32>().ok());
+                    if let Some(n) = n.filter(|n| pim.contains(n)) {
+                        return Some(format!(
+                            "%Tunnel{n} used by PIM for Registering, configuration not allowed"
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        match (mode, words.as_slice()) {
+            ("config", ["router", "bgp", asn]) => {
+                let running = self.device.blocks.iter().find_map(|b| {
+                    b.header
+                        .strip_prefix("router bgp ")
+                        .filter(|n| !n.contains(' '))
+                })?;
+                (running != *asn).then(|| format!("BGP is already running; AS is {running}"))
+            }
+            ("config-pmap", ["class", name]) if !name.eq_ignore_ascii_case("class-default") => {
+                let known = self.device.blocks.iter().any(|b| {
+                    b.header.starts_with("class-map ")
+                        && b.header.split_whitespace().last() == Some(*name)
+                });
+                (!known).then(|| format!("class map {name} not configured"))
+            }
+            ("config", ["service-export", "mdns-sd", "controller", name]) => {
+                let running =
+                    self.device.blocks.iter().find_map(|b| {
+                        b.header.strip_prefix("service-export mdns-sd controller ")
+                    })?;
+                (running != *name).then(|| "Only one Controller is allowed\n\n".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// What IOS XE warns of for a line it takes, judged before the line runs (the lab C9300-24T,
+    /// 17.6.4): an MKA policy or a control policy map opened again, an HSRP address outside the
+    /// interface's subnets, a PortFast, OSPF reference bandwidth or MACsec cipher change, an MLD
+    /// static group without multicast routing, an automatic DHCPv6 pool, `auto qos global compact`,
+    /// a default SGT mapping without a default route, and the MST region shown outside MST.
+    fn taken_with_warning(&self, mode: &str, p: &Parse) -> Option<String> {
+        if p.negated || self.device.stack.classic() {
+            return None;
+        }
+        let canonical = p.canonical();
+        let words: Vec<&str> = canonical.split_whitespace().collect();
+        let exists = || self.device.blocks.iter().any(|b| b.header == canonical);
+        // the interface the line is typed into, and whether it holds the line already
+        let block = self
+            .frames
+            .iter()
+            .rev()
+            .find(|f| f.mode == mode)
+            .and_then(|f| f.blocks.first())
+            .and_then(|&b| self.device.blocks.get(b));
+        let again = block.is_some_and(|b| b.lines.iter().any(|e| e.text.trim() == canonical));
+        match (mode, words.as_slice()) {
+            ("config", ["mka", "policy", name]) if exists() => Some(format!(
+                "\n% MKA Policy \"{name}\" may have associated active MKA Sessions.\n\n  Changes to \
+                 MKA Policy \"{name}\" values\n  will cause all associated active MKA Sessions to be \
+                 cleared.\n\n"
+            )),
+            ("config", ["policy-map", "type", "control", "subscriber", name]) if exists() => {
+                Some(format!(
+                    "%Warning, modifying policy-map \"{name}\" may impact sessions hosted on ports \
+                     for which \"{name}\" has already been applied."
+                ))
+            }
+            ("config-if", ["standby", .., "ip", address]) => {
+                let a = v4(address)?;
+                let subnets: Vec<(u32, u32)> = block?
+                    .lines
+                    .iter()
+                    .filter_map(|e| ip_address(&e.text))
+                    .collect();
+                // said when the address changes, not when the line is typed again
+                (!again && !subnets.is_empty() && !subnets.iter().any(|&(n, m)| a & m == n & m))
+                    .then(|| "% Warning: address is not within a subnet on this interface".into())
+            }
+            // printed before the region's configuration whatever the mode
+            ("exec" | "privileged", ["show", "spanning-tree", "mst", "configuration", ..])
+                if !self
+                    .device
+                    .global
+                    .iter()
+                    .any(|e| e.text == "spanning-tree mode mst") =>
+            {
+                Some("% Switch is not in mst mode".into())
+            }
+            ("config-router", ["auto-cost", "reference-bandwidth", _])
+                if !again && block.is_some_and(|b| b.header.starts_with("router ospf ")) =>
+            {
+                Some(
+                    "% OSPF: Reference bandwidth is changed. \n        Please ensure reference \
+                     bandwidth is consistent across all routers."
+                        .into(),
+                )
+            }
+            ("config-mka-policy", ["macsec-cipher-suite", ..]) if !again => Some(
+                "\n% If cipher currently being used is not configured, new SAK will be generated\n\n"
+                    .into(),
+            ),
+            ("config-if", ["ipv6", "mld", "static-group", ..])
+                if !self
+                    .device
+                    .global
+                    .iter()
+                    .any(|e| e.text.starts_with("ipv6 multicast-routing")) =>
+            {
+                Some("%Warning: Enable MLD router-side for this command to be effective".into())
+            }
+            ("config-if", ["ipv6", "dhcp", "server", "automatic", ..]) => {
+                Some("% Warning: Pool  not configured globally - configuring anyway.".into())
+            }
+            ("config", ["auto", "qos", "global", "compact"]) => Some(
+                "%Warning: This command will reset all autoqos generated configurations".into(),
+            ),
+            ("config", ["cts", "role-based", "sgt-map", "0.0.0.0/0", ..])
+                if !self
+                    .device
+                    .global
+                    .iter()
+                    .any(|e| e.text.starts_with("ip route 0.0.0.0 0.0.0.0 ")) =>
+            {
+                Some(
+                    "%Please ensure default route is created using ip route 0.0.0.0 command"
+                        .into(),
+                )
+            }
+            // said when PortFast changes, not when the line is typed again
+            ("config-if", ["spanning-tree", "portfast", rest @ ..])
+                if !again && matches!(rest, [] | ["trunk"]) =>
+            {
+                let mut said = "%Warning: portfast should only be enabled on ports connected to a \
+                                single\n host. Connecting hubs, concentrators, switches, bridges, \
+                                etc... to this\n interface  when portfast is enabled, can cause \
+                                temporary bridging loops.\n Use with CAUTION\n\n"
+                    .to_string();
+                if rest.is_empty() {
+                    let name = block?.header.strip_prefix("interface ")?;
+                    said += &format!(
+                        "%Portfast has been configured on {name} but will only\n have effect \
+                         when the interface is in a non-trunking mode."
+                    );
+                }
+                Some(said)
+            }
+            _ => None,
         }
     }
 
@@ -2076,6 +3004,200 @@ impl<'a> Session<'a> {
             .then(|| &text[toks.get(1).map_or(text.len(), |t| t.at)..])
     }
 
+    /// Whether a line a submode refused, which the enclosing frame `i` reads past its first word,
+    /// leaves for that frame's mode, as the lab C9300 (17.6.4) left: global configuration's
+    /// `interface`, `router` and `route-map` (`router rip cisco` in config-router-af, `route-map
+    /// ROUTE in` in config-route-map), and an enclosing submode's `address-family` that opened the
+    /// submode above it (`address-family ipv4 unicast vrf inside` in config-vrf-af, for
+    /// (config-vrf)#). It refused `policy-map class vlan100` in config-pmap, `vlan 10
+    /// guest-interface 2` in config-vlan, `ipv6 access-list list2 permit any any` in
+    /// config-ipv6-acl and a `police` line in config-pmap-c-police as the submode and stayed.
+    fn leaves(&self, i: usize, line: &str) -> bool {
+        let Some(w) = line.split_whitespace().next().map(str::to_lowercase) else {
+            return false;
+        };
+        if w.len() < 2 {
+            return false;
+        }
+        if self.frames[i].mode == "config" {
+            return ["interface", "router", "route-map"]
+                .iter()
+                .any(|k| k.starts_with(&w));
+        }
+        "address-family".starts_with(&w)
+            && self
+                .frames
+                .get(i + 1)
+                .and_then(|f| f.entered.split_whitespace().next())
+                .is_some_and(|e| "address-family".starts_with(&e.to_lowercase()))
+    }
+
+    /// A line read in the mode of frame `i`: as the books read it, and refused where a real switch
+    /// of this image refused it (`held_refusal`).
+    fn read_at(&self, i: usize, mode: &str, line: &str) -> Outcome {
+        let o = self.parse(mode, line);
+        if matches!(o, Outcome::Ok(_))
+            && let Some(refused) = self.held_refusal(i, mode, line)
+        {
+            return refused;
+        }
+        o
+    }
+
+    /// Where a configuration line the books take was refused by a real switch of this image, read
+    /// against what it answered for `?` after each whole word in the mode and context of frame `i`
+    /// (its own answers, never a donor's): a word no row of the answer before it offers is invalid
+    /// there, and a line whose answer after its last word holds no `<cr>` is incomplete. A word
+    /// with no answer held before it is not read; reading stops at a refusal held for the line so
+    /// far and at a `LINE` row, which takes the rest. An interface type is left to the stack
+    /// (`on_stack`), and a routed port's lines are not read: the crawled ports were switchports.
+    fn held_refusal(&self, i: usize, mode: &str, line: &str) -> Option<Outcome> {
+        if !cli::is_config(mode) {
+            return None;
+        }
+        let frame = self.frames.get(i)?;
+        if mode.starts_with("config-if")
+            && frame.blocks.iter().any(|&b| {
+                self.device.blocks[b]
+                    .lines
+                    .iter()
+                    .any(|e| e.text.trim() == "no switchport")
+            })
+        {
+            return None;
+        }
+        // the crawled ports had no PoE (the lab C9300-24T's `power ?` lists only
+        // efficient-ethernet), so a PoE port's `power` lines are left to the books
+        let first = line.split_whitespace().next().unwrap_or("").to_lowercase();
+        if first.len() >= 2
+            && "power".starts_with(&first)
+            && frame.blocks.iter().any(|&b| {
+                let header = &self.device.blocks[b].header;
+                header
+                    .strip_prefix("interface ")
+                    .is_some_and(|n| self.device.stack.poe(n).is_some())
+            })
+        {
+            return None;
+        }
+        // `do` runs an exec line from any mode and `end` leaves any, and no submode's answer
+        // need list them
+        if ["do", "end"].contains(&first.as_str())
+            || crate::context::unjudged(mode, line, |l| self.running_has(l))
+        {
+            return None;
+        }
+        let context = self.context_at(i)?;
+        let level = self.level();
+        let toks = cli::tokens(line);
+        let mut before: Vec<&str> = vec![];
+        for k in 0..=toks.len() {
+            let text = match k {
+                0 => String::new(),
+                _ => format!("{} ", &line[..toks[k - 1].at + toks[k - 1].text.len()]),
+            };
+            let Some(answer) =
+                self.engine
+                    .held
+                    .help_for(level.as_deref(), mode, Some(&context), &text, |l| {
+                        self.running_has(l)
+                    })
+            else {
+                continue;
+            };
+            if crate::live::is_refusal(answer) {
+                return None;
+            }
+            // `No monitors configured`, or the crawl's own `User defined` names: the answer offers
+            // the objects configured, and this session's are its own; a keyword it offers beside
+            // them (`netflow` after `record`) is read as any other
+            let kind = crate::live::configured_kind(answer).or_else(|| {
+                let keyword = &toks.get(k.checked_sub(1)?)?.text;
+                crate::live::defined_kind(answer, keyword)
+            });
+            if let Some(kind) = kind {
+                let t = toks.get(k)?;
+                let typed = t.text.to_lowercase();
+                let keyword = crate::live::answer_rows(answer).iter().any(|&(w, what)| {
+                    !what.eq_ignore_ascii_case("user defined")
+                        && w.bytes().any(|b| b.is_ascii_lowercase())
+                        && w.to_lowercase().starts_with(&typed)
+                });
+                if !keyword {
+                    if !self.offers(kind, &t.text, mode) {
+                        return Some(Outcome::Invalid(t.at));
+                    }
+                    before.clear();
+                    continue;
+                }
+            }
+            let rows = crate::live::answer_rows(answer);
+            let Some(t) = toks.get(k) else {
+                // an answer that offers again what the one before offered is a list's, which ends
+                // anywhere
+                let list =
+                    !before.is_empty() && before.iter().all(|w| rows.iter().any(|(r, _)| r == w));
+                return (!list && !rows.iter().any(|(w, _)| *w == "<cr>"))
+                    .then_some(Outcome::Incomplete);
+            };
+            // an answer listing interface types by their names, as IOS capitalizes them
+            let types = rows
+                .iter()
+                .filter(|(w, _)| {
+                    cli::interface_types()
+                        .iter()
+                        .chain(cli::PHYSICAL_TYPES)
+                        .any(|(full, _)| *full == *w)
+                })
+                .count()
+                >= 2;
+            match rows
+                .iter()
+                .map(|&(w, what)| fits_row(w, what, &t.text, types))
+                .max()
+            {
+                Some(Fit::Rest) => return None,
+                Some(Fit::Word) => before = rows.iter().map(|(w, _)| *w).collect(),
+                _ => return Some(Outcome::Invalid(t.at)),
+            }
+        }
+        None
+    }
+
+    /// Whether this session holds the block `kind name` where IOS offers it for `mode`: a flow
+    /// record holding a field, a monitor named on an interface holding a record. The lab C9300
+    /// (17.6.4) refused an empty record in a flow monitor and a monitor with none on a port.
+    fn offers(&self, kind: &str, name: &str, mode: &str) -> bool {
+        self.device.blocks.iter().any(|b| {
+            let holds = |p: &[&str]| {
+                b.lines
+                    .iter()
+                    .any(|e| p.iter().any(|p| e.text.trim().starts_with(p)))
+            };
+            b.header.strip_prefix(kind) == Some(name)
+                && match kind {
+                    "flow record " => holds(&["match ", "collect "]),
+                    "flow monitor " if mode.starts_with("config-if") => holds(&["record "]),
+                    _ => true,
+                }
+        })
+    }
+
+    /// The context of frame `i`'s mode (`context`).
+    fn context_at(&self, i: usize) -> Option<String> {
+        let entered: Vec<&str> = self
+            .frames
+            .get(3..=i)
+            .unwrap_or_default()
+            .iter()
+            .map(|f| f.entered.as_str())
+            .collect();
+        if entered.iter().any(|l| l.is_empty()) {
+            return None;
+        }
+        Some(crate::context::of(&entered))
+    }
+
     /// The context the submodes entered give the current mode, as the corpus derives it from a
     /// session's prompts (`context::of`); none when a frame's entering line is unknown.
     fn context(&self) -> Option<String> {
@@ -2714,6 +3836,493 @@ fn whole_words(p: &Parse) -> bool {
     })
 }
 
+/// What IOS XE says for a line naming a VRF the switch does not hold, by its mode and the words
+/// before the name (the lab C9300-24T, 17.6.4); `{}` is the name.
+const NO_VRF: &[(&str, &[&str], &str)] = &[
+    (
+        "config-if",
+        &["vrf", "forwarding"],
+        "% VRF {} not configured",
+    ),
+    (
+        "config-if",
+        &["ip", "vrf", "forwarding"],
+        "% VRF {} not configured",
+    ),
+    (
+        "config-if",
+        &["ip", "helper-address", "vrf"],
+        "% Vrf name {} does not exist. Create first",
+    ),
+    (
+        "config-mon-erspan-src-dst",
+        &["vrf"],
+        "% VRF {} not configured",
+    ),
+    (
+        "config",
+        &["ip", "multicast-routing", "vrf"],
+        "% VPN Routing instance {} does not exist.",
+    ),
+    (
+        "config",
+        &["ip", "mroute", "vrf"],
+        "% VPN Routing instance {} does not exist.",
+    ),
+    (
+        "config",
+        &["ip", "pim", "vrf"],
+        "% VPN Routing instance {} does not exist.",
+    ),
+    (
+        "config",
+        &["ip", "multicast", "vrf"],
+        "% VPN Routing instance {} does not exist.",
+    ),
+    (
+        "config",
+        &["ipv6", "multicast-routing", "vrf"],
+        "%VPN Routing instance {} does not exist. Create first",
+    ),
+    (
+        "config",
+        &["ipv6", "pim", "vrf"],
+        "%VPN Routing instance {} does not exist. Create first",
+    ),
+    (
+        "config",
+        &["ntp", "server", "vrf"],
+        "% IP  routing table {} does not exist",
+    ),
+    (
+        "config",
+        &["cts", "role-based", "l2-vrf"],
+        "%VPN Routing/Forwarding table {} does not exist",
+    ),
+    (
+        "config",
+        &["cts", "role-based", "sgt-map", "vrf"],
+        "%VPN Routing/Forwarding table {} does not exist",
+    ),
+    // `exec`: user and privileged EXEC
+    (
+        "exec",
+        &["show", "ip", "route", "vrf"],
+        "% IP routing table vrf {} does not exist",
+    ),
+    (
+        "exec",
+        &["show", "ip", "arp", "vrf"],
+        "% VRF {} does not exist.",
+    ),
+    (
+        "exec",
+        &["show", "ip", "bgp", "vpnv4", "vrf"],
+        "% Unknown VRF\n\n",
+    ),
+    (
+        "exec",
+        &["show", "ip", "vrf", "interfaces"],
+        "% No VRF named {}",
+    ),
+    (
+        "exec",
+        &["show", "ip", "vrf", "detail"],
+        "% No VRF named {}",
+    ),
+    (
+        "exec",
+        &["show", "mpls", "forwarding-table", "vrf"],
+        "% IP routing table {} doesn't exist",
+    ),
+    (
+        "exec",
+        &["show", "mpls", "static", "binding", "ipv4", "vrf"],
+        "% VRF {} does not exist",
+    ),
+];
+
+/// The 802.1X lines IOS XE takes and calls deprecated for `access-session`, by mode and start (the
+/// lab C9300-24T, 17.6.4).
+const DEPRECATED: &[(&str, &str)] = &[
+    ("config-if", "authentication host-mode "),
+    ("config-if", "authentication port-control "),
+    ("config-if", "authentication control-direction "),
+    ("config-if", "authentication open"),
+    ("config", "authentication mac-move "),
+];
+
+/// The words after a BGP neighbor's address that set its policy, which an address family holds:
+/// what the lab C9300-24T (17.6.4) offered for `neighbor <address> ?` in `address-family ipv4`,
+/// `inherit` apart (a peer session is no policy).
+const BGP_POLICY: &[&str] = &[
+    "activate",
+    "additional-paths",
+    "advertise",
+    "advertise-map",
+    "advertisement-interval",
+    "aigp",
+    "allow-policy",
+    "allowas-in",
+    "announce",
+    "as-override",
+    "capability",
+    "default-originate",
+    "distribute-list",
+    "dmzlink-bw",
+    "filter-as",
+    "filter-list",
+    "maximum-prefix",
+    "next-hop-self",
+    "next-hop-unchanged",
+    "prefix-list",
+    "remove-private-as",
+    "route-map",
+    "route-reflector-client",
+    "send-community",
+    "send-label",
+    "slow-peer",
+    "soft-reconfiguration",
+    "soo",
+    "suppress-sr",
+    "translate-update",
+    "unsuppress-map",
+    "weight",
+];
+
+/// A SPAN session's lines in the running configuration (`monitor session <n> ...`).
+#[derive(Default)]
+struct Span {
+    sources: Vec<String>,
+    local_source: bool,
+    destinations: Vec<String>,
+    remote_destination: bool,
+    filter_vlans: BTreeSet<u32>,
+}
+
+/// The running configuration's SPAN sessions by number.
+fn spans(d: &Device) -> BTreeMap<String, Span> {
+    let mut out: BTreeMap<String, Span> = BTreeMap::new();
+    for e in &d.global {
+        let Some(rest) = e.text.strip_prefix("monitor session ") else {
+            continue;
+        };
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let Some((n, words)) = words.split_first() else {
+            continue;
+        };
+        let s = out.entry(n.to_string()).or_default();
+        match words {
+            ["source", "interface", list @ ..] => {
+                let list = list.join(" ");
+                for name in list.split(',') {
+                    let name = name.split(" - ").next().unwrap_or(name);
+                    if let Some(name) = name.split_whitespace().next() {
+                        s.sources.push(name.to_string());
+                    }
+                }
+                s.local_source = true;
+            }
+            ["source", "vlan", ..] => s.local_source = true,
+            ["destination", "interface", name, ..] => s.destinations.push(name.to_string()),
+            ["destination", "remote", "vlan", ..] => s.remote_destination = true,
+            ["filter", "vlan", list @ ..] => s.filter_vlans.extend(numbers(&list.join(""))),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The numbers of a list such as `1-5,9`.
+fn numbers(list: &str) -> Vec<u32> {
+    list.split(',')
+        .filter_map(|r| match r.split_once('-') {
+            Some((a, b)) => {
+                Some((a.trim().parse::<u32>().ok()?..=b.trim().parse().ok()?).collect())
+            }
+            None => r.trim().parse().ok().map(|n| vec![n]),
+        })
+        .flatten()
+        .collect()
+}
+
+/// What IOS XE says for a SPAN line its sessions refuse (the lab C9300-24T, 17.6.4): a source that
+/// is a destination, a destination that is a source or another session's destination, a remote
+/// VLAN in a session of the other kind, a filter VLAN as the remote destination, an access-list
+/// filter beside a VLAN filter. `named`: the line's interfaces, short.
+fn span_refusal(
+    d: &Device,
+    n: &str,
+    rest: &[&str],
+    named: &[String],
+    vlans: &BTreeSet<u32>,
+) -> Option<String> {
+    let all = spans(d);
+    let own = all.get(n);
+    let others = || all.iter().filter(|(m, _)| m.as_str() != n).map(|(_, s)| s);
+    match rest {
+        ["source", "interface", ..] => {
+            let name = named
+                .iter()
+                .find(|x| all.values().any(|s| s.destinations.contains(x)))?;
+            Some(format!(
+                "% Interface(s) {name} already configured as monitor destinations"
+            ))
+        }
+        ["source", "remote", "vlan", ..] => {
+            if own.is_some_and(|s| s.remote_destination) {
+                Some(
+                    "% RSPAN VLAN already exists as destination. The same session cannnot have \
+                     RSPAN VLAN both as source and destination"
+                        .into(),
+                )
+            } else if own.is_some_and(|s| s.local_source) {
+                Some(format!(
+                    "% Cannot add RSPAN VLAN as source for SPAN session {n} as it is not a RSPAN \
+                     Destination session"
+                ))
+            } else {
+                None
+            }
+        }
+        ["destination", "interface", _, tail @ ..] => {
+            let name = named.first()?;
+            if own.is_some_and(|s| s.remote_destination) {
+                return Some(format!(
+                    "% Cannot add ports as destination for session {n} - a RSPAN Source session"
+                ));
+            }
+            if all.values().any(|s| s.sources.contains(name)) {
+                return Some(format!(
+                    "% Interface(s) {name} already configured as monitor sources"
+                ));
+            }
+            if !others().any(|s| s.destinations.contains(name)) {
+                return None;
+            }
+            // an ingress VLAN the switch lacks is said first
+            let missing = tail
+                .iter()
+                .position(|w| *w == "vlan")
+                .and_then(|i| tail.get(i + 1)?.parse::<u32>().ok())
+                .filter(|v| !vlans.contains(v));
+            let warning = missing.map_or(String::new(), |v| {
+                format!("% Warning: specified default VLAN ({v}) for ingress on dest port does not exist.\n")
+            });
+            Some(format!(
+                "{warning}% Interface(s) {name} already configured as monitor destinations in other \
+                 monitor sessions"
+            ))
+        }
+        ["destination", "remote", "vlan", v] => {
+            let s = own?;
+            if !s.destinations.is_empty() {
+                Some(format!(
+                    "% Session - {n} is a not a Remote Source session. Can't add RSPAN VLAN as \
+                     destination"
+                ))
+            } else if v.parse::<u32>().is_ok_and(|v| s.filter_vlans.contains(&v)) {
+                Some(format!(
+                    "% Configuring Destination RSPAN VLANs {v}, but the same vlan is \n% already \
+                     configured as filter vlan"
+                ))
+            } else {
+                None
+            }
+        }
+        ["filter", "ip" | "mac", "access-group", ..] => own
+            .is_some_and(|s| !s.filter_vlans.is_empty())
+            .then(|| "% vlan filter can not be applied with FSPAN".into()),
+        _ => None,
+    }
+}
+
+/// What IOS says when a private VLAN association names a VLAN the switch does not hold, the primary
+/// read first, then the secondaries in order (the lab C9300-24T, 17.6.4).
+fn no_private_association(primary: u32, list: &str, vlans: &BTreeSet<u32>) -> Option<String> {
+    let secondary = crate::generate::vlan_ids(list);
+    let first = *secondary.first()?;
+    let missing = std::iter::once(primary)
+        .chain(secondary.iter().copied())
+        .find(|v| !vlans.contains(v))?;
+    let pair = if missing == primary { first } else { missing };
+    Some(format!(
+        "%Command rejected: invalid private vlan association between vlan{primary} and \
+         vlan{pair}. VLAN {missing} data is not available."
+    ))
+}
+
+/// The features whose `attach-policy` names a policy of their own, by the mode it is typed in:
+/// `% Policy <name> not defined for the feature` until `<feature> policy <name>` exists.
+const ATTACH: &[(&str, &[&str])] = &[
+    ("config-if", &["ipv6", "source-guard"]),
+    ("config-if", &["ipv6", "destination-guard"]),
+    ("config-vlan-config", &["device-tracking"]),
+    ("config-vlan-config", &["ipv6", "dhcp", "guard"]),
+    ("config-vlan-config", &["ipv6", "nd", "raguard"]),
+];
+
+/// Whether a BGP peer is an IPv6 link-local address, its zone after `%` (`fe80::2%Ethernet1/0`).
+fn link_local(peer: &str) -> bool {
+    let address = peer.split('%').next().unwrap_or(peer);
+    address
+        .parse::<std::net::Ipv6Addr>()
+        .is_ok_and(|a| a.segments()[0] & 0xffc0 == 0xfe80)
+}
+
+/// An IPv4 address as a number.
+fn v4(text: &str) -> Option<u32> {
+    text.parse::<std::net::Ipv4Addr>().ok().map(u32::from)
+}
+
+/// The address and mask of an interface's `ip address` line, a secondary's too.
+fn ip_address(text: &str) -> Option<(u32, u32)> {
+    match text.split_whitespace().collect::<Vec<_>>()[..] {
+        ["ip", "address", a, m, ..] => Some((v4(a)?, v4(m)?)),
+        _ => None,
+    }
+}
+
+/// The tunnels IOS keeps for PIM registers once multicast routing is on: one for each RP the global
+/// configuration names and one more where the switch is an RP itself, numbered from the lowest no
+/// tunnel interface holds. The lab C9300-24T (17.6.4), its own RP with Tunnel0 configured, refused
+/// Tunnel1 and Tunnel2 and took Tunnel0, 10, 11, 15 and 100.
+fn pim_tunnels(d: &Device) -> BTreeSet<u32> {
+    if !d
+        .global
+        .iter()
+        .any(|e| e.text.trim_end() == "ip multicast-routing")
+    {
+        return BTreeSet::new();
+    }
+    let rps: Vec<&str> = d
+        .global
+        .iter()
+        .filter_map(|e| e.text.strip_prefix("ip pim rp-address "))
+        .filter_map(|r| r.split_whitespace().next())
+        .collect();
+    let own = rps.iter().any(|rp| {
+        d.blocks.iter().any(|b| {
+            b.header.starts_with("interface ")
+                && b.lines.iter().any(|e| {
+                    e.text
+                        .trim()
+                        .strip_prefix("ip address ")
+                        .and_then(|a| a.split_whitespace().next())
+                        == Some(*rp)
+                })
+        })
+    });
+    let used: BTreeSet<u32> = d
+        .blocks
+        .iter()
+        .filter_map(|b| b.header.strip_prefix("interface Tunnel")?.parse().ok())
+        .collect();
+    (0..)
+        .filter(|t| !used.contains(t))
+        .take(rps.len() + usize::from(own))
+        .collect()
+}
+
+/// How far a mode read a line before refusing it: to the refused word, or past its end for a line
+/// that was all words of the mode but incomplete. An ambiguous word reads nothing.
+fn reach(o: &Outcome, line: &str) -> usize {
+    match o {
+        Outcome::Ok(_) => usize::MAX,
+        Outcome::Invalid(at) => *at,
+        Outcome::Incomplete => line.len() + 1,
+        Outcome::Ambiguous => 0,
+    }
+}
+
+/// How a typed word fits a row of a `?` answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Fit {
+    No,
+    Word,
+    /// a `LINE` row: the rest of the line is its text
+    Rest,
+}
+
+/// Whether `typed` is a word the `?` row `row` (described `what`) offers: a start of its keyword
+/// in any case, a number in its range, an address of its form, any word where it shows another
+/// placeholder (`WORD`). A row naming an object the crawled switch had configured (`User defined`)
+/// fits any word, since this session's objects are others. An interface named with its number, or a
+/// type where the answer lists `types`, fits whatever the row, and the stack judges it: the crawled
+/// switch's ports are not this one's.
+fn fits_row(row: &str, what: &str, typed: &str, types: bool) -> Fit {
+    let t = typed.to_lowercase();
+    if row == "<cr>" || row == "|" {
+        return Fit::No;
+    }
+    if row == "LINE" {
+        return Fit::Rest;
+    }
+    if let Some(range) = row.strip_prefix('<').and_then(|r| r.strip_suffix('>')) {
+        let Some((lo, hi)) = range.split_once('-') else {
+            return Fit::Word;
+        };
+        let (Ok(lo), Ok(hi)) = (lo.parse::<u128>(), hi.parse::<u128>()) else {
+            return Fit::Word;
+        };
+        // a rate with its unit (`1m`), or a list of numbers and ranges (`31-35,41`)
+        let number = |v: &str| v.parse::<u128>().is_ok_and(|v| v >= lo && v <= hi);
+        let rate = t
+            .strip_suffix(['k', 'm', 'g'])
+            .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+        let list = t.split(',').all(|part| match part.split_once('-') {
+            Some((a, b)) => number(a) && number(b),
+            None => number(part),
+        });
+        return fit(rate || list);
+    }
+    let alpha = t.split(|c: char| c.is_ascii_digit()).next().unwrap_or("");
+    if (types || alpha.len() < t.len()) && names_type(alpha) {
+        return Fit::Word;
+    }
+    let what = what.to_lowercase();
+    if ["user defined", "defined by user", "vrf name"].contains(&what.as_str()) {
+        return Fit::Word;
+    }
+    // a union of forms (`Hostname or A.B.C.D`) and the mixed-case placeholders
+    if what.starts_with("or ")
+        || row == "Hostname"
+        || row.contains(':')
+        || ["Hex-", "Group_", "<", ".", "/"]
+            .iter()
+            .any(|p| row.starts_with(p))
+    {
+        return Fit::Word;
+    }
+    match row {
+        "A.B.C.D" => fit(cli::ipv4(typed)),
+        "X:X:X:X::X" => fit(typed.contains(':')),
+        "H.H.H" => fit(typed.split('.').count() == 3),
+        "WORD" | "CHAR" | "MONTH" | "DAY" => Fit::Word,
+        _ if ["A.B.C.D", "H.H.", "XX.XX"]
+            .iter()
+            .any(|p| row.starts_with(p)) =>
+        {
+            Fit::Word
+        }
+        // every other word is a keyword (`BDI`, `LISP`, `Light`), typed in any case
+        _ => fit(row.to_lowercase().starts_with(&t)),
+    }
+}
+
+/// Whether a word begins an interface type's name, two letters at least.
+fn names_type(word: &str) -> bool {
+    word.len() >= 2
+        && cli::interface_types()
+            .iter()
+            .chain(cli::PHYSICAL_TYPES)
+            .any(|(full, _)| full.to_lowercase().starts_with(word))
+}
+
+fn fit(yes: bool) -> Fit {
+    if yes { Fit::Word } else { Fit::No }
+}
+
 /// A class map's `match` on DSCP, precedence or CoS values as IOS XE writes it: each DSCP or
 /// precedence value followed by a space, the values a space apart (the lab C9300-24T, 17.6.4: `match
 /// dscp cs4  cs5  ef `; 41 17.15 captures `match dscp ef `), a CoS value with a space either side
@@ -2853,6 +4462,16 @@ fn past_in_range(word: &str, stack: &crate::platform::Stack) -> usize {
     } else {
         abbr.len() + fits
     }
+}
+
+/// Whether a port name is the start of one the stack has, short of a level of its number
+/// (`GigabitEthernet1/1` of `GigabitEthernet1/1/1`).
+fn starts_a_port(value: &str, stack: &crate::platform::Stack) -> bool {
+    let v = value.trim();
+    stack
+        .physical()
+        .iter()
+        .any(|p| p.strip_prefix(v).is_some_and(|rest| rest.starts_with('/')))
 }
 
 fn looks_like_interface(v: &str) -> bool {
@@ -3029,6 +4648,15 @@ mod tests {
         let stack = crate::platform::parse_stack("C9300-48P").unwrap();
         let mut s = Session::new(&e, Device::new(stack));
         s.frames.push(Frame::top("config"));
+        // a trustpoint's lines in its own mode, before the chain that names it
+        for line in [
+            "crypto pki trustpoint TP-self-signed-42",
+            " enrollment selfsigned",
+            " revocation-check none",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        assert_eq!(s.mode(), "ca-trustpoint");
         let chain = [
             "crypto pki certificate chain TP-self-signed-42",
             " certificate self-signed 01",
@@ -3049,15 +4677,6 @@ mod tests {
             .unwrap_or_else(|| panic!("{shown:?}"));
         assert_eq!(shown[at..at + chain.len()], chain);
         assert!(shown.contains(&"hostname lab42".to_string()));
-        // a trustpoint's lines in its own mode
-        for line in [
-            "crypto pki trustpoint TP-self-signed-42",
-            " enrollment selfsigned",
-            " revocation-check none",
-        ] {
-            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
-        }
-        assert_eq!(s.mode(), "ca-trustpoint");
     }
 
     #[test]
@@ -3177,9 +4796,9 @@ mod tests {
                 "interface GigabitEthernet1/0/1",
                 "switchport mode access",
                 "switchport mode trunk",
+                "speed 100",
                 "duplex half",
                 "duplex full",
-                "speed 100",
                 "speed 10",
             ],
         );
@@ -3416,6 +5035,7 @@ mod tests {
             &e,
             &[
                 "router bgp 65000",
+                "neighbor 10.0.0.1 remote-as 65001",
                 "address-family ipv4",
                 "neighbor 10.0.0.1 activate",
                 "exit",
@@ -3425,7 +5045,7 @@ mod tests {
                 "configure terminal",
                 "router bgp 65000",
                 "bgp log-neighbor-changes",
-                "neighbor 10.0.0.1 remote-as 65001",
+                "neighbor 10.0.0.2 remote-as 65002",
                 "vrf definition X",
                 "address-family ipv4",
                 "exit",
@@ -3437,8 +5057,9 @@ mod tests {
             block_of(&s, "router bgp 65000"),
             [
                 "router bgp 65000",
-                " bgp log-neighbor-changes",
                 " neighbor 10.0.0.1 remote-as 65001",
+                " bgp log-neighbor-changes",
+                " neighbor 10.0.0.2 remote-as 65002",
                 " address-family ipv4",
                 "  neighbor 10.0.0.1 activate",
                 " exit-address-family",
@@ -4394,6 +6015,8 @@ mod tests {
             &e,
             &[
                 "router bgp 65000",
+                " neighbor 10.0.0.1 remote-as 65001",
+                " neighbor 10.0.0.2 remote-as 65002",
                 " address-family ipv4",
                 "  neighbor 10.0.0.1 activate",
             ],
@@ -4405,6 +6028,8 @@ mod tests {
             block_of(&s, "router bgp 65000"),
             [
                 "router bgp 65000",
+                " neighbor 10.0.0.1 remote-as 65001",
+                " neighbor 10.0.0.2 remote-as 65002",
                 " address-family ipv4",
                 "  neighbor 10.0.0.1 activate",
                 "  neighbor 10.0.0.2 activate",
@@ -4658,9 +6283,13 @@ mod tests {
                 "Switch(config)# ?",
                 &[
                     "Configure commands:",
-                    "  aaa   Authentication, Authorization and Accounting.",
-                    "  auto  Configure Automation",
-                    "  auto  Configure Automation",
+                    "  aaa        Authentication, Authorization and Accounting.",
+                    "  auto       Configure Automation",
+                    "  auto       Configure Automation",
+                    "  interface  Select an interface to configure",
+                    "  license    Configure license features",
+                    "  no         Negate a command or set its defaults",
+                    "  router     Enable a routing process",
                     "",
                 ],
             ),
@@ -4781,7 +6410,10 @@ mod tests {
             ("Switch(config)#router bgp 65000", &[]),
             (
                 "Switch(config-router)# ?",
-                &["  neighbor  Specify a neighbor router"],
+                &[
+                    "  neighbor        Specify a neighbor router",
+                    "  address-family  Enter Address Family command mode",
+                ],
             ),
             ("Switch(config-router)#address-family ipv4", &[]),
             (
@@ -5116,7 +6748,8 @@ mod tests {
                 Some(first),
                 "{lines:?}: {got:?}"
             );
-            assert_eq!(got.len(), 1, "{lines:?}: {got:?}");
+            // the crawl's own rows, not the books' answer
+            assert!(got.len() <= 2, "{lines:?}: {got:?}");
         }
         assert_eq!(
             ask(&["interface Loopback0"]),
@@ -5193,9 +6826,13 @@ mod tests {
             s.help(""),
             [
                 "Configure commands:",
-                "  aaa   Authentication, Authorization and Accounting.",
-                "  auto  Configure Automation",
-                "  auto  Configure Automation",
+                "  aaa        Authentication, Authorization and Accounting.",
+                "  auto       Configure Automation",
+                "  auto       Configure Automation",
+                "  interface  Select an interface to configure",
+                "  license    Configure license features",
+                "  no         Negate a command or set its defaults",
+                "  router     Enable a routing process",
                 "",
             ]
         );
@@ -5568,6 +7205,8 @@ mod tests {
     fn blocks_of_one_kind_typed_back_to_back_take_the_same_context_in_the_shell_and_the_corpus() {
         let script = [
             "configure terminal",
+            "vrf definition TESTV",
+            "exit",
             "policy-map TESTA",
             "policy-map TESTB",
             "class class-default",
@@ -5585,6 +7224,8 @@ mod tests {
         ];
         let (shell, corpus) = contexts_both_ways(&books_17_6(), &script);
         let want = [
+            "",
+            "vrf definition «word»",
             "",
             "policy-map «word»",
             "policy-map «word»",
@@ -6115,5 +7756,1196 @@ mod tests {
             );
             assert_eq!(warned, 0);
         }
+    }
+
+    /// A C9300 at 17.6 on its books and every answer the corpus holds.
+    fn c9300_17_6() -> Engine {
+        let r = crate::release::Release::parse("17.6").unwrap();
+        Engine::new(crate::grammars::grammar("c9300", r).unwrap())
+    }
+
+    /// A C9300-24T with a 4x1G uplink module in global configuration, each line typed whatever
+    /// its answer.
+    fn typed_24t<'a>(e: &'a Engine, lines: &[&str]) -> Session<'a> {
+        let stack = crate::platform::parse_stack("C9300-24T+C9300-NM-4G").unwrap();
+        let mut s = Session::new(e, Device::new(stack));
+        for line in ["enable", "configure terminal"].iter().chain(lines) {
+            s.type_line(line);
+        }
+        s
+    }
+
+    #[test]
+    fn a_refused_line_leaves_a_submode_only_where_global_configuration_reads_past_its_first_word() {
+        let e = c9300_17_6();
+        let cases: [(&[&str], &str); 3] = [
+            (
+                &["interface GigabitEthernet1/0/1"],
+                "interface GigabitEthernet1/0/30",
+            ),
+            (&["router ospf 1"], "router ospf"),
+            (
+                &["router bgp 65000", "address-family ipv4"],
+                "router rip cisco",
+            ),
+        ];
+        for (opened, line) in cases {
+            let mut s = typed_24t(&e, opened);
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            assert_eq!(s.mode(), "config", "{line}: {out:?}");
+        }
+        // an address family closes back to the mode whose `address-family` opened it
+        let mut s = typed_24t(&e, &["vrf definition V", "address-family ipv4"]);
+        assert_eq!(s.mode(), "config-vrf-af");
+        assert_eq!(s.type_line("address family ipv4").1, Result::Error);
+        assert_eq!(s.mode(), "config-vrf");
+        // any other refused line is the submode's error, and the session stays there
+        let cases: [(&[&str], &str, &str); 2] = [
+            (&["policy-map P"], "policy-map class vlan100", "config-pmap"),
+            (&["vlan 10"], "vlan 4094 guest-interface 0", "config-vlan"),
+        ];
+        for (opened, line, mode) in cases {
+            let mut s = typed_24t(&e, opened);
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            assert_eq!(s.mode(), mode, "{line}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_port_named_by_the_start_of_its_number_is_incomplete_and_nve_is_1_to_32() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &[]);
+        let (out, r) = s.type_line("interface gigabitethernet1/1");
+        assert_eq!(
+            (out[0].as_str(), r),
+            ("% Incomplete command.", Result::Error)
+        );
+        assert_eq!(s.mode(), "config");
+        assert_eq!(s.type_line("interface nve1").1, Result::Ok);
+        assert_eq!(s.mode(), "config-if");
+        s.type_line("exit");
+        assert_eq!(s.type_line("interface nve 33").1, Result::Error);
+    }
+
+    #[test]
+    fn a_second_bgp_process_an_unknown_class_and_a_second_controller_are_refused_by_message() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &["router bgp 65000", "exit"]);
+        let (out, r) = s.type_line("router bgp 65001");
+        assert_eq!(
+            (out, r),
+            (
+                vec!["BGP is already running; AS is 65000".to_string()],
+                Result::Error
+            )
+        );
+        assert_eq!(s.mode(), "config");
+        assert_eq!(s.type_line("router bgp 65000").1, Result::Ok);
+        let mut s = typed_24t(&e, &["class-map C2", "exit", "policy-map P"]);
+        let (out, r) = s.type_line("class C1");
+        assert_eq!(
+            (out, r),
+            (
+                vec!["class map C1 not configured".to_string()],
+                Result::Error
+            )
+        );
+        assert_eq!(s.mode(), "config-pmap");
+        for taken in ["class C2", "exit", "class class-default"] {
+            assert_eq!(s.type_line(taken).1, Result::Ok, "{taken}");
+        }
+        let mut s = typed_24t(&e, &["service-export mdns-sd controller ONE", "exit"]);
+        let (out, r) = s.type_line("service-export mdns-sd controller TWO");
+        assert_eq!(out[0], "Only one Controller is allowed");
+        assert_eq!((r, s.mode()), (Result::Error, "config"));
+        assert_eq!(
+            s.type_line("service-export mdns-sd controller ONE").1,
+            Result::Ok
+        );
+    }
+
+    #[test]
+    fn a_line_the_books_take_is_refused_where_the_switch_s_answers_offer_no_such_word() {
+        let e = c9300_17_6();
+        // the crawled ports were switchports: a routed port's lines are left to the books
+        let mut s = typed_24t(&e, &["interface GigabitEthernet1/0/2"]);
+        let (out, r) = s.type_line("ip address 10.0.0.1 255.255.255.0");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(s.type_line("no switchport").1, Result::Ok);
+        assert_eq!(
+            s.type_line("ip address 10.0.0.1 255.255.255.0").1,
+            Result::Ok
+        );
+        // a policy map's own mode offers no `set`; its class does
+        let mut s = typed_24t(&e, &["policy-map P"]);
+        assert_eq!(s.type_line("set dscp 10").1, Result::Error);
+        assert_eq!(s.type_line("class class-default").1, Result::Ok);
+        assert_eq!(s.type_line("set dscp 10").1, Result::Ok);
+        // a type the answer does not list, though rows in capitals (`BDI`) stand beside it
+        let mut s = typed_24t(&e, &[]);
+        assert_eq!(s.type_line("interface ethernet 0").1, Result::Error);
+        assert_eq!(s.type_line("interface vlan 10").1, Result::Ok);
+        // a number in a rate or a list fits the row's range
+        let mut s = typed_24t(&e, &["policy-map P", "class class-default"]);
+        assert_eq!(s.type_line("police 1m").1, Result::Ok);
+        let mut s = typed_24t(&e, &["interface GigabitEthernet1/0/2"]);
+        assert_eq!(
+            s.type_line("switchport trunk allowed vlan 31-35,41").1,
+            Result::Ok
+        );
+    }
+
+    #[test]
+    fn a_line_the_crawl_could_not_judge_is_left_to_the_books() {
+        let e = c9300_17_6();
+        // the crawl ran without `aaa new-model` and `fhrp version vrrp v3`
+        let cases: [(&[&str], &str, &str); 3] = [
+            (&[], "radius server R1", "aaa new-model"),
+            (
+                &["line con 0"],
+                "login authentication CONSOLE",
+                "aaa new-model",
+            ),
+            (
+                &["interface Vlan10"],
+                "vrrp 1 address-family ipv4",
+                "fhrp version vrrp v3",
+            ),
+        ];
+        for (opened, line, state) in cases {
+            let mut s = typed_24t(&e, opened);
+            assert_eq!(s.type_line(line).1, Result::Error, "{line}");
+            let mut lines = vec![state];
+            lines.extend(opened);
+            let mut s = typed_24t(&e, &lines);
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line} under {state}: {out:?}");
+        }
+        // an answer that lists the monitors configured, none when it was crawled: this session's,
+        // a monitor on a port once it holds a record
+        let mut s = typed_24t(
+            &e,
+            &[
+                "flow monitor MON1",
+                "exit",
+                "interface GigabitEthernet1/0/1",
+            ],
+        );
+        assert_eq!(s.type_line("ip flow monitor MON1 input").1, Result::Error);
+        assert_eq!(s.type_line("ip flow monitor MON2 input").1, Result::Error);
+        let mut s = typed_24t(
+            &e,
+            &[
+                "flow record REC1",
+                "match ipv4 source address",
+                "exit",
+                "flow record REC2",
+                "exit",
+                "flow exporter EXP1",
+                "exit",
+                "flow monitor MON1",
+            ],
+        );
+        // the crawl's own names (`User defined`) stand for this session's
+        for (line, r) in [
+            ("record REC2", Result::Error),
+            ("record REC3", Result::Error),
+            ("exporter EXP2", Result::Error),
+            ("exporter EXP1", Result::Ok),
+            ("record REC1", Result::Ok),
+            ("exit", Result::Ok),
+            ("interface GigabitEthernet1/0/1", Result::Ok),
+            ("ip flow monitor MON1 input", Result::Ok),
+        ] {
+            assert_eq!(s.type_line(line).1, r, "{line}");
+        }
+        // a sub-interface's encapsulation, which the crawled one had none of
+        let mut s = typed_24t(
+            &e,
+            &[
+                "interface GigabitEthernet1/0/7",
+                "no switchport",
+                "interface GigabitEthernet1/0/7.10",
+                "encapsulation dot1Q 10",
+            ],
+        );
+        let (out, r) = s.type_line("xconnect 10.0.0.2 200 encapsulation mpls");
+        assert_eq!(r, Result::Ok, "{out:?}");
+        // a port's `ptp ?` offers `enable` alone; the switch takes `ptp sync` all the same
+        let mut s = typed_24t(&e, &["interface GigabitEthernet1/0/3"]);
+        let (out, r) = s.type_line("ptp sync interval 1");
+        assert_eq!(r, Result::Ok, "{out:?}");
+        assert_eq!(s.type_line("ptp announce interval 1").1, Result::Error);
+    }
+
+    #[test]
+    fn a_line_the_configuration_so_far_refuses_says_what_ios_xe_says() {
+        let e = c9300_17_6();
+        let said = |s: &mut Session, line: &str| {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            out.join("\n")
+        };
+        // a VRF the switch does not hold, each command family in its own words
+        let mut s = typed_24t(&e, &[]);
+        for (line, want) in [
+            (
+                "ip multicast-routing vrf V1",
+                "% VPN Routing instance V1 does not exist.",
+            ),
+            (
+                "ip pim vrf V1 rp-address 10.0.0.1",
+                "% VPN Routing instance V1 does not exist.",
+            ),
+            (
+                "ipv6 multicast-routing vrf V1",
+                "%VPN Routing instance V1 does not exist. Create first",
+            ),
+            (
+                "snmp-server host 10.0.0.1 vrf V1 public",
+                "% VRF name V1 does not exist",
+            ),
+            (
+                "ntp server vrf V1 10.0.0.1",
+                "% IP  routing table V1 does not exist",
+            ),
+        ] {
+            assert_eq!(said(&mut s, line), want);
+        }
+        let mut s = typed_24t(&e, &["interface Vlan10"]);
+        assert_eq!(said(&mut s, "vrf forwarding V1"), "% VRF V1 not configured");
+        let mut s = typed_24t(&e, &["vrf definition V1", "exit", "interface Vlan10"]);
+        assert_eq!(s.type_line("vrf forwarding V1").1, Result::Ok);
+        let mut s = typed_24t(&e, &["router bgp 65000"]);
+        assert_eq!(
+            said(&mut s, "address-family ipv4 vrf V1"),
+            "% VRF V1 does not exist."
+        );
+        assert_eq!(s.mode(), "config-router");
+        // a neighbor's policy, once the process has an address family; a template not made
+        let mut s = typed_24t(
+            &e,
+            &["router bgp 65000", "neighbor 10.0.0.2 remote-as 65001"],
+        );
+        assert_eq!(s.type_line("neighbor 10.0.0.2 activate").1, Result::Ok);
+        s.type_line("address-family ipv6");
+        s.type_line("exit-address-family");
+        assert_eq!(
+            said(&mut s, "neighbor 10.0.0.2 send-community both"),
+            "% Policy commands not allowed without an address family"
+        );
+        assert_eq!(
+            said(&mut s, "neighbor 10.0.0.2 inherit peer-session S1"),
+            "%Template not found. Please create a template first."
+        );
+        assert_eq!(
+            s.type_line("neighbor 10.0.0.2 description uplink").1,
+            Result::Ok
+        );
+        // a private VLAN association naming a VLAN the switch lacks, the primary read first
+        let mut s = typed_24t(&e, &["vlan 20"]);
+        assert_eq!(
+            said(&mut s, "private-vlan association 501-503"),
+            "%Command rejected: invalid private vlan association between vlan20 and vlan501. \
+             VLAN 501 data is not available."
+        );
+        let mut s = typed_24t(&e, &["vlan 20", "exit", "interface GigabitEthernet1/0/5"]);
+        assert_eq!(
+            said(&mut s, "switchport private-vlan host-association 3 20"),
+            "%Command rejected: invalid private vlan association between vlan3 and vlan20. \
+             VLAN 3 data is not available."
+        );
+        // a secondary VLAN's SVI must be down
+        let mut s = typed_24t(&e, &["vlan 30", "exit", "interface Vlan30", "vlan 30"]);
+        assert_eq!(
+            said(&mut s, "private-vlan isolated"),
+            "%Command rejected: invalid private vlan type assignment. VLAN 30's interface is not \
+             administratively down and cannot be set to secondary VLAN."
+        );
+        // the tunnels PIM registers through, past those configured
+        let mut s = typed_24t(
+            &e,
+            &[
+                "ip multicast-routing",
+                "interface Loopback0",
+                "ip address 10.0.0.1 255.255.255.255",
+                "interface Tunnel0",
+                "exit",
+                "ip pim rp-address 10.0.0.1",
+            ],
+        );
+        for n in [1, 2] {
+            assert_eq!(
+                said(&mut s, &format!("interface tunnel {n}")),
+                format!("%Tunnel{n} used by PIM for Registering, configuration not allowed")
+            );
+            assert_eq!(s.mode(), "config");
+        }
+        assert_eq!(s.type_line("interface tunnel 3").1, Result::Ok);
+        // a policy an interface or VLAN names before it exists, its removal too
+        let mut s = typed_24t(&e, &["interface GigabitEthernet1/0/3"]);
+        for line in ["service-policy input PM1", "no service-policy input PM1"] {
+            assert_eq!(said(&mut s, line), "% policy map PM1 not configured");
+        }
+        for (line, policy) in [
+            ("ipv6 source-guard attach-policy SG1", "SG1"),
+            ("ipv6 destination-guard attach-policy DG2", "DG2"),
+        ] {
+            assert_eq!(
+                said(&mut s, line),
+                format!("% Policy {policy} not defined for the feature\n")
+            );
+        }
+        let mut s = typed_24t(&e, &["vlan configuration 10"]);
+        assert_eq!(
+            said(&mut s, "device-tracking attach-policy DT1"),
+            "% Policy DT1 not defined for the feature\n"
+        );
+        // a route target before the VRF's route distinguisher
+        let mut s = typed_24t(&e, &["vrf definition V1"]);
+        assert_eq!(
+            said(&mut s, "route-target both 1:1"),
+            "% VRF V1 does not have an RD configured, please configure the RD before configuring \
+             route-target"
+        );
+        assert_eq!(s.type_line("rd 1:1").1, Result::Ok);
+        assert_eq!(s.type_line("route-target both 1:1").1, Result::Ok);
+        // an OSPFv3 process opened the old way
+        let mut s = typed_24t(&e, &["router ospfv3 1", "exit"]);
+        assert_eq!(
+            said(&mut s, "ipv6 router ospf 1"),
+            "% OSPFv3: Use \"router ospfv3 1\" to configure this process\n% Failed to create \
+             routing protocol ospf"
+        );
+        assert_eq!(s.mode(), "config");
+        // a VFI named before its VPN ID
+        let mut s = typed_24t(
+            &e,
+            &["l2vpn vfi context VF1", "exit", "vlan configuration 10"],
+        );
+        assert_eq!(
+            said(&mut s, "member vfi VF1"),
+            "% VFI VF1 must be configured with a valid vpn id first."
+        );
+        let mut s = typed_24t(
+            &e,
+            &[
+                "l2vpn vfi context VF1",
+                "vpn id 10",
+                "exit",
+                "vlan configuration 10",
+            ],
+        );
+        assert_eq!(s.type_line("member vfi VF1").1, Result::Ok);
+        // an IP service on a LISP instance that carries Ethernet
+        let mut s = typed_24t(
+            &e,
+            &[
+                "router lisp",
+                "instance-id 3",
+                "service ethernet",
+                "exit-service-ethernet",
+            ],
+        );
+        assert_eq!(
+            said(&mut s, "service ipv4"),
+            "% Instance ID 3 has 'service ethernet' enabled.\n L2 and L3 services are exclusive, \
+             remove L2 service first."
+        );
+        assert_eq!(s.mode(), "config-lisp-inst");
+        let mut s = typed_24t(&e, &["router lisp", "instance-id 4"]);
+        assert_eq!(s.type_line("service ipv4").1, Result::Ok);
+        assert_eq!(s.mode(), "config-lisp-inst-srv-ipv4");
+        // objects a line names before they exist: a NAT pool, access lists, role-based lists, a
+        // trustpoint, a regex parameter map, a first-hop security policy
+        let mut s = typed_24t(&e, &[]);
+        for (line, want) in [
+            (
+                "ip nat inside source list 1 pool P1",
+                "%Pool P1 not configured \n",
+            ),
+            ("ntp access-group peer 99", "%Access-list 99 is not defined"),
+            (
+                "ntp access-group serve A1 kod",
+                "%Access-list A1 not defined",
+            ),
+            (
+                "cts role-based permissions from 3 to 5 R3 R5",
+                "% ACL R3 is not defined.\n% ACL R5 is not defined.",
+            ),
+            (
+                "crypto pki certificate chain T1",
+                "% CA trustpoint for cert chain not known.\n",
+            ),
+            (
+                "crypto pki enroll T1",
+                "% CA server trustpoint 'T1' is not known.\n",
+            ),
+        ] {
+            assert_eq!(said(&mut s, line), want);
+            assert_eq!(s.mode(), "config");
+        }
+        let mut s = typed_24t(
+            &e,
+            &[
+                "ip nat pool P1 10.0.0.1 10.0.0.9 netmask 255.255.255.0",
+                "access-list 99 permit any",
+            ],
+        );
+        for line in [
+            "ip nat inside source list 1 pool P1",
+            "ntp access-group peer 99",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let mut s = typed_24t(&e, &["parameter-map type umbrella global"]);
+        assert_eq!(
+            said(&mut s, "local-domain RX1"),
+            "% Parameter-map regex RX1 does not exist"
+        );
+        let mut s = typed_24t(
+            &e,
+            &[
+                "parameter-map type regex RX1",
+                "exit",
+                "parameter-map type umbrella global",
+            ],
+        );
+        assert_eq!(s.type_line("local-domain RX1").1, Result::Ok);
+        let mut s = typed_24t(&e, &["vlan configuration 10"]);
+        for line in [
+            "ipv6 nd raguard attach-policy RG1",
+            "ipv6 dhcp guard attach-policy DG1",
+        ] {
+            let policy = line.split_whitespace().last().unwrap_or("");
+            assert_eq!(
+                said(&mut s, line),
+                format!("% Policy {policy} not defined for the feature\n")
+            );
+        }
+        // a classifier condition while the classifier runs
+        let mut s = typed_24t(&e, &["device classifier"]);
+        assert_eq!(
+            said(&mut s, "device classifier condition C1"),
+            "% Device classifier is enabled.Please disable it and execute the command again."
+        );
+        assert_eq!(
+            said(&mut s, "device classifier device-type T1"),
+            "% Device classifier is enabled. Please disable it and execute the command again.\n"
+        );
+        // a subnet another interface holds, named by the lowest overlapping subnet
+        let mut s = typed_24t(
+            &e,
+            &[
+                "interface Vlan30",
+                "ip address 10.30.0.1 255.255.255.0",
+                "interface Vlan20",
+                "ip address 10.20.0.1 255.255.255.0",
+                "interface Vlan21",
+            ],
+        );
+        assert_eq!(
+            said(&mut s, "ip address 10.20.0.2 255.0.0.0"),
+            "% 10.0.0.0 overlaps with Vlan20"
+        );
+        assert_eq!(
+            s.type_line("ip address 10.21.0.1 255.255.255.0").1,
+            Result::Ok
+        );
+        // a BGP neighbor activated before its remote AS
+        let mut s = typed_24t(
+            &e,
+            &[
+                "router bgp 65000",
+                "neighbor 10.0.0.2 remote-as 65001",
+                "address-family ipv4",
+            ],
+        );
+        assert_eq!(s.type_line("neighbor 10.0.0.2 activate").1, Result::Ok);
+        assert_eq!(
+            said(&mut s, "neighbor 10.0.0.3 activate"),
+            "% Specify remote-as or peer-group commands first"
+        );
+        // in the router's own mode: any neighbor line but its remote AS, peer group or template
+        let mut s = typed_24t(
+            &e,
+            &[
+                "interface Vlan20",
+                "ip address 10.20.0.1 255.255.255.0",
+                "exit",
+                "router bgp 65000",
+                "neighbor 10.0.0.2 remote-as 65001",
+                "neighbor G1 peer-group",
+            ],
+        );
+        for line in [
+            "neighbor 10.0.0.3 fall-over bfd",
+            "neighbor 10.0.0.4 bmp-activate server 1",
+        ] {
+            assert_eq!(
+                said(&mut s, line),
+                "% Specify remote-as or peer-group commands first"
+            );
+        }
+        for line in [
+            "neighbor 10.0.0.2 fall-over bfd",
+            "neighbor G1 description core",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        assert_eq!(
+            said(&mut s, "neighbor 10.20.0.1 remote-as 2"),
+            "% Cannot configure the local system as neighbor"
+        );
+        assert_eq!(
+            said(&mut s, "neighbor fe80::2%Ethernet1/0 remote-as 65400"),
+            "% Link local peer outside address-family scope"
+        );
+    }
+
+    #[test]
+    fn a_show_naming_a_vrf_the_switch_lacks_says_what_ios_xe_says() {
+        let e = c9300_17_6();
+        let stack = crate::platform::parse_stack("C9300-24T").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        for (line, want) in [
+            (
+                "show ip route vrf V9",
+                vec!["% IP routing table vrf V9 does not exist"],
+            ),
+            ("show ip arp vrf V9", vec!["% VRF V9 does not exist."]),
+            ("show ip bgp vpnv4 vrf V9", vec!["% Unknown VRF", ""]),
+            ("show ip vrf detail V9", vec!["% No VRF named V9"]),
+            (
+                "show mpls forwarding-table vrf V9",
+                vec!["% IP routing table V9 doesn't exist"],
+            ),
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(
+                (out, r),
+                (want.iter().map(|w| w.to_string()).collect(), Result::Error),
+                "{line}"
+            );
+        }
+        // the management VRF is the switch's own
+        let (out, _) = s.type_line("show ip route vrf Mgmt-vrf");
+        assert!(!out.iter().any(|l| l.contains("does not exist")), "{out:?}");
+    }
+
+    #[test]
+    fn a_span_line_its_sessions_refuse_says_what_ios_xe_says() {
+        let e = c9300_17_6();
+        let said = |s: &mut Session, line: &str| {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            out.join("\n")
+        };
+        let mut s = typed_24t(
+            &e,
+            &[
+                "monitor session 1 source interface GigabitEthernet1/0/5",
+                "monitor session 1 destination interface GigabitEthernet1/0/6",
+                "monitor session 2 filter vlan 1 - 5 , 9",
+            ],
+        );
+        for (line, want) in [
+            (
+                "monitor session 2 destination interface GigabitEthernet1/0/6 ingress vlan 77",
+                "% Warning: specified default VLAN (77) for ingress on dest port does not exist.\n\
+                 % Interface(s) Gi1/0/6 already configured as monitor destinations in other \
+                 monitor sessions",
+            ),
+            (
+                "monitor session 2 source interface GigabitEthernet1/0/6 rx",
+                "% Interface(s) Gi1/0/6 already configured as monitor destinations",
+            ),
+            (
+                "monitor session 2 destination interface GigabitEthernet1/0/5",
+                "% Interface(s) Gi1/0/5 already configured as monitor sources",
+            ),
+            (
+                "monitor session 1 destination remote vlan 700",
+                "% Session - 1 is a not a Remote Source session. Can't add RSPAN VLAN as \
+                 destination",
+            ),
+            (
+                "monitor session 1 source remote vlan 701",
+                "% Cannot add RSPAN VLAN as source for SPAN session 1 as it is not a RSPAN \
+                 Destination session",
+            ),
+            (
+                "monitor session 2 destination remote vlan 5",
+                "% Configuring Destination RSPAN VLANs 5, but the same vlan is \n% already \
+                 configured as filter vlan",
+            ),
+            (
+                "monitor session 2 filter ip access-group 7",
+                "% vlan filter can not be applied with FSPAN",
+            ),
+        ] {
+            assert_eq!(said(&mut s, line), want);
+        }
+        // a remote VLAN makes session 2 a remote source: ports cannot be its destination
+        assert_eq!(
+            s.type_line("monitor session 2 destination remote vlan 702")
+                .1,
+            Result::Ok
+        );
+        assert_eq!(
+            said(&mut s, "monitor session 2 source remote vlan 703"),
+            "% RSPAN VLAN already exists as destination. The same session cannnot have RSPAN VLAN \
+             both as source and destination"
+        );
+        assert_eq!(
+            said(
+                &mut s,
+                "monitor session 2 destination interface GigabitEthernet1/0/7"
+            ),
+            "% Cannot add ports as destination for session 2 - a RSPAN Source session"
+        );
+        // a source may feed several sessions
+        assert_eq!(
+            s.type_line("monitor session 2 source interface GigabitEthernet1/0/5")
+                .1,
+            Result::Ok
+        );
+    }
+
+    #[test]
+    fn portfast_warns_when_it_changes_and_says_where_it_takes_effect() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &["interface GigabitEthernet1/0/12"]);
+        let warning = [
+            "%Warning: portfast should only be enabled on ports connected to a single",
+            " host. Connecting hubs, concentrators, switches, bridges, etc... to this",
+            " interface  when portfast is enabled, can cause temporary bridging loops.",
+            " Use with CAUTION",
+            "",
+        ];
+        let (out, r) = s.type_line("spanning-tree portfast trunk");
+        assert_eq!((out, r), (warning.map(String::from).to_vec(), Result::Ok));
+        let (out, r) = s.type_line("spanning-tree portfast");
+        let mut want: Vec<String> = warning.map(String::from).to_vec();
+        want.push("%Portfast has been configured on GigabitEthernet1/0/12 but will only".into());
+        want.push(" have effect when the interface is in a non-trunking mode.".into());
+        assert_eq!((out, r), (want, Result::Ok));
+        // typed again it is no change
+        let (out, r) = s.type_line("spanning-tree portfast");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+        assert_eq!(
+            shown(&s, &["spanning-tree portfast"]),
+            [" spanning-tree portfast"]
+        );
+        let (out, _) = s.type_line("spanning-tree portfast trunk");
+        assert_eq!(out.len(), warning.len());
+    }
+
+    #[test]
+    fn mka_mld_and_dhcpv6_server_lines_warn_as_ios_xe_does() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &["mka policy P1"]);
+        let (out, r) = s.type_line("macsec-cipher-suite gcm-aes-256");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            [
+                "",
+                "% If cipher currently being used is not configured, new SAK will be generated",
+                "",
+            ]
+        );
+        assert_eq!(s.type_line("macsec-cipher-suite gcm-aes-256").0.len(), 0);
+        let mut s = typed_24t(&e, &["interface Vlan20"]);
+        let (out, r) = s.type_line("ipv6 mld static-group ff04::10 include 100::1");
+        assert_eq!(
+            (out, r),
+            (
+                vec![
+                    "%Warning: Enable MLD router-side for this command to be effective".to_string()
+                ],
+                Result::Ok
+            )
+        );
+        let (out, r) = s.type_line("ipv6 dhcp server automatic");
+        assert_eq!(
+            (out, r),
+            (
+                vec!["% Warning: Pool  not configured globally - configuring anyway.".to_string()],
+                Result::Ok
+            )
+        );
+        let mut s = typed_24t(&e, &["ipv6 multicast-routing", "interface Vlan20"]);
+        let (out, r) = s.type_line("ipv6 mld static-group ff04::10 include 100::1");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+    }
+
+    #[test]
+    fn auto_qos_and_a_default_sgt_mapping_warn_as_ios_xe_does() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &[]);
+        let (out, r) = s.type_line("auto qos global compact");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            ["%Warning: This command will reset all autoqos generated configurations"]
+        );
+        let (out, r) = s.type_line("cts role-based sgt-map 0.0.0.0/0 sgt 3");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            ["%Please ensure default route is created using ip route 0.0.0.0 command"]
+        );
+        let mut s = typed_24t(&e, &["ip route 0.0.0.0 0.0.0.0 10.0.0.1"]);
+        let (out, r) = s.type_line("cts role-based sgt-map 0.0.0.0/0 sgt 3");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+    }
+
+    #[test]
+    fn an_ospf_reference_bandwidth_change_warns_once() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &["router ospf 1"]);
+        let (out, r) = s.type_line("auto-cost reference-bandwidth 5");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            [
+                "% OSPF: Reference bandwidth is changed. ",
+                "        Please ensure reference bandwidth is consistent across all routers.",
+            ]
+        );
+        let (out, r) = s.type_line("auto-cost reference-bandwidth 5");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+    }
+
+    #[test]
+    fn a_line_needing_configuration_first_says_what_ios_xe_says() {
+        let e = c9300_17_6();
+        let refused = |opened: &[&str], line: &str, said: &[&str]| {
+            let mut s = typed_24t(&e, opened);
+            let (out, r) = s.type_line(line);
+            assert_eq!(
+                (out, r),
+                (
+                    said.iter().map(|l| l.to_string()).collect::<Vec<_>>(),
+                    Result::Error
+                ),
+                "{line}"
+            );
+        };
+        refused(
+            &["ip access-list fqdn F1", "exit"],
+            "ipv6 access-list fqdn F1",
+            &["% A(n) IP FQDN access list with this name already exists"],
+        );
+        refused(
+            &["router isis T1"],
+            "nsf cisco",
+            &["%ISIS not running (configure NET)"],
+        );
+        refused(
+            &["router ospf 1", "nsf cisco enforce global"],
+            "nsf ietf restart-interval 60",
+            &["% OSPF: Cannot enable both Cisco NSF and IETF Graceful Restart"],
+        );
+        let af = ["vrf definition V1", "address-family ipv4"];
+        refused(
+            &[af[0], af[1], "mdt default 226.10.10.10"],
+            "mdt default 232.1.1.1",
+            &["% 226.10.10.10 has already been configured for vrf V1"],
+        );
+        refused(
+            &af,
+            "mdt log-reuse",
+            &["% First configure the data MDT group!"],
+        );
+        refused(
+            &af,
+            "mdt data threshold 50",
+            &["% MDT data must be configured first"],
+        );
+        refused(
+            &[],
+            "crypto pki import T1 certificate",
+            &["% CA server trustpoint 'T1' is not known.", ""],
+        );
+        refused(
+            &[],
+            "ip mroute vrf V1 224.100.0.5 255.255.255.255 fallback-lookup vrf V2",
+            &["% VPN Routing instance V1 does not exist."],
+        );
+        refused(
+            &["end"],
+            "show ip wccp summary",
+            &["% WCCP version 2 is not enabled"],
+        );
+        refused(
+            &["end"],
+            "show spanning-tree mst 3 detail",
+            &["% Switch is not in mst mode", ""],
+        );
+        refused(
+            &["router ospf 1", "end"],
+            "show ip ospf interface brief topology VOICE",
+            &["%OSPF: Specified topology not found for any OSPF process"],
+        );
+        refused(
+            &[
+                "router bgp 65000",
+                "neighbor 10.0.0.1 remote-as 65001",
+                "end",
+            ],
+            "show ip bgp neighbors 10.0.0.2 policy",
+            &["% No such neighbor or address family"],
+        );
+        let mut s = typed_24t(
+            &e,
+            &[
+                "router bgp 65000",
+                "neighbor 10.0.0.1 remote-as 65001",
+                "end",
+            ],
+        );
+        let (out, _) = s.type_line("show ip bgp neighbors 10.0.0.1 policy");
+        assert_ne!(
+            out.first().map(String::as_str),
+            Some("% No such neighbor or address family")
+        );
+        refused(
+            &[],
+            "snmp-server engineID local 1234",
+            &["%Engine ID must be 10 hexadecimal characters or more"],
+        );
+        refused(
+            &["interface GigabitEthernet1/0/1"],
+            "duplex half",
+            &[
+                "",
+                "% Duplex cannot be set to half when speed autonegotiation subset contains \
+                 1Gbps,2.5Gbps,5Gbps or 10Gbps",
+                "",
+            ],
+        );
+        refused(
+            &["interface GigabitEthernet1/0/3"],
+            "switchport nonegotiate",
+            &[
+                "Command rejected: Conflict between 'nonegotiate' and 'dynamic' status on this \
+                 interface: Gi1/0/3",
+            ],
+        );
+        refused(
+            &["interface GigabitEthernet1/0/4", "switchport mode trunk"],
+            "network-policy 60",
+            &["Command rejected: Network Policy is not supported on a trunk port"],
+        );
+        refused(
+            &[
+                "aaa new-model",
+                "interface GigabitEthernet1/0/5",
+                "switchport mode access",
+                "dot1x pae authenticator",
+            ],
+            "cts manual",
+            &["Command rejected (Gi1/0/5): conflict with Dot1x Auth", ""],
+        );
+        refused(
+            &["interface GigabitEthernet1/0/6", "umbrella out"],
+            "umbrella in T1",
+            &["% 'umbrella out' already configured on interface"],
+        );
+        refused(
+            &["interface Vlan20", "ipv6 dhcp server automatic"],
+            "ipv6 address dhcp rapid-commit",
+            &["% Interface is in DHCP server mode"],
+        );
+        refused(
+            &["ntp trusted-key 1"],
+            "ntp trusted-key 1",
+            &["%NTP trusted-key is invalid : key already configured "],
+        );
+        refused(
+            &["track 2 interface GigabitEthernet1/0/3 line-protocol"],
+            "track 2 ip sla 123 state",
+            &["% Cannot change tracked object 2 - delete old config first"],
+        );
+        refused(
+            &["router rip"],
+            "offset-list 103 in 10",
+            &["% Invalid access list name."],
+        );
+        refused(
+            &[],
+            "ip msdp redistribute list 21",
+            &["% Invalid access list name."],
+        );
+        refused(
+            &["interface GigabitEthernet1/0/7", "switchport mode access"],
+            "rep stcn stp",
+            &[
+                "Command rejected: conflict with the current Switchport Mode",
+                "",
+            ],
+        );
+        // the same lines once the configuration has what they need
+        let mut s = typed_24t(&e, &["router rip"]);
+        assert_eq!(s.type_line("offset-list 21 out 10").1, Result::Ok);
+        assert_eq!(s.type_line("ip msdp redistribute list 100").1, Result::Ok);
+        let mut s = typed_24t(
+            &e,
+            &["track 2 interface GigabitEthernet1/0/3 line-protocol"],
+        );
+        assert_eq!(
+            s.type_line("track 2 interface GigabitEthernet1/0/1 ip routing")
+                .1,
+            Result::Ok
+        );
+        let mut s = typed_24t(&e, &["interface GigabitEthernet1/0/1", "speed 100"]);
+        assert_eq!(s.type_line("duplex half").1, Result::Ok);
+        let mut s = typed_24t(
+            &e,
+            &["interface GigabitEthernet1/0/3", "switchport mode access"],
+        );
+        assert_eq!(s.type_line("switchport nonegotiate").1, Result::Ok);
+        assert_eq!(s.type_line("network-policy 60").1, Result::Ok);
+        assert_eq!(
+            s.type_line("snmp-server engineID local 0123456789").1,
+            Result::Ok
+        );
+        let mut s = typed_24t(&e, &[af[0], af[1], "mdt default 226.10.10.10"]);
+        assert_eq!(s.type_line("mdt default 226.10.10.10").1, Result::Ok);
+        let mut s = typed_24t(&e, &["router isis T1", "net 49.0001.0000.0000.0001.00"]);
+        assert_eq!(s.type_line("nsf cisco").1, Result::Ok);
+        let mut s = typed_24t(&e, &["router ospf 1"]);
+        assert_eq!(s.type_line("nsf ietf restart-interval 60").1, Result::Ok);
+        let mut s = typed_24t(&e, &["spanning-tree mode mst", "end"]);
+        let (out, _) = s.type_line("show spanning-tree mst 3 detail");
+        assert_ne!(
+            out.first().map(String::as_str),
+            Some("% Switch is not in mst mode")
+        );
+        let (out, _) = s.type_line("show spanning-tree mst configuration");
+        assert_ne!(
+            out.first().map(String::as_str),
+            Some("% Switch is not in mst mode")
+        );
+        let mut s = typed_24t(&e, &["end"]);
+        let (out, r) = s.type_line("show spanning-tree mst configuration");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out.first().map(String::as_str),
+            Some("% Switch is not in mst mode")
+        );
+        assert!(out.len() > 1, "{out:?}");
+    }
+
+    #[test]
+    fn a_line_its_configuration_already_answers_says_what_ios_xe_says() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &["spanning-tree backbonefast"]);
+        let (out, r) = s.type_line("spanning-tree backbonefast");
+        assert_eq!(
+            (out, r),
+            (
+                vec!["% Backbonefast already enabled".to_string(), String::new()],
+                Result::Error
+            )
+        );
+        let mut s = typed_24t(&e, &["template T1"]);
+        let (out, r) = s.type_line("spanning-tree port-priority 20");
+        assert_eq!(
+            (out, r),
+            (
+                vec![
+                    "% Port Priority in increments of 16 is required".to_string(),
+                    String::new()
+                ],
+                Result::Error
+            )
+        );
+        assert_eq!(s.type_line("spanning-tree port-priority 32").1, Result::Ok);
+        let co_exist = "% prefix-list and access-list can not co-exist in one route-map sequence.";
+        let mut s = typed_24t(&e, &["route-map RM1 permit 10"]);
+        // with no prefix list the sequence takes access lists
+        assert_eq!(s.type_line("match ip address 5").1, Result::Ok);
+        let mut s = typed_24t(
+            &e,
+            &["route-map RM1 permit 10", "match ip address prefix-list P1"],
+        );
+        let (out, r) = s.type_line("match ip address 5 80");
+        assert_eq!((out, r), (vec![co_exist.to_string(); 2], Result::Error));
+        let (out, r) = s.type_line("match ip address 2");
+        assert_eq!((out, r), (vec![co_exist.to_string()], Result::Error));
+        // a route-source access list is checked against a route-source prefix list
+        assert_eq!(s.type_line("match ip route-source 10").1, Result::Ok);
+    }
+
+    #[test]
+    fn a_line_taken_with_a_warning_says_it_as_ios_xe_does() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &["policy-map type control subscriber PC1", "exit"]);
+        let (out, r) = s.type_line("policy-map type control subscriber PC1");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out[0],
+            "%Warning, modifying policy-map \"PC1\" may impact sessions hosted on ports for which \
+             \"PC1\" has already been applied."
+        );
+        let mut s = typed_24t(
+            &e,
+            &["interface Vlan20", "ip address 10.20.0.1 255.255.255.0"],
+        );
+        let (out, r) = s.type_line("standby 1 ip 10.1.1.254");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            ["% Warning: address is not within a subnet on this interface"]
+        );
+        let (out, r) = s.type_line("standby 1 ip 10.1.1.254");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+        let (out, r) = s.type_line("standby 2 ip 10.20.0.254");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+        // each group keeps its own address: group 1's, typed again after group 2's, is no change
+        let (out, r) = s.type_line("standby 1 ip 10.1.1.254");
+        assert_eq!((out.len(), r), (0, Result::Ok));
+        assert_eq!(
+            shown(&s, &["standby"]),
+            [" standby 1 ip 10.1.1.254", " standby 2 ip 10.20.0.254"]
+        );
+        // a group with an IPv4 address refuses a bare `ip` and any IPv6 line
+        let (out, r) = s.type_line("standby 1 ip");
+        assert_eq!(
+            (out, r),
+            (
+                vec![
+                    "% Failed. Unconfigure existing primary vIP address configured for the group."
+                        .to_string()
+                ],
+                Result::Error
+            )
+        );
+        let (out, r) = s.type_line("standby 2 ipv6 autoconfig");
+        assert_eq!(
+            (out, r),
+            (
+                vec!["% Group configured for different address family".to_string()],
+                Result::Error
+            )
+        );
+        // a group with no address yet takes both
+        assert_eq!(s.type_line("standby 3 ipv6 autoconfig").1, Result::Ok);
+        assert_eq!(s.type_line("standby 4 ip").1, Result::Ok);
+        let mut s = typed_24t(&e, &["mka policy 2", "exit"]);
+        let (out, r) = s.type_line("mka policy 2");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            [
+                "",
+                "% MKA Policy \"2\" may have associated active MKA Sessions.",
+                "",
+                "  Changes to MKA Policy \"2\" values",
+                "  will cause all associated active MKA Sessions to be cleared.",
+                ""
+            ]
+        );
+        assert_eq!(s.mode(), "config-mka-policy");
+        let mut s = typed_24t(&e, &["aaa new-model", "interface GigabitEthernet1/0/4"]);
+        let (out, r) = s.type_line("authentication port-control auto");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out,
+            [
+                "%Command deprecated (authentication port-control auto) - use access-session instead",
+                ""
+            ]
+        );
+        assert_eq!(
+            s.type_line("authentication periodic").0,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_first_word_a_submode_only_abbreviates_is_the_enclosing_mode_s_whole_word() {
+        let e = c9300_17_6();
+        // the key chain's `key` takes a number; the key's own `key-string` is not read
+        let mut s = typed_24t(&e, &["key chain K1", "key 1"]);
+        assert_eq!(s.type_line("key rad123").1, Result::Error);
+        assert_eq!(s.mode(), "config-keychain-key");
+        assert_eq!(s.type_line("key 2").1, Result::Ok);
+        assert_eq!(s.type_line("key-str secret").1, Result::Ok);
+        // a mode further out that takes the line whole takes it
+        assert_eq!(s.type_line("key chain K2").1, Result::Ok);
+        assert_eq!(s.mode(), "config-keychain");
+    }
+
+    #[test]
+    fn a_vlan_list_written_with_spaces_is_one_list() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(&e, &[]);
+        let (out, r) = s.type_line("monitor session 2 filter vlan 1 - 5 , 9");
+        assert_eq!(r, Result::Ok, "{out:?}");
+        // a comma kept against the VLAN before it is no such list
+        assert_eq!(
+            s.type_line("vlan configuration 101-110, 200").1,
+            Result::Error
+        );
+    }
+
+    #[test]
+    fn the_lab_s_submodes_take_what_it_took_there() {
+        let e = c9300_17_6();
+        let cases: [(&[&str], &str, &str); 8] = [
+            (&["ipv6 router ospf 1"], "router-id 10.0.0.1", "config-rtr"),
+            (
+                &["crypto ipsec transform-set T1 esp-aes esp-sha-hmac"],
+                "mode tunnel",
+                "cfg-crypto-trans",
+            ),
+            (
+                &["vlan configuration 10"],
+                "member evpn-instance 1 vni 10000",
+                "config-vlan-config",
+            ),
+            (
+                &["vlan configuration 10"],
+                "mdns-sd gateway",
+                "config-vlan-mdns-sd",
+            ),
+            (
+                &["stealthwatch-cloud-monitor"],
+                "service-key abc",
+                "config-swc-monitor",
+            ),
+            (&["router lisp"], "instance-id 3", "config-lisp-inst"),
+            (
+                &["key chain KC macsec"],
+                "key 2000",
+                "config-keychain-macsec-key",
+            ),
+            (
+                &["policy-map P", "class class-default"],
+                "police cir 1000000 pir 2000000",
+                "config-pmap-c-police",
+            ),
+        ];
+        for (opened, line, mode) in cases {
+            let mut s = typed_24t(&e, opened);
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+            assert_eq!(s.mode(), mode, "{line}");
+        }
+        // a monitor named as the guide's placeholder is a name
+        let mut s = typed_24t(&e, &[]);
+        assert_eq!(s.type_line("flow monitor M").1, Result::Ok);
+        assert_eq!(s.mode(), "config-flow-monitor");
+        // a VLAN's own mode takes no mDNS gateway: global configuration does
+        let mut s = typed_24t(&e, &["vlan 10"]);
+        assert_eq!(s.type_line("mdns-sd gateway").1, Result::Ok);
+        assert_eq!(s.mode(), "config-mdns-sd");
     }
 }

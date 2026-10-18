@@ -1319,6 +1319,1167 @@
       "args": {"service-list-name": {"kind": "Word"}},
       "enters": "config-mdns-sl-out",
       "evidence": "as 'mdns-sd service-list': the lab C9300-24T (17.6.4) took 'mdns-sd service-list TESTSLO OUT', entered (config-mdns-sl-out)# and printed OUT in its running configuration"
+    },
+    {
+      "name": "cts sxp filter-list",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-filter-list",
+      "evidence": "the lab C9300-24T (17.6.4) took 'cts sxp filter-list filter_1' at (config)# and entered (config-filter-list)#"
+    },
+    {
+      "name": "network-policy profile (global configuration)",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-network-policy",
+      "evidence": "the lab C9300-24T (17.6.4) took 'network-policy profile 60' at (config)# and entered (config-network-policy)#"
+    },
+    {
+      "name": "ipv6 destination-guard policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-destguard",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 destination-guard policy pol1' at (config)# and entered (config-destguard)#"
+    },
+    {
+      "name": "transport unicast ipv4 local loopback",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-property-transport",
+      "evidence": "the lab C9300-24T (17.6.4) took 'transport unicast ipv4 local loopback 0' at (config-property)# and entered (config-property-transport)#"
+    },
+    {
+      "name": "autodiscovery bgp signaling ldp",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-vfi-autodiscovery",
+      "evidence": "the lab C9300-24T (17.6.4) took 'autodiscovery bgp signaling ldp' at (config-vfi)# and entered (config-vfi-autodiscovery)#"
+    },
+    {
+      "name": "l2vpn xconnect context",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-xconnect",
+      "evidence": "the lab C9300-24T (17.6.4) took 'l2vpn xconnect context con1' at (config)# and entered (config-xconnect)#"
+    },
+    {
+      "name": "et-analytics",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-et-analytics",
+      "evidence": "the lab C9300-24T (17.6.4) took 'et-analytics' at (config)# and entered (config-et-analytics)#"
+    },
+    {
+      "name": "sampler",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-sampler",
+      "evidence": "the lab C9300-24T (17.6.4) took 'sampler SAMPLER-1' at (config)# and entered (config-sampler)#"
+    },
+    {
+      "name": "stealthwatch-cloud-monitor",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-swc-monitor",
+      "evidence": "the lab C9300-24T (17.6.4) took 'stealthwatch-cloud-monitor' at (config)# and entered (config-swc-monitor)#"
+    },
+    {
+      "name": "ipv6 nd inspection policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-nd-inspection",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 nd inspection policy policy1' at (config)# and entered (config-nd-inspection)#"
+    },
+    {
+      "name": "vlan configuration",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-vlan-config",
+      "evidence": "the lab C9300-24T (17.6.4) took 'vlan configuration 10-15' at (config)# and entered (config-vlan-config)#"
+    },
+    {
+      "name": "ip access-list role-based",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-rb-acl",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ip access-list role-based rbacl1' at (config)# and entered (config-rb-acl)#"
+    },
+    {
+      "name": "ipv6 access-list role-based",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-ipv6rb-acl",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 access-list role-based sgaclname' at (config)# and entered (config-ipv6rb-acl)#"
+    },
+    {
+      "name": "key chain macsec",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-keychain-macsec",
+      "evidence": "the lab C9300-24T (17.6.4) took 'key chain kc1 macsec' at (config)# and entered (config-keychain-macsec)#"
+    },
+    {
+      "name": "system mode maintenance",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-maintenance",
+      "evidence": "the lab C9300-24T (17.6.4) took 'system mode maintenance' at (config)# and entered (config-maintenance)#"
+    },
+    {
+      "name": "l2vpn evpn",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-evpn",
+      "evidence": "the lab C9300-24T (17.6.4) took 'l2vpn evpn' at (config)# and entered (config-evpn)#"
+    },
+    {
+      "name": "l2vpn evpn instance",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-evpn-evi",
+      "evidence": "the lab C9300-24T (17.6.4) took 'l2vpn evpn instance 1 vlan-based' at (config)# and entered (config-evpn-evi)#"
+    },
+    {
+      "name": "l2vpn evpn ethernet-segment",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-evpn-es",
+      "evidence": "the lab C9300-24T (17.6.4) took 'l2vpn evpn ethernet-segment 1' at (config)# and entered (config-evpn-es)#"
+    },
+    {
+      "name": "address-family vpnv4",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-router-af",
+      "evidence": "the lab C9300-24T (17.6.4) took 'address-family vpnv4' at (config-router)# under 'router bgp 65000' and entered (config-router-af)#"
+    },
+    {
+      "name": "address-family vpnv6",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-router-af",
+      "evidence": "the lab C9300-24T (17.6.4) took 'address-family vpnv6' at (config-router)# under 'router bgp 65000' and entered (config-router-af)#"
+    },
+    {
+      "name": "address-family ipv4 mdt",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-router-af",
+      "evidence": "the lab C9300-24T (17.6.4) took 'address-family ipv4 mdt' at (config-router)# under 'router bgp 65000' and entered (config-router-af)#"
+    },
+    {
+      "name": "mdns-sd location-filter",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-location-filter",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd location-filter INTER-VN-LOCAL-PROXY' at (config)# and entered (config-mdns-location-filter)#"
+    },
+    {
+      "name": "mdns-sd service-policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-ser-pol",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd service-policy BLUE-VRF-POLICY' at (config)# and entered (config-mdns-ser-pol)#"
+    },
+    {
+      "name": "mdns-sd gateway",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-sd",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd gateway' at (config)# and at (config-vlan)# and entered (config-mdns-sd)#"
+    },
+    {
+      "name": "mdns-sd service-definition",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-ser-def",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd service-definition CUSTOM1' at (config)# and entered (config-mdns-ser-def)#"
+    },
+    {
+      "name": "mdns-sd service-peer group",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-svc-peer",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd service-peer group' at (config)# and entered (config-mdns-svc-peer)#"
+    },
+    {
+      "name": "service-export mdns-sd controller",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-sd-se",
+      "evidence": "the lab C9300-24T (17.6.4) took 'service-export mdns-sd controller TESTCTL' at (config)# and entered (config-mdns-sd-se)#"
+    },
+    {
+      "name": "mdns-sd controller service-list",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-ctrl-srv-list",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd controller service-list WIDE-AREA-SERVICES-LIST' at (config)# and entered (config-mdns-ctrl-srv-list)#"
+    },
+    {
+      "name": "mdns-sd controller service-policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdns-ctrl-srv-pol",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd controller service-policy DNAC-CONTROLLER-POLICY' at (config)# and entered (config-mdns-ctrl-srv-pol)#"
+    },
+    {
+      "name": "interface range macro",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-if-range",
+      "evidence": "the lab C9300-24T (17.6.4) took 'interface range macro enet_list' at (config)# and entered (config-if-range)#"
+    },
+    {
+      "name": "coap proxy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-coap-proxy",
+      "evidence": "the lab C9300-24T (17.6.4) took 'coap proxy' at (config)# and entered (config-coap-proxy)#"
+    },
+    {
+      "name": "ipv6 nd raguard policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-nd-raguard",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 nd raguard policy example_policy' at (config)# and entered (config-nd-raguard)#"
+    },
+    {
+      "name": "ipv6 nd raguard policy raguard-router",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-nd-raguard",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 nd raguard policy raguard-router' at (config)# and entered (config-nd-raguard)#"
+    },
+    {
+      "name": "ipv6 nd suppress policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-nd-suppress",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 nd suppress policy policy1' at (config)# and entered (config-nd-suppress)#"
+    },
+    {
+      "name": "ipv6 dhcp pool",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-dhcpv6",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 dhcp pool IPv6_DHCPPOOL' at (config)# and entered (config-dhcpv6)#"
+    },
+    {
+      "name": "ipv6 dhcp pool IPv6_DHCPPOOL",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-dhcpv6",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 dhcp pool IPv6_DHCPPOOL' at (config)# and entered (config-dhcpv6)#"
+    },
+    {
+      "name": "af-interface default",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-router-af-interface",
+      "evidence": "the lab C9300-24T (17.6.4) took 'af-interface default' at (config-router-af)# under an EIGRP named address family and entered (config-router-af-interface)#"
+    },
+    {
+      "name": "ipv6 router rip",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-rtr",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 router rip cisco' at (config)# and entered (config-rtr)#"
+    },
+    {
+      "name": "ipv6 router ospf",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-rtr",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 router ospf 21' at (config)# and entered (config-rtr)#"
+    },
+    {
+      "name": "ip explicit-path",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "cfg-ip-expl-path",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ip explicit-path name OmitR12' at (config)# and entered (cfg-ip-expl-path)#"
+    },
+    {
+      "name": "ip access-list fqdn",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-fqdn-acl",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ip access-list fqdn facl' at (config)# and entered (config-fqdn-acl)#"
+    },
+    {
+      "name": "time-range",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-time-range",
+      "evidence": "the lab C9300-24T (17.6.4) took 'time-range workhours' at (config)# and entered (config-time-range)#"
+    },
+    {
+      "name": "object-group service",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-service-group",
+      "evidence": "the lab C9300-24T (17.6.4) took 'object-group service my-service-object-group' at (config)# and entered (config-service-group)#"
+    },
+    {
+      "name": "arp access-list",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-arp-nacl",
+      "evidence": "the lab C9300-24T (17.6.4) took 'arp access-list arpacl22' at (config)# and entered (config-arp-nacl)#"
+    },
+    {
+      "name": "ipv6 dhcp guard policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-dhcp-guard",
+      "evidence": "the lab C9300-24T (17.6.4) took 'ipv6 dhcp guard policy example_policy' at (config)# and entered (config-dhcp-guard)#"
+    },
+    {
+      "name": "template interface",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-template",
+      "evidence": "the lab C9300-24T (17.6.4) took 'template interface template_w_sisf' at (config)# and entered (config-template)#"
+    },
+    {
+      "name": "dot1x credentials (global)",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["dot1x credentials <profile-name>", "no dot1x credentials <profile-name>"],
+      "args": {"profile-name": {"kind": "Word"}},
+      "enters": "config-dot1x-creden",
+      "evidence": "the books give it under an interface; the lab C9300-24T (17.6.4) took 'dot1x credentials test' at (config)# and entered (config-dot1x-creden)#, and stayed at (config-if)# after it"
+    },
+    {
+      "name": "event identity-update",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-class-control-policymap",
+      "evidence": "the lab C9300-24T (17.6.4) took 'event identity-update match-all' at (config-event-control-policymap)# and entered (config-class-control-policymap)#"
+    },
+    {
+      "name": "event authentication-success",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-class-control-policymap",
+      "evidence": "the lab C9300-24T (17.6.4) took 'event authentication-success match-all' at (config-event-control-policymap)# and entered (config-class-control-policymap)#"
+    },
+    {
+      "name": "event authentication-failure",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-class-control-policymap",
+      "evidence": "the lab C9300-24T (17.6.4) took 'event authentication-failure match-all' at (config-event-control-policymap)# and entered (config-class-control-policymap)#"
+    },
+    {
+      "name": "crypto ikev2 proposal",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-ikev2-proposal",
+      "evidence": "the lab C9300-24T (17.6.4) took 'crypto ikev2 proposal proposal1' at (config)# and entered (config-ikev2-proposal)#"
+    },
+    {
+      "name": "crypto ikev2 policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-ikev2-policy",
+      "evidence": "the lab C9300-24T (17.6.4) took 'crypto ikev2 policy policy1' at (config)# and entered (config-ikev2-policy)#"
+    },
+    {
+      "name": "crypto ipsec transform-set",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "cfg-crypto-trans",
+      "evidence": "the lab C9300-24T (17.6.4) took 'crypto ipsec transform-set tfs esp-gcm' at (config)# and entered (cfg-crypto-trans)#"
+    },
+    {
+      "name": "telemetry ietf subscription",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdt-subs",
+      "evidence": "the lab C9300-24T (17.6.4) took 'telemetry ietf subscription 101' at (config)# and entered (config-mdt-subs)#"
+    },
+    {
+      "name": "telemetry receiver protocol",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-mdt-protocol-receiver",
+      "evidence": "the lab C9300-24T (17.6.4) took 'telemetry receiver protocol receiver1' at (config)# and entered (config-mdt-protocol-receiver)#"
+    },
+    {
+      "name": "device-sensor filter-list dhcp",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-sensor-dhcplist",
+      "evidence": "the lab C9300-24T (17.6.4) took 'device-sensor filter-list dhcp list dhcp-list' at (config)# and entered (config-sensor-dhcplist)#"
+    },
+    {
+      "name": "device-sensor filter-list lldp",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-sensor-lldplist",
+      "evidence": "the lab C9300-24T (17.6.4) took 'device-sensor filter-list lldp list lldp-list' at (config)# and entered (config-sensor-lldplist)#"
+    },
+    {
+      "name": "address-family ipv4 (VRF definition)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vrf"],
+      "lines": ["address-family ipv4 [multicast | unicast]", "no address-family ipv4 [multicast | unicast]"],
+      "enters": "config-vrf-af",
+      "evidence": "the lab C9300-24T (17.6.4) took 'address-family ipv4' at (config-vrf)# and entered (config-vrf-af)#, where the books show only (config-router-af)#; it refused 'address-family ipv4 unicast vrf inside' there under 'vrf'"
+    },
+    {
+      "name": "address-family ipv4",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-vrf"],
+      "lines": [],
+      "evidence": "address-family ipv4 (VRF definition) takes it in (config-vrf)#"
+    },
+    {
+      "name": "address-family ipv6 (VRF definition)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vrf"],
+      "lines": ["address-family ipv6 [multicast | unicast]", "no address-family ipv6 [multicast | unicast]"],
+      "enters": "config-vrf-af",
+      "evidence": "the lab C9300-24T (17.6.4) took 'address-family ipv6' at (config-vrf)# and entered (config-vrf-af)#, where the books show only (config-router-af)#"
+    },
+    {
+      "name": "address-family ipv6",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-vrf"],
+      "lines": [],
+      "evidence": "address-family ipv6 (VRF definition) takes it in (config-vrf)#"
+    },
+    {
+      "name": "key (key chain)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-keychain"],
+      "lines": ["key <key-id>", "no key <key-id>"],
+      "args": {"key-id": {"kind": "Number", "min": 0, "max": 2147483647}},
+      "enters": "config-keychain-key",
+      "evidence": "the books give one 'key' for a key chain, a RADIUS server and a TACACS+ server; the lab C9300-24T (17.6.4) stayed at (config-radius-server)# after 'key cisco123', and at (config-keychain-key)# read 'key chain glbp2' as a global line, which a key chain's key number cannot be"
+    },
+    {
+      "name": "key",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-keychain"],
+      "lines": [],
+      "evidence": "key (key chain) takes it in (config-keychain)#"
+    },
+    {
+      "name": "event (control policy)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-event-control-policymap"],
+      "lines": ["event <event-name> [match-all | match-first]", "no event <event-name>"],
+      "args": {"event-name": {"kind": "Word"}},
+      "enters": "config-class-control-policymap",
+      "evidence": "the lab C9300-24T (17.6.4) took 'event session-started' at (config-event-control-policymap)# and entered (config-class-control-policymap)#; an applet's event enters nothing"
+    },
+    {
+      "name": "event",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-event-control-policymap"],
+      "lines": [],
+      "evidence": "event (control policy) takes it in (config-event-control-policymap)#"
+    },
+    {
+      "name": "bmp server",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router"],
+      "lines": ["bmp server <server-number-n>", "no bmp server <server-number-n>"],
+      "args": {"server-number-n": {"kind": "Word"}},
+      "enters": "config-router-bmpsrvr",
+      "evidence": "the guide gives one 'bmp' line; the lab C9300-24T (17.6.4) stayed at (config-router)# after 'bmp initial-refresh delay 30', where 'bmp server' enters (config-router-bmpsrvr)#"
+    },
+    {
+      "name": "bmp",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router"],
+      "lines": ["bmp buffer-size <buffer-bytes>", "bmp initial-refresh {delay <refresh-delay> | skip}", "no bmp buffer-size", "no bmp initial-refresh"],
+      "args": {"buffer-bytes": {"kind": "Word"}, "refresh-delay": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4) stayed at (config-router)# after 'bmp initial-refresh delay 30'; bmp server takes 'bmp server'"
+    },
+    {
+      "name": "destination (flow exporter)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-flow-exporter"],
+      "lines": ["destination {<ip-address> | <hostname>} [vrf <vrf-name>]", "no destination"],
+      "args": {"ip-address": {"kind": "Ipv4"}, "hostname": {"kind": "Word"}, "vrf-name": {"kind": "Word"}},
+      "evidence": "the books give one 'destination' for a flow exporter and an ERSPAN source session; the lab C9300-24T (17.6.4) stayed at (config-flow-exporter)# after 'destination 10.0.0.4'"
+    },
+    {
+      "name": "destination",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-flow-exporter"],
+      "lines": [],
+      "evidence": "destination (flow exporter) takes it in (config-flow-exporter)#"
+    },
+    {
+      "name": "source (flow exporter)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-flow-exporter"],
+      "lines": ["source <interface-id>", "no source"],
+      "args": {"interface-id": {"kind": "Interface"}},
+      "evidence": "the books give one 'source' for a flow exporter and ERSPAN sessions; the lab C9300-24T (17.6.4) stayed at (config-flow-exporter)# after 'source loopback 0'"
+    },
+    {
+      "name": "source",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-flow-exporter"],
+      "lines": [],
+      "evidence": "source (flow exporter) takes it in (config-flow-exporter)#"
+    },
+    {
+      "name": "mpls ldp router-id",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "drop_modes": ["config-router"],
+      "lines": [],
+      "evidence": "the guide types it under 'router bgp'; the lab C9300-24T (17.6.4) left (config-router)# for (config)# on 'mpls ldp router-id Loopback0 force', as a global line"
+    },
+    {
+      "name": "class-map type multicast-flows",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "drop_modes": ["config-if"],
+      "lines": [],
+      "enters": "config-mcast-flows-cmap",
+      "evidence": "the guide types it under an interface; the lab C9300-24T (17.6.4) took 'class-map type multicast-flows proxymap' at (config-if)# as a global line and entered (config-mcast-flows-cmap)#"
+    },
+    {
+      "name": "ipv6 nd cache expire",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) left (config-if)# on a switchport for (config)# on 'ipv6 nd cache expire 7200' and took it there too"
+    },
+    {
+      "name": "set precedence",
+      "platform": "Catalyst 9300",
+      "modes": ["config-pmap-c"],
+      "drop_modes": ["config-pmap"],
+      "lines": [],
+      "evidence": "the guide types it in a policy map; the lab C9300-24T (17.6.4) took 'set precedence 5' at (config-pmap-c)# and stayed, and refused 'set dscp 10' at (config-pmap)#"
+    },
+    {
+      "name": "interface loopback",
+      "platform": "Catalyst 9300",
+      "remove": true,
+      "evidence": "the guide types it in an interface; the lab C9300-24T (17.6.4) left (config-if)# for (config)# on 'no interface loopback 1'"
+    },
+    {
+      "name": "router lisp",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["router lisp", "no router lisp"],
+      "enters": "config-router-lisp",
+      "evidence": "the lab C9300-24T (17.6.4) took 'router lisp' at (config)# and entered (config-router-lisp)#"
+    },
+    {
+      "name": "instance-id (LISP)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-lisp"],
+      "lines": ["instance-id <iid>", "no instance-id <iid>"],
+      "args": {"iid": {"kind": "Number", "min": 0, "max": 16777215}},
+      "enters": "config-lisp-inst",
+      "evidence": "the lab C9300-24T (17.6.4) took 'instance-id 3' at (config-router-lisp)# and entered (config-lisp-inst)#"
+    },
+    {
+      "name": "service ethernet (LISP instance)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-inst"],
+      "lines": ["service ethernet", "no service ethernet"],
+      "enters": "config-lisp-inst-srv-eth",
+      "evidence": "the lab C9300-24T (17.6.4) took 'service ethernet' at (config-lisp-inst)# and entered (config-lisp-inst-srv-eth)#"
+    },
+    {
+      "name": "service ipv4 (LISP instance)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-inst"],
+      "lines": ["service ipv4", "no service ipv4"],
+      "enters": "config-lisp-inst-srv-ipv4",
+      "evidence": "the lab C9300-24T (17.6.4) took 'service ipv4' at (config-lisp-inst)# and entered (config-lisp-inst-srv-ipv4)#"
+    },
+    {
+      "name": "service ipv4 (LISP)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-lisp"],
+      "lines": ["service ipv4", "no service ipv4"],
+      "enters": "config-lisp-srv-ipv4",
+      "evidence": "the lab C9300-24T (17.6.4) took 'service ipv4' at (config-router-lisp)# and entered (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "extranet (LISP)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-lisp"],
+      "lines": ["extranet <extranet-name>", "no extranet <extranet-name>"],
+      "args": {"extranet-name": {"kind": "Word"}},
+      "enters": "config-router-lisp-extranet",
+      "evidence": "the lab C9300-24T (17.6.4) took 'extranet ext1' at (config-router-lisp)# and entered (config-router-lisp-extranet)#"
+    },
+    {
+      "name": "prefix-list (LISP)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-lisp"],
+      "lines": ["prefix-list <prefix-list-name>", "no prefix-list <prefix-list-name>"],
+      "args": {"prefix-list-name": {"kind": "Word"}},
+      "enters": "config-router-lisp-prefix-list",
+      "evidence": "the lab C9300-24T (17.6.4) took 'prefix-list wired' at (config-router-lisp)# and entered (config-router-lisp-prefix-list)#, and refused 'prefix-list NO-MARKETING in'"
+    },
+    {
+      "name": "exit-prefix-list",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-lisp-prefix-list"],
+      "lines": ["exit-prefix-list"],
+      "evidence": "the lab C9300-24T (17.6.4) took 'exit-prefix-list' at (config-router-lisp-prefix-list)# and returned to (config-router-lisp)#"
+    },
+    {
+      "name": "broadcast-underlay",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-inst-srv-eth"],
+      "lines": ["broadcast-underlay <multicast-ip-address>", "no broadcast-underlay"],
+      "args": {"multicast-ip-address": {"kind": "Ipv4"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'broadcast-underlay 225.1.1.1' at (config-lisp-inst-srv-eth)#"
+    },
+    {
+      "name": "eid-table (LISP service)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-inst-srv-eth", "config-lisp-inst-srv-ipv4"],
+      "lines": ["eid-table vlan <vlan-id>", "eid-table default", "eid-table vrf <vrf-name>", "no eid-table"],
+      "args": {"vlan-id": {"kind": "Number", "min": 1, "max": 4094}, "vrf-name": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'eid-table vlan 250' at (config-lisp-inst-srv-eth)# and 'eid-table default' at (config-lisp-inst-srv-ipv4)#, and refused both at (config-lisp-inst)#"
+    },
+    {
+      "name": "exit-service-ethernet",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-inst-srv-eth"],
+      "lines": ["exit-service-ethernet"],
+      "evidence": "the lab C9300-24T (17.6.4) took 'exit-service-ethernet' at (config-lisp-inst-srv-eth)# and returned to (config-lisp-inst)#"
+    },
+    {
+      "name": "exit-service-ipv4",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["exit-service-ipv4"],
+      "evidence": "the lab C9300-24T (17.6.4) took 'exit-service-ipv4' at (config-lisp-srv-ipv4)# and returned to (config-router-lisp)#"
+    },
+    {
+      "name": "encapsulation vxlan",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) took 'encapsulation vxlan' at (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "itr map-resolver",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["itr map-resolver <map-resolver-address> [prefix-list <prefix-list-name>]", "no itr map-resolver <map-resolver-address>"],
+      "args": {"map-resolver-address": {"kind": "Ipv4"}, "prefix-list-name": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'itr map-resolver 2.1.1.6 prefix-list wired' at (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "map-cache-limit",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["map-cache-limit <cache-limit>", "no map-cache-limit"],
+      "args": {"cache-limit": {"kind": "Number", "min": 0, "max": 100000}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'map-cache-limit 200' at (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "use-petr",
+      "platform": "Catalyst 9300",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["use-petr <locator-address> [priority <priority> weight <weight>]", "no use-petr <locator-address>"],
+      "args": {"locator-address": {"kind": "Ipv4"}, "priority": {"kind": "Number", "min": 0, "max": 255}, "weight": {"kind": "Number", "min": 0, "max": 100}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'use-petr 10.1.1.1' at (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "fallback profile",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["fallback profile <profile-name>", "no fallback profile <profile-name>"],
+      "args": {"profile-name": {"kind": "Word"}},
+      "enters": "config-fallback-profile",
+      "evidence": "the lab C9300-24T (17.6.4) took 'fallback profile profile1' at (config)# and entered (config-fallback-profile)#, and took 'ip admission rule1' there"
+    },
+    {
+      "name": "ip admission (fallback profile)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-fallback-profile"],
+      "lines": ["ip admission <rule-name>", "no ip admission <rule-name>"],
+      "args": {"rule-name": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'ip admission rule1' at (config-fallback-profile)# and refused 'ip admission name rule2' there"
+    },
+    {
+      "name": "key (MACsec key chain)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-keychain-macsec"],
+      "lines": ["key <key-id>", "no key <key-id>"],
+      "args": {"key-id": {"kind": "Word"}},
+      "enters": "config-keychain-macsec-key",
+      "evidence": "the lab C9300-24T (17.6.4) took 'key 2000' at (config-keychain-macsec)# and entered (config-keychain-macsec-key)#"
+    },
+    {
+      "name": "cryptographic-algorithm",
+      "platform": "Catalyst 9300",
+      "modes": ["config-keychain-macsec-key"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) took 'cryptographic-algorithm aes-256-cmac' at (config-keychain-macsec-key)#"
+    },
+    {
+      "name": "key-string",
+      "platform": "Catalyst 9300",
+      "modes": ["config-keychain-macsec-key"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) took a 'key-string' at (config-keychain-macsec-key)#"
+    },
+    {
+      "name": "address-family ipv4 ipv6 mvpn",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router"],
+      "lines": ["address-family {ipv4 | ipv6} mvpn", "no address-family {ipv4 | ipv6} mvpn"],
+      "enters": "config-router-af",
+      "evidence": "the books print 'address-family ipv4 ipv6 mvpn'; the lab C9300-24T (17.6.4) took 'address-family ipv4 mvpn' at (config-router)# under 'router bgp 65000' and entered (config-router-af)#"
+    },
+    {
+      "name": "crypto pki certificate map",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["crypto pki certificate map <label> <sequence-number>", "no crypto pki certificate map <label> <sequence-number>"],
+      "args": {"label": {"kind": "Word"}, "sequence-number": {"kind": "Number", "min": 1, "max": 1000}},
+      "enters": "ca-certificate-map",
+      "evidence": "the guide gives the label and sequence number as one argument; the lab C9300-24T (17.6.4) took 'crypto pki certificate map Group 10' at (config)# and entered (ca-certificate-map)#"
+    },
+    {
+      "name": "police cir pir",
+      "platform": "Catalyst 9300",
+      "modes": ["config-pmap-c"],
+      "lines": ["police cir <cir> [bc <bc>] pir <pir> [be <be>]"],
+      "args": {"cir": {"kind": "Word"}, "bc": {"kind": "Word"}, "pir": {"kind": "Word"}, "be": {"kind": "Word"}},
+      "enters": "config-pmap-c-police",
+      "evidence": "the lab C9300-24T (17.6.4) took 'police cir 1000000 pir 2000000' at (config-pmap-c)# and entered (config-pmap-c-police)#"
+    },
+    {
+      "name": "list (CoAP proxy)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-coap-proxy"],
+      "lines": ["list {ipv4 | ipv6} <list-name>", "no list {ipv4 | ipv6} <list-name>"],
+      "args": {"list-name": {"kind": "Word"}},
+      "enters": "config-coap-proxy-iplist",
+      "evidence": "the lab C9300-24T (17.6.4) took 'list ipv4 trial_list' at (config-coap-proxy)# and entered (config-coap-proxy-iplist)#"
+    },
+    {
+      "name": "list",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-coap-proxy"],
+      "lines": [],
+      "evidence": "list (CoAP proxy) takes it in (config-coap-proxy)#"
+    },
+    {
+      "name": "guest-interface",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-config-app-hosting-trunk-mode-guest",
+      "evidence": "the lab C9300-24T (17.6.4) took 'guest-interface 2' at (config-config-app-hosting-trunk)# and entered (config-config-app-hosting-trunk-mode-guest)#"
+    },
+    {
+      "name": "dot1x credentials",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config"],
+      "lines": [],
+      "evidence": "dot1x credentials (global) takes it in (config)#; the lab C9300-24T (17.6.4) stayed at (config-if)# after 'dot1x credentials test'"
+    },
+    {
+      "name": "router-id",
+      "platform": "Catalyst 9300",
+      "modes": ["config-rtr"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) held a 'router-id' under 'ipv6 router ospf' in its running configuration, at (config-rtr)#"
+    },
+    {
+      "name": "mode tunnel",
+      "platform": "Catalyst 9300",
+      "modes": ["cfg-crypto-trans"],
+      "drop_modes": ["cfg-crypto-tran"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) held 'mode tunnel' under 'crypto ipsec transform-set' in its running configuration, at (cfg-crypto-trans)#"
+    },
+    {
+      "name": "member evpn-instance",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan-config"],
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) offered 'member', 'mdns-sd' and 'ipv6' at (config-vlan-config)#, which 'vlan configuration' enters, and none of them at (config-vlan)#"
+    },
+    {
+      "name": "member vni",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan-config"],
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) offered 'member', 'mdns-sd' and 'ipv6' at (config-vlan-config)#, which 'vlan configuration' enters, and none of them at (config-vlan)#"
+    },
+    {
+      "name": "member access-vfi",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan-config"],
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) offered 'member', 'mdns-sd' and 'ipv6' at (config-vlan-config)#, which 'vlan configuration' enters, and none of them at (config-vlan)#"
+    },
+    {
+      "name": "ipv6 dhcp guard attach-policy",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan-config"],
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) offered 'member', 'mdns-sd' and 'ipv6' at (config-vlan-config)#, which 'vlan configuration' enters, and none of them at (config-vlan)#"
+    },
+    {
+      "name": "mdns-sd gateway (VLAN configuration)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan-config"],
+      "lines": ["mdns-sd gateway", "no mdns-sd gateway"],
+      "enters": "config-vlan-mdns-sd",
+      "evidence": "the lab C9300-24T (17.6.4) took 'mdns-sd gateway' at (config-vlan-config)# and entered (config-vlan-mdns-sd)#"
+    },
+    {
+      "name": "mdns-sd gateway",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) read 'mdns-sd gateway' at (config-vlan)# as a global line and entered (config-mdns-sd)#"
+    },
+    {
+      "name": "ipv6 nd suppress",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) offered 'member', 'mdns-sd' and 'ipv6' at (config-vlan-config)#, which 'vlan configuration' enters, and none of them at (config-vlan)#"
+    },
+    {
+      "name": "ipv6 snooping",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) offered 'member', 'mdns-sd' and 'ipv6' at (config-vlan-config)#, which 'vlan configuration' enters, and none of them at (config-vlan)#"
+    },
+    {
+      "name": "flow monitor monitor-name",
+      "platform": "Catalyst 9300",
+      "remove": true,
+      "evidence": "the guide prints the monitor's name as the word 'monitor-name'; the lab C9300-24T (17.6.4) offered 'WORD' and 'type' for 'flow monitor ?' at (config)#"
+    },
+    {
+      "name": "monitor session",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "args": {"vlan-id": {"kind": "VlanList"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'monitor session 2 filter vlan 1 - 5 , 9' and 'monitor session 1 filter vlan 100 - 110' at (config)#"
+    },
+    {
+      "name": "monitor session filter",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "args": {"vlan-id": {"kind": "VlanList"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'monitor session 2 filter vlan 1 - 5 , 9' and 'monitor session 1 filter vlan 100 - 110' at (config)#"
+    },
+    {
+      "name": "service-key",
+      "platform": "Catalyst 9300",
+      "modes": ["config-swc-monitor"],
+      "drop_modes": ["config-stealthwatch-cloud-monitor"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) took 'service-key', 'sensor-name' and 'url' at (config-swc-monitor)#, which 'stealthwatch-cloud-monitor' enters"
+    },
+    {
+      "name": "sensor-name",
+      "platform": "Catalyst 9300",
+      "modes": ["config-swc-monitor"],
+      "drop_modes": ["config-stealthwatch-cloud-monitor"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) took 'service-key', 'sensor-name' and 'url' at (config-swc-monitor)#, which 'stealthwatch-cloud-monitor' enters"
+    },
+    {
+      "name": "url",
+      "platform": "Catalyst 9300",
+      "modes": ["config-swc-monitor"],
+      "drop_modes": ["config-stealthwatch-cloud-monitor"],
+      "lines": [],
+      "evidence": "the lab C9300-24T (17.6.4) took 'service-key', 'sensor-name' and 'url' at (config-swc-monitor)#, which 'stealthwatch-cloud-monitor' enters"
+    },
+    {
+      "name": "snmp-server enable traps bridge",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps bridge [newroot] [topologychange]", "no snmp-server enable traps bridge [newroot] [topologychange]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps bridge newroot' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps call-home",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps call-home [message-send-fail] [server-fail]", "no snmp-server enable traps call-home [message-send-fail] [server-fail]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps call-home message-send-fail' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps cef",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps cef [inconsistency] [peer-fib-state-change] [peer-state-change] [resource-failure]", "no snmp-server enable traps cef [inconsistency] [peer-fib-state-change] [peer-state-change] [resource-failure]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps cef inconsistency' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps envmon",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps envmon [fan] [shutdown] [status] [supply] [temperature]", "no snmp-server enable traps envmon [fan] [shutdown] [status] [supply] [temperature]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps envmon status' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps isis",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps isis [errors] [state-change]", "no snmp-server enable traps isis [errors] [state-change]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps isis errors' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps license",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps license [deploy] [error] [usage]", "no snmp-server enable traps license [deploy] [error] [usage]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps license deploy' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps stackwise",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps stackwise [GLS] [ILS] [SRLS] [insufficient-power] [invalid-input-current] [invalid-output-current] [member-removed] [member-upgrade-notification] [new-master] [new-member] [port-change] [power-budget-warning] [power-invalid-topology] [power-link-status-changed] [power-oper-status-changed] [power-priority-conflict] [power-version-mismatch] [ring-redundant] [stack-mismatch] [unbalanced-power-supplies] [under-budget] [under-voltage]", "no snmp-server enable traps stackwise [GLS] [ILS] [SRLS] [insufficient-power] [invalid-input-current] [invalid-output-current] [member-removed] [member-upgrade-notification] [new-master] [new-member] [port-change] [power-budget-warning] [power-invalid-topology] [power-link-status-changed] [power-oper-status-changed] [power-priority-conflict] [power-version-mismatch] [ring-redundant] [stack-mismatch] [unbalanced-power-supplies] [under-budget] [under-voltage]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps stackwise GLS' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps vrfmib",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps vrfmib [vnet-trunk-down] [vnet-trunk-up] [vrf-down] [vrf-up]", "no snmp-server enable traps vrfmib [vnet-trunk-down] [vnet-trunk-up] [vrf-down] [vrf-up]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps vrfmib vnet-trunk-down' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps ospf",
+      "platform": "Catalyst 9300",
+      "adds": ["snmp-server enable traps ospf [cisco-specific] [errors] [lsa] [retransmit] [state-change]", "no snmp-server enable traps ospf [cisco-specific] [errors] [lsa] [retransmit] [state-change]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'snmp-server enable traps ospf lsa' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "ip ospf cost cost",
+      "platform": "Catalyst 9300",
+      "remove": true,
+      "evidence": "the guide's line names no argument; the lab C9300-24T (17.6.4) took 'ip ospf cost 8' at (config-if)#"
+    },
+    {
+      "name": "ip ospf cost",
+      "platform": "Catalyst 9300",
+      "modes": ["config-if"],
+      "lines": ["ip ospf cost <interface-cost>", "no ip ospf cost"],
+      "args": {"interface-cost": {"kind": "Number", "min": 1, "max": 65535}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'ip ospf cost 8' at (config-if)#, and its answer to 'ip ospf ?' offered 'cost'"
+    },
+    {
+      "name": "set tag",
+      "platform": "Catalyst 9300",
+      "modes": ["config-route-map"],
+      "lines": ["set tag {<tag-value> | <tag-address>}", "no set tag [<tag-value> | <tag-address>]"],
+      "args": {"tag-value": {"kind": "Number", "min": 0, "max": 4294967295}, "tag-address": {"kind": "Ipv4"}},
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'set tag 1' and 'set tag 5' at (config-route-map)#, and its answer to 'set tag ?' offered <0-4294967295> and A.B.C.D"
+    },
+    {
+      "name": "set large-community",
+      "platform": "Catalyst 9300",
+      "modes": ["config-route-map"],
+      "lines": ["set large-community none", "set large-community <community> [additive]", "set large-community <community> <community2> [additive]", "set large-community <community> <community2> <community3> [additive]", "no set large-community"],
+      "args": {"community": {"kind": "Word"}, "community2": {"kind": "Word"}, "community3": {"kind": "Word"}},
+      "evidence": "the guide's '{xx:yy:zz}' is a value; the lab C9300-24T (17.6.4) took 'set large-community 1:2:3 5:6:7' and 'set large-community 1:2:3 5:6:7 additive' at (config-route-map)#"
+    },
+    {
+      "name": "match metric (IP)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-route-map"],
+      "lines": ["match metric {<metric-value> | external <metric-value>} [+- <deviation-number>]", "no match metric {<metric-value> | external <metric-value>} [+- <deviation-number>]"],
+      "args": {"metric-value": {"kind": "Number", "min": 1, "max": 4294967295}, "deviation-number": {"kind": "Number", "min": 0, "max": 4294967295}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'match metric 1', 'match metric 500 +- 100' and 'match metric external 500 +- 100' at (config-route-map)#"
+    },
+    {
+      "name": "random-detect exp",
+      "platform": "Catalyst 9300",
+      "modes": ["config-pmap-c"],
+      "lines": ["random-detect exp <exp-value> [percent] <min-threshold> <max-threshold>", "no random-detect exp <exp-value>"],
+      "args": {"exp-value": {"kind": "Number", "min": 0, "max": 7}, "min-threshold": {"kind": "Number", "min": 1, "max": 512000000}, "max-threshold": {"kind": "Number", "min": 1, "max": 512000000}},
+      "evidence": "the guide's line runs the words together; the lab C9300-24T (17.6.4) took 'random-detect exp 1 10 20' and 'random-detect exp 2 30 40' at (config-pmap-c)#, and its answer to 'random-detect exp ?' offered <0-7>"
+    },
+    {
+      "name": "random-detect dscp",
+      "platform": "Catalyst 9300",
+      "args": {"dscp-value": {"kind": "Dscp"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'random-detect dscp cs1 percent 10 20' at (config-pmap-c)#, and its answer to 'random-detect dscp ?' offered <0-63> and the DSCP names"
+    },
+    {
+      "name": "port-channel load-balance extended",
+      "platform": "Catalyst 9300",
+      "adds": ["port-channel load-balance extended [dst-ip] [dst-mac] [dst-port] [ipv6-label] [l3-proto] [src-ip] [src-mac] [src-port]"],
+      "evidence": "the lab C9300-24T (17.6.4) took 'port-channel load-balance extended dst-ip dst-mac src-ip' at (config)#, and its answer to 'port-channel load-balance extended dst-ip ?' offered the other fields"
+    },
+    {
+      "name": "dscp (RADIUS server)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-radius-server"],
+      "lines": ["dscp auth <dscp_auth_value> acct <dscp_acct_value>", "no dscp auth <dscp_auth_value> acct <dscp_acct_value>"],
+      "args": {"dscp_auth_value": {"kind": "Number", "min": 1, "max": 63}, "dscp_acct_value": {"kind": "Number", "min": 1, "max": 63}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'dscp auth 10 acct 20' at (config-radius-server)#, and its answer to 'dscp auth ?' offered <1-63>"
+    },
+    {
+      "name": "automate-tester username",
+      "platform": "Catalyst 9300",
+      "adds": ["automate-tester username <user> [ignore-auth-port] [ignore-acct-port] [idle-time <minutes>] [vrf <vrf-name>]", "automate-tester username <user> probe-on [vrf <vrf-name>]", "no automate-tester username <user>"],
+      "args": {"minutes": {"kind": "Number", "min": 1, "max": 35791}},
+      "evidence": "the guide's line runs two forms together; the lab C9300-24T (17.6.4) took 'automate-tester username user1 idle-time 2 vrf VRF1' and 'automate-tester username user1 probe-on vrf VRF1' at (config-radius-server)#"
+    },
+    {
+      "name": "fqdn ttl-timeout factor",
+      "platform": "Catalyst 9300",
+      "remove": true,
+      "evidence": "the lab C9300-24T (17.6.4)'s answer to 'fqdn ?' offered 'ttl-timeout-factor' alone, and it took 'fqdn ttl-timeout-factor 100' at (config)#"
+    },
+    {
+      "name": "fqdn ttl-timeout-factor",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["fqdn ttl-timeout-factor {<ttl-timeout> | infinite}", "no fqdn ttl-timeout-factor"],
+      "args": {"ttl-timeout": {"kind": "Number", "min": 1, "max": 300}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'fqdn ttl-timeout-factor 100' at (config)#; the book writes it 'ttl-timeout factor'"
+    },
+    {
+      "name": "cts role-based sgt-map",
+      "platform": "Catalyst 9300",
+      "adds": ["cts role-based sgt-map host {<ipv4_hostaddress> | <ipv6_hostaddress>} sgt <sgt-number>"],
+      "args": {"ipv4_hostaddress": {"kind": "Ipv4"}, "ipv6_hostaddress": {"kind": "Ipv6"}, "sgt-number": {"kind": "Number", "min": 2, "max": 65519}},
+      "evidence": "the book runs its forms together; the lab C9300-24T (17.6.4) took 'cts role-based sgt-map host 10.1.2.1 sgt 3' at (config)#"
+    },
+    {
+      "name": "ip dhcp snooping database (URL)",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["ip dhcp snooping database <url>", "no ip dhcp snooping database"],
+      "args": {"url": {"kind": "Word"}},
+      "evidence": "the book splits the URL at its colon; the lab C9300-24T (17.6.4) took 'ip dhcp snooping database tftp://10.90.90.90/snooping-rp2' at (config)#"
+    },
+    {
+      "name": "tftp-server (URL)",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["tftp-server <url> [alias <alias-name>] [<access-list-number>]", "no tftp-server <url>"],
+      "args": {"url": {"kind": "Word"}, "alias-name": {"kind": "Word"}, "access-list-number": {"kind": "Number", "min": 1, "max": 1999}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'tftp-server flash:config-boot.text' and 'tftp-server flash:image.bin' at (config)#, and its answer to 'tftp-server ?' offered 'flash:' and the other file systems"
+    },
+    {
+      "name": "tlv name",
+      "platform": "Catalyst 9300",
+      "modes": ["config-sensor-cdplist"],
+      "lines": ["tlv name <tlv-name>", "no tlv name <tlv-name>"],
+      "args": {"tlv-name": {"kind": "Word"}},
+      "evidence": "the guide's line runs the number into the name; the lab C9300-24T (17.6.4) took 'tlv name address-type' and 'tlv name device-name' at (config-sensor-cdplist)# and refused both at (config-sensor-lldplist)#"
+    },
+    {
+      "name": "tlv number",
+      "platform": "Catalyst 9300",
+      "modes": ["config-sensor-cdplist", "config-sensor-lldplist"],
+      "lines": ["tlv number <tlv-number>", "no tlv number <tlv-number>"],
+      "args": {"tlv-number": {"kind": "Number", "min": 0, "max": 65535}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'tlv number 10' and 'tlv number 34' at (config-sensor-cdplist)# and 'tlv number 34' at (config-sensor-lldplist)#"
+    },
+    {
+      "name": "show device-tracking database",
+      "platform": "Catalyst 9300",
+      "adds": ["show device-tracking database [details]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show device-tracking database' and 'show device-tracking database details' at #"
+    },
+    {
+      "name": "show device-tracking policies",
+      "platform": "Catalyst 9300",
+      "adds": ["show device-tracking policies [detail | details]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show device-tracking policies', 'show device-tracking policies detail' and 'show device-tracking policies details' at #"
+    },
+    {
+      "name": "show device-tracking messages",
+      "platform": "Catalyst 9300",
+      "adds": ["show device-tracking messages"],
+      "evidence": "the lab C9300-24T (17.6.4) answered 'show device-tracking messages' at #"
+    },
+    {
+      "name": "show ip sla statistics",
+      "platform": "Catalyst 9300",
+      "adds": ["show ip sla statistics [<operation-number>] [details]", "show ip sla statistics aggregated [<operation-number>] [details]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show ip sla statistics' at #"
+    },
+    {
+      "name": "show env",
+      "platform": "Catalyst 9300",
+      "adds": ["show env stack [<stack-number>]", "show env temperature [status]"],
+      "args": {"stack-number": {"kind": "Number", "min": 1, "max": 9}},
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show env stack 1' and 'show env temperature status' at #"
+    },
+    {
+      "name": "show env xps",
+      "platform": "Catalyst 9300",
+      "adds": ["show env xps {budgeting | configuration | power | system | thermal | upgrade | version}", "show env xps port {all | <number>}"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show env xps configuration', 'show env xps upgrade' and 'show env xps version' at #"
+    },
+    {
+      "name": "show mpls ldp bindings",
+      "platform": "Catalyst 9300",
+      "adds": ["show mpls ldp bindings [brief | summary]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show mpls ldp bindings brief' and 'show mpls ldp bindings summary' at #"
+    },
+    {
+      "name": "show mpls ldp discovery",
+      "platform": "Catalyst 9300",
+      "adds": ["show mpls ldp discovery [brief | summary]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show mpls ldp discovery brief' and 'show mpls ldp discovery summary' at #"
+    },
+    {
+      "name": "show mpls ldp neighbor",
+      "platform": "Catalyst 9300",
+      "adds": ["show mpls ldp neighbor [brief]"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) answered 'show mpls ldp neighbor brief' and refused 'show mpls ldp neighbor summary' at #"
+    },
+    {
+      "name": "monitor capture (interface/control plane)",
+      "platform": "Catalyst 9300",
+      "adds": ["monitor capture <capture-name> interface <capture-interface> {in | out | both} [match any]", "monitor capture <capture-name> control-plane {in | out | both}", "no monitor capture <capture-name> interface <capture-interface> [in | out | both]", "no monitor capture <capture-name> control-plane [in | out | both]"],
+      "args": {"capture-interface": {"kind": "Interface"}},
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'monitor capture mycap interface GigabitEthernet1/0/1 in', 'monitor capture mycap interface GigabitEthernet1/0/1 in match any' and 'monitor capture mycap control-plane in' at #"
+    },
+    {
+      "name": "monitor capture match",
+      "platform": "Catalyst 9300",
+      "adds": ["monitor capture <capture-name> match {any | ipv4 any any | ipv6 any any}"],
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'monitor capture mycap match ipv4 any any' at #"
+    },
+    {
+      "name": "monitor capture limit",
+      "platform": "Catalyst 9300",
+      "adds": ["monitor capture <capture-name> limit [duration <seconds>] [packet-len <size>] [packets <num>]"],
+      "args": {"size": {"kind": "Number", "min": 64, "max": 9500}, "num": {"kind": "Number", "min": 1, "max": 100000}},
+      "evidence": "the book runs the keywords together; the lab C9300-24T (17.6.4) took 'monitor capture mycap limit duration 60 packet-len 400' at #"
+    },
+    {
+      "name": "monitor capture start",
+      "platform": "Catalyst 9300",
+      "adds": ["monitor capture <capture-name> start [display [display-filter <filter>]]"],
+      "args": {"filter": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4) took 'monitor capture mycap start display display-filter \"stp\"' at #"
+    },
+    {
+      "name": "ipv6 nd raguard attach-policy (VLAN configuration)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan-config"],
+      "lines": ["ipv6 nd raguard attach-policy <policy-name>", "no ipv6 nd raguard attach-policy <policy-name>"],
+      "args": {"policy-name": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4) answered '% Policy example_policy not defined for the feature' to 'ipv6 nd raguard attach-policy example_policy' at (config-vlan-config)#"
     }
   ]
 }

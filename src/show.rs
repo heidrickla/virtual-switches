@@ -5169,6 +5169,7 @@ mod tests {
             &e,
             "C9300-24T",
             &[
+                "fhrp version vrrp v3",
                 "interface Vlan20",
                 "ip address 10.20.0.1 255.255.255.0",
                 "vrrp 20 address-family ipv4",

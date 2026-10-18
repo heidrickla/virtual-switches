@@ -80,6 +80,34 @@ pub fn is_refusal(answer: &[String]) -> bool {
     answer.iter().any(|l| l.starts_with('%'))
 }
 
+/// The blocks whose names a `?` answer offers, none configured when it was asked: `flow monitor `
+/// for `No monitors configured`, `sampler ` for `No samplers configured`.
+pub fn configured_kind(answer: &[String]) -> Option<&'static str> {
+    answer.iter().find_map(|l| match l.trim() {
+        "No monitors configured" | "No monitors available" => Some("flow monitor "),
+        "No samplers configured" => Some("sampler "),
+        "No records configured" => Some("flow record "),
+        "No exporters configured" | "No flow exporters configured" => Some("flow exporter "),
+        _ => None,
+    })
+}
+
+/// The blocks whose names an answer's `User defined` rows are, the crawl's own, by the keyword
+/// typed before them: `record` in a flow monitor offers the flow records configured.
+pub fn defined_kind(answer: &[String], keyword: &str) -> Option<&'static str> {
+    let kind = match keyword.to_lowercase().as_str() {
+        "record" => "flow record ",
+        "exporter" => "flow exporter ",
+        "monitor" => "flow monitor ",
+        "sampler" => "sampler ",
+        _ => return None,
+    };
+    answer_rows(answer)
+        .iter()
+        .any(|(_, what)| what.eq_ignore_ascii_case("user defined"))
+        .then_some(kind)
+}
+
 /// A `?` answer as the switch prints it after `typed`, the whole line before the `?` (`do-exec`
 /// included): a held ambiguous refusal quotes that line as typed, as both crawls' switches did.
 pub fn refusal_for(typed: &str, answer: Vec<String>) -> Vec<String> {
@@ -814,6 +842,12 @@ fn keyword(word: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || "_./:-<>".contains(c));
     !(word == "|" || word.starts_with('<') || caps)
+}
+
+/// The word and description of each row of a `?` answer, keywords and placeholders alike; a
+/// refusal has none.
+pub fn answer_rows(answer: &[String]) -> Vec<(&str, &str)> {
+    rows(answer).iter().map(|r| (r.word, r.what)).collect()
 }
 
 /// The keywords a `?` answer offers, in its order (`keyword`); a refusal offers none.

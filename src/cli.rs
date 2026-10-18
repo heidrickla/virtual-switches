@@ -175,6 +175,8 @@ pub fn interface_types() -> &'static [(&'static str, &'static str)] {
         ("HundredGigE", "Hu"),
         ("Loopback", "Lo"),
         ("Null", "Nu"),
+        // the VXLAN endpoint, `nve <1-32>` (the lab C9300-24T, 17.6.4, took `interface nve1`)
+        ("nve", "nve"),
         ("Port-channel", "Po"),
         ("TenGigabitEthernet", "Te"),
         ("Tunnel", "Tu"),
@@ -279,7 +281,7 @@ fn digits(t: &str) -> Option<&str> {
     (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).then_some(t)
 }
 
-fn ipv4(t: &str) -> bool {
+pub(crate) fn ipv4(t: &str) -> bool {
     let parts: Vec<&str> = t.split('.').collect();
     parts.len() == 4
         && parts.iter().all(|p| {
@@ -331,7 +333,22 @@ fn take_arg(kind: &ArgKind, toks: &[Tok], i: usize, redacted: bool) -> Option<(u
             let v: i64 = t.text.parse().ok()?;
             (v >= *min && v <= *max).then(|| (1, v.to_string()))
         }
-        ArgKind::VlanList => vlan_list(&t.text).map(|v| (1, v)),
+        ArgKind::VlanList => {
+            // a list written with a space each side of its `-` and `,` (`1 - 5 , 9`), which the
+            // lab C9300-24T (17.6.4) took in `monitor session 2 filter vlan`; it refused
+            // `vlan configuration 101-110, 200`
+            let mut text = t.text.clone();
+            let mut n = 1;
+            while let Some(next) = toks.get(i + n) {
+                let sign = |w: &str| w == "-" || w == ",";
+                if !(sign(&next.text) || sign(&toks[i + n - 1].text)) {
+                    break;
+                }
+                text.push_str(&next.text);
+                n += 1;
+            }
+            vlan_list(&text).map(|v| (n, v))
+        }
         ArgKind::Interface => {
             let (full, num, n) = interface_name(&t.text, toks.get(i + 1).map(|x| x.text.as_str()))?;
             Some((n, format!("{full}{num}")))

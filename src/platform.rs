@@ -3024,6 +3024,9 @@ impl Stack {
             "Port-channel" => Some((1, 128)),
             "Vlan" => Some((1, 4094)),
             "Loopback" | "Tunnel" => Some((0, 2_147_483_647)),
+            // `interface nve ?` answers `<1-32>` (the lab C9300-24T, 17.6.4); other families are
+            // inferred to lack it
+            "nve" if matches!(self.family(), Some(Family::C9300 | Family::C9300X)) => Some((1, 32)),
             _ => None,
         }
     }

@@ -249,7 +249,7 @@ end
     fn a_form_is_the_same_command_with_other_arguments() {
         let e = engine();
         let stack = crate::platform::parse_stack("1=C9400-LC-48T,3=C9400-SUP-1XL").unwrap();
-        let config = "ip route 10.9.9.0 255.255.255.0 10.0.0.1\ninterface GigabitEthernet1/0/5\n spanning-tree bpduguard disable\n duplex half\n!\nend\n";
+        let config = "ip route 10.9.9.0 255.255.255.0 10.0.0.1\ninterface GigabitEthernet1/0/5\n spanning-tree bpduguard disable\n speed 100\n duplex half\n!\nend\n";
         let (lines, _) = classify(&e, stack, config);
         let ev = |l: &str| lines.iter().find(|x| x.line == l).unwrap().evidence;
         // the cores route other prefixes
@@ -268,6 +268,7 @@ end
         let stack = crate::platform::parse_stack("1=C9400-LC-48T,3=C9400-SUP-1XL").unwrap();
         let config = "\
 vrf definition Mgmt-vrf
+ rd 1:1
  !
  address-family ipv4
   route-target export 1:1
@@ -280,6 +281,7 @@ end
             script(&lines),
             [
                 "vrf definition Mgmt-vrf",
+                " rd 1:1",
                 " address-family ipv4",
                 "  route-target export 1:1",
             ]
