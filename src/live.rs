@@ -575,6 +575,62 @@ impl Held {
         }
     }
 
+    /// The crawls at a session's level and at the level it is gated against (`license::GATED`): the
+    /// image's own where it holds both, else the donor's at both.
+    fn gate_crawls(&self, level: Option<&str>) -> Option<(&Crawl, &Crawl)> {
+        let level = level?;
+        let above = crate::license::gated_by(level)?;
+        fn pair<'c>(
+            m: &'c BTreeMap<String, Crawl>,
+            level: &str,
+            above: &str,
+        ) -> Option<(&'c Crawl, &'c Crawl)> {
+            Some((m.get(level)?, m.get(above)?))
+        }
+        pair(&self.crawls, level, above).or_else(|| pair(&self.donors, level, above))
+    }
+
+    /// Whether a session's level is gated here: crawls of the image, or of its donor, answer at both
+    /// the level and the level it is gated against.
+    pub fn gated(&self, level: Option<&str>) -> bool {
+        self.gate_crawls(level).is_some()
+    }
+
+    /// What the gate's two crawls (`gate_crawls`) printed for `?` after `text` in `mode`, entered
+    /// through `context`: the one at the session's level, then the one above it, each line read with
+    /// its own crawl's answers. A line whose numbers neither crawl typed is read as the line both
+    /// typed with other numbers in the same ranges (`numbers_as_crawled`). None where either holds
+    /// no answer.
+    pub fn gate_answers(
+        &self,
+        level: Option<&str>,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: impl Fn(&str) -> bool,
+    ) -> Option<(&Vec<String>, &Vec<String>)> {
+        let (at, above) = self.gate_crawls(level)?;
+        let configured: &dyn Fn(&str) -> bool = &configured;
+        let answers = |c| Answers {
+            help: None,
+            crawl: Some(c),
+        };
+        let both = |t: &str| {
+            Some((
+                answers(at).help_for(mode, context, t, configured)?,
+                answers(above).help_for(mode, context, t, configured)?,
+            ))
+        };
+        if let Some(both) = both(text) {
+            return Some(both);
+        }
+        let Read::Line(line) = read(&[answers(at)], mode, context, text, configured) else {
+            return None;
+        };
+        let sibling = numbers_as_crawled(at, above, mode, context?, &crate::context::key(&line))?;
+        both(&sibling)
+    }
+
     /// Whether a real switch held `line` under a block of this kind ("" at the top level).
     pub fn has(&self, kind: &str, line: &str) -> bool {
         let line = line.trim();
@@ -767,6 +823,65 @@ fn read<'a>(
         line.push(' ');
     }
     Read::Line(line)
+}
+
+/// The first line both crawls answered `?` after in `mode` and `context` that is `key` with other
+/// numbers where it has numbers: each pair in one `<lo-hi>` range of the answer before it at the
+/// level (`at`). The lab C9300-24T (17.6.4) crawls asked `monitor session 1 ?`, and its
+/// network-essentials refused `type` after `monitor session 2` as its answer for session 1 left it out.
+fn numbers_as_crawled(
+    at: &Crawl,
+    above: &Crawl,
+    mode: &str,
+    context: &str,
+    key: &str,
+) -> Option<String> {
+    let number = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit());
+    let words: Vec<&str> = key.split(' ').collect();
+    let first = words.iter().position(|w| number(w))?;
+    if first == 0 || !key.ends_with(' ') {
+        return None;
+    }
+    let prefix = format!("{} ", words[..first].join(" "));
+    fn answered<'c>(c: &'c Crawl, mode: &str, context: &str, k: &str) -> Option<&'c Vec<String>> {
+        c.get(&(mode.to_string(), k.to_string()))?
+            .iter()
+            .find(|(c, _)| c == context)
+            .map(|(_, a)| a)
+    }
+    let held = |c, k: &str| answered(c, mode, context, k);
+    let in_one_range = |answer: &Vec<String>, a: &str, b: &str| {
+        answer_rows(answer).iter().any(|(w, _)| {
+            let range = w.strip_prefix('<').and_then(|r| r.strip_suffix('>'));
+            range
+                .and_then(|r| r.split_once('-'))
+                .and_then(|(lo, hi)| Some((lo.parse::<u64>().ok()?, hi.parse::<u64>().ok()?)))
+                .is_some_and(|(lo, hi)| {
+                    [a, b]
+                        .iter()
+                        .all(|n| n.parse::<u64>().is_ok_and(|n| n >= lo && n <= hi))
+                })
+        })
+    };
+    at.range((mode.to_string(), prefix.clone())..)
+        .map(|((m, k), _)| (m, k))
+        .take_while(|(m, k)| m.as_str() == mode && k.starts_with(&prefix))
+        .map(|(_, k)| k)
+        .find(|k| {
+            let theirs: Vec<&str> = k.split(' ').collect();
+            theirs.len() == words.len()
+                && *k != key
+                && held(at, k).is_some()
+                && held(above, k).is_some()
+                && words.iter().zip(&theirs).enumerate().all(|(i, (w, t))| {
+                    if !number(w) {
+                        return w == t;
+                    }
+                    let before = format!("{} ", theirs[..i].join(" "));
+                    number(t) && held(at, &before).is_some_and(|a| in_one_range(a, w, t))
+                })
+        })
+        .cloned()
 }
 
 /// The lookup keys of the words of a line read so far (`help_key` and `context::key` of the line,
@@ -2429,5 +2544,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_line_with_other_numbers_is_read_as_the_line_both_crawls_answered() {
+        let answer =
+            |rows: &[&str]| -> Vec<String> { rows.iter().map(|r| format!("  {r}")).collect() };
+        let crawl = |entries: &[(&str, &[&str])]| -> Crawl {
+            entries
+                .iter()
+                .map(|(k, rows)| {
+                    (
+                        ("config".to_string(), k.to_string()),
+                        vec![(String::new(), answer(rows))],
+                    )
+                })
+                .collect()
+        };
+        let session = &["<1-66>  SPAN session number"][..];
+        let one = &["destination  SPAN destination", "type  session type"][..];
+        let at = crawl(&[("monitor session ", session), ("monitor session 1 ", one)]);
+        let above = crawl(&[("monitor session ", session), ("monitor session 1 ", one)]);
+        let read = |key: &str| numbers_as_crawled(&at, &above, "config", "", key);
+        assert_eq!(
+            read("monitor session 2 ").as_deref(),
+            Some("monitor session 1 ")
+        );
+        // out of the range, the crawled line itself, a number first, a word unfinished
+        assert_eq!(read("monitor session 99 "), None);
+        assert_eq!(read("monitor session 1 "), None);
+        assert_eq!(read("2 "), None);
+        assert_eq!(read("monitor session 2"), None);
+        // in another context, or answered at one level alone
+        assert_eq!(
+            numbers_as_crawled(
+                &at,
+                &above,
+                "config",
+                "interface vlan",
+                "monitor session 2 "
+            ),
+            None
+        );
+        let alone = crawl(&[("monitor session ", session)]);
+        assert_eq!(
+            numbers_as_crawled(&at, &alone, "config", "", "monitor session 2 "),
+            None
+        );
     }
 }

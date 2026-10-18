@@ -209,7 +209,12 @@ A line with no held answer, made of a held line `Q` and two picks or more of the
 
 ### License level
 
-A session's level is its running configuration's `license boot level <level>`. Without that line the book gives it:
+A session's level is its running configuration's `license boot level <level>`, else the level it booted at, else the book's.
+
+- A configuration typed as a console boots it (`check`, a lab switch's files) boots at the level its licence line states, and every line of it, those before the line too, is read at that level.
+- Typed at the console, the line prints `% use 'write' command to make license boot config take effect on next boot` and the level stays.
+
+Without a level stated or booted the book gives it:
 
 | Platform | Level |
 |---|---|
@@ -246,7 +251,7 @@ A donor answers for an image at a level only once that book, release and level i
 
 ### Lines refused on Enter
 
-A configuration line the books take is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it.
+A configuration line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line.
 
 - A word no row of the answer before it offers is invalid there. A line whose answer after its last word holds no `<cr>` is incomplete, unless that answer offers again what the one before it offered (a list, which ends anywhere).
 - A word with no answer held before it is not read. Reading stops at a held refusal for the line so far and at a `LINE` row.
@@ -254,6 +259,35 @@ A configuration line the books take is read against the image's own answers afte
 - An answer that lists the objects configured offers this session's: `No monitors configured` and its kin, and the crawl's own names, its `User defined` rows after `record`, `exporter`, `monitor` or `sampler`. A flow record counts once it holds a field, and a flow monitor named on an interface once it holds a record, as the lab C9300-24T (17.6.4) refused an empty record in a monitor and a monitor without one on a port. A keyword the answer offers beside the names is read as any other.
 - A routed port's lines and a PoE port's `power` lines are not read: the crawled ports were switchports without PoE.
 - Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides.
+
+### Licence gate
+
+A level that runs less of an image than another (`license::GATED`: `network-essentials` against `network-advantage`) refuses, in any mode and EXEC too, a word that the other level's `?` offers and its own does not. The answers are the image's own crawls where it holds both levels, else the donor's at both where `license::ENABLED` lists the image at that level. Where neither holds both, nothing is gated.
+
+- Each word is read against both levels' answers for the line before it, in the same mode and context. A word the level's answer does not fit and the other level's does is refused at its start, and the caret stands where the level's own answer puts it.
+- A word the level's answer fits is read on, and one with no answer before it at both levels is passed over. Reading stops at a word neither answer fits, at a `LINE` row of the level's answer and at a refusal held at either level.
+- An interface named by its type and number fits a row of that type, a file system's row (`flash:`) fits a path after it, and any other word fits as on Enter.
+- A line whose numbers neither crawl typed is read as a line both typed with other numbers in the same `<lo-hi>` ranges: `monitor session 2 type` as `monitor session 1 type`.
+- The refusal that reads the line least far stands, among the books', the gate's and the one read against the image's answers; where the books and the gate refuse the same word, the gate's place in it is kept.
+- Every physical port shares one context, which holds the crawled switchport's answers, and a routed port's lines are read against them.
+
+Measured exceptions, `src/license.rs`:
+
+| Table | Level | Mode | Lines | Answer |
+|---|---|---|---|---|
+| `REFUSED_TYPES` | `network-essentials` | any | `pseudowire`, `Auto-Template` with a number | refused past the characters another listed type begins with (`interface pseudowire 100` under the `s`) |
+| `UNLISTED` | `network-essentials` | config | `net` | `net` taken, the NET after it refused under its first character |
+| `TAKEN` | `network-essentials` | config | `l2 traceroute` | taken though `?` lists no `l2`; `l2 vfi` is refused |
+| `LEFT_OUT` | `network-essentials` | config-subif | `xconnect` | refused at the word |
+
+What the gated level prints for a line its image leaves out (`network-essentials`, IOS XE):
+
+| Line | Answer |
+|---|---|
+| `router bgp`, `router isis` | `Protocol not in this image`, the mode kept |
+| `vrf definition <name>`, `ip vrf <name>` | `% Feature is not supported`; the management port's `Mgmt-vrf` is taken |
+| `redistribute isis` under a router | `% Failed to create routing protocol isis` |
+| `show running-config` of a named `router eigrp` | each IPv4 address family ends with `eigrp stub connected summary` and each IPv4 service family starts with `eigrp stub connected`, unless it states its own `eigrp stub` |
 
 ## capture
 

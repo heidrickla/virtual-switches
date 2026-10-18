@@ -704,7 +704,60 @@ fn block_lines(b: &Block, d: &Device) -> Vec<String> {
         Some(o) => in_ios_order(lines, |e| e.text.as_str(), &[o]),
         None => lines,
     };
-    lines.iter().map(|e| format!(" {}", e.text)).collect()
+    let lines: Vec<String> = lines.iter().map(|e| format!(" {}", e.text)).collect();
+    let named_eigrp = b
+        .header
+        .strip_prefix("router eigrp ")
+        .is_some_and(|n| !n.bytes().all(|c| c.is_ascii_digit()));
+    let essentials = crate::license::stated(d.global.iter().map(|e| e.text.as_str()))
+        .is_some_and(|l| l == "network-essentials");
+    if named_eigrp && essentials && !classic {
+        return eigrp_stub(lines);
+    }
+    lines
+}
+
+/// A named EIGRP process's lines at network-essentials, which runs EIGRP as a stub: the lab
+/// C9300-24T (17.6.4) printed `eigrp stub connected summary` last in each IPv4 address family and
+/// `eigrp stub connected` first in each IPv4 service family that held no `eigrp stub` line.
+fn eigrp_stub(lines: Vec<String>) -> Vec<String> {
+    let opens = |l: &str, family: &str| {
+        l.strip_prefix(family)
+            .is_some_and(|r| r.starts_with("ipv4 ") && r.contains("autonomous-system "))
+    };
+    let mut out = Vec::with_capacity(lines.len() + 2);
+    let mut i = 0;
+    while i < lines.len() {
+        let l = &lines[i];
+        let kind = [
+            (" address-family ", " exit-address-family"),
+            (" service-family ", " exit-service-family"),
+        ]
+        .into_iter()
+        .find(|(family, _)| opens(l, family));
+        let Some((family, closing)) = kind else {
+            out.push(l.clone());
+            i += 1;
+            continue;
+        };
+        let end = lines[i..]
+            .iter()
+            .position(|x| x == closing)
+            .map_or(lines.len(), |n| i + n);
+        let stub = lines[i..end]
+            .iter()
+            .any(|x| x.trim_start().starts_with("eigrp stub"));
+        out.push(l.clone());
+        if !stub && family == " service-family " {
+            out.push("  eigrp stub connected".into());
+        }
+        out.extend(lines[i + 1..end].iter().cloned());
+        if !stub && family == " address-family " {
+            out.push("  eigrp stub connected summary".into());
+        }
+        i = end;
+    }
+    out
 }
 
 /// `line con 0`, `line aux 0`, then the vty ranges by first line, as every capture prints them.
@@ -5320,5 +5373,50 @@ mod tests {
                 text
             );
         }
+    }
+
+    #[test]
+    fn a_named_eigrp_process_at_network_essentials_prints_as_a_stub() {
+        let lines = |l: &[&str]| -> Vec<String> { l.iter().map(|x| x.to_string()).collect() };
+        let process = lines(&[
+            "router eigrp NAMED",
+            " !",
+            " address-family ipv4 unicast autonomous-system 100",
+            "  network 10.0.0.0",
+            " exit-address-family",
+            " !",
+            " service-family ipv4 autonomous-system 200",
+            " exit-service-family",
+            " !",
+            " address-family ipv6 unicast autonomous-system 300",
+            " exit-address-family",
+        ]);
+        let stub = eigrp_stub(process);
+        assert_eq!(
+            stub,
+            lines(&[
+                "router eigrp NAMED",
+                " !",
+                " address-family ipv4 unicast autonomous-system 100",
+                "  network 10.0.0.0",
+                "  eigrp stub connected summary",
+                " exit-address-family",
+                " !",
+                " service-family ipv4 autonomous-system 200",
+                "  eigrp stub connected",
+                " exit-service-family",
+                " !",
+                " address-family ipv6 unicast autonomous-system 300",
+                " exit-address-family",
+            ])
+        );
+        // a family that states its stub keeps it
+        let stated = lines(&[
+            "router eigrp NAMED",
+            " address-family ipv4 unicast autonomous-system 100",
+            "  eigrp stub receive-only",
+            " exit-address-family",
+        ]);
+        assert_eq!(eigrp_stub(stated.clone()), stated);
     }
 }

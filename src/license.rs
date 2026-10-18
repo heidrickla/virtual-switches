@@ -23,6 +23,7 @@ pub fn default_for(book: &str) -> Option<&'static str> {
 }
 
 /// A switch's level: as its configuration states it, else its book's default.
+#[cfg(test)]
 pub fn of<'a>(book: &str, lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
     stated(lines).or_else(|| default_for(book).map(str::to_string))
 }
@@ -64,6 +65,73 @@ pub const ENABLED: &[(&str, &str, &str)] = &[
     ("c9300", "17.15", "network-advantage"),
     ("c9400", "17.5", "network-advantage"),
 ];
+
+/// Each level an image runs with less of its software than another, with that other level: the lab
+/// C9300-24T (17.6.4) at network-essentials refused, under a caret, the words its network-advantage
+/// `?` answers offered and its network-essentials answers did not, and took no word network-advantage
+/// refused.
+pub const GATED: &[(&str, &str)] = &[("network-essentials", "network-advantage")];
+
+/// The level whose crawl `level`'s is gated against (`GATED`).
+pub fn gated_by(level: &str) -> Option<&'static str> {
+    GATED.iter().find(|(l, _)| *l == level).map(|g| g.1)
+}
+
+/// Interface types a gated level's `?` lists that its parser refuses: the lab C9300-24T (17.6.4) at
+/// network-essentials listed `pseudowire` and `Auto-Template` among the types and answered every
+/// line naming one with a number `% Unrecognized command`, where network-advantage answered it;
+/// `interface pseudowire 100` was refused under the type's second letter.
+pub const REFUSED_TYPES: &[(&str, &[&str])] =
+    &[("network-essentials", &["pseudowire", "Auto-Template"])];
+
+/// The interface types `level` lists and refuses (`REFUSED_TYPES`).
+pub fn refused_types(level: &str) -> &'static [&'static str] {
+    REFUSED_TYPES
+        .iter()
+        .find(|(l, _)| *l == level)
+        .map_or(&[], |r| r.1)
+}
+
+/// First words a gated level takes in a mode though its `?` lists none, refusing the word after
+/// them: the lab C9300-24T (17.6.4) at network-essentials took `net` at global configuration and
+/// refused the NET after it under its first character, as typed and under a refused `router isis`.
+pub const UNLISTED: &[(&str, &str, &str)] = &[("network-essentials", "config", "net")];
+
+/// Line starts a gated level takes in a mode though its crawl's `?` answers offer it no such line:
+/// the lab C9300-24T (17.6.4) at network-essentials took `l2 traceroute`, its `?` listing no `l2`
+/// (only `l2protocol-tunnel`), and refused `l2 vfi`.
+pub const TAKEN: &[(&str, &str, &str)] = &[("network-essentials", "config", "l2 traceroute")];
+
+/// Whether `level` takes `line` in `mode` though its crawl offers no such line (`TAKEN`).
+pub fn taken(level: &str, mode: &str, line: &str) -> bool {
+    let words: Vec<String> = line.split_whitespace().map(str::to_lowercase).collect();
+    TAKEN.iter().any(|(l, m, start)| {
+        *l == level && *m == mode && {
+            let want: Vec<&str> = start.split_whitespace().collect();
+            words.len() >= want.len() && words.iter().zip(&want).all(|(w, s)| w == s)
+        }
+    })
+}
+
+/// Whether `level` takes `word` first on a line in `mode` though its `?` lists it nowhere
+/// (`UNLISTED`).
+pub fn unlisted(level: &str, mode: &str, word: &str) -> bool {
+    UNLISTED
+        .iter()
+        .any(|(l, m, w)| *l == level && *m == mode && w.eq_ignore_ascii_case(word))
+}
+
+/// First words a gated level refuses in a mode where its crawl's `?` answers judge nothing: the lab
+/// C9300-24T (17.6.4) at network-essentials refused `xconnect` on a dot1Q sub-interface at boot,
+/// under the word; its crawled sub-interface's `?` listed it at neither level.
+pub const LEFT_OUT: &[(&str, &str, &str)] = &[("network-essentials", "config-subif", "xconnect")];
+
+/// Whether `level` refuses `word` first on a line in `mode` (`LEFT_OUT`).
+pub fn left_out(level: &str, mode: &str, word: &str) -> bool {
+    LEFT_OUT
+        .iter()
+        .any(|(l, m, w)| *l == level && *m == mode && w.eq_ignore_ascii_case(word))
+}
 
 /// The donor `DONORS` names for a switch, none where that is the switch's own crawl.
 pub fn donor(book: &str, release: &str, level: &str) -> Option<Image> {
@@ -166,5 +234,33 @@ mod tests {
             Some(("c2960", "15.0(2)SE", "lanbase"))
         );
         assert_eq!(enabled_donor("c2960x", "15.2(6)E", "lanbase", &on), None);
+    }
+
+    #[test]
+    fn network_essentials_is_gated_against_network_advantage_alone() {
+        assert_eq!(gated_by("network-essentials"), Some("network-advantage"));
+        for level in ["network-advantage", "lanbase", "ipservices", ""] {
+            assert_eq!(gated_by(level), None, "{level}");
+            assert!(refused_types(level).is_empty(), "{level}");
+            assert!(!unlisted(level, "config", "net"), "{level}");
+        }
+        assert_eq!(
+            refused_types("network-essentials"),
+            ["pseudowire", "Auto-Template"]
+        );
+        assert!(unlisted("network-essentials", "config", "NET"));
+        assert!(!unlisted("network-essentials", "config-router", "net"));
+        assert!(!unlisted("network-essentials", "config", "network"));
+        assert!(left_out("network-essentials", "config-subif", "XCONNECT"));
+        assert!(!left_out("network-essentials", "config-if", "xconnect"));
+        assert!(!left_out("network-advantage", "config-subif", "xconnect"));
+        assert!(taken("network-essentials", "config", "l2  Traceroute"));
+        assert!(!taken(
+            "network-essentials",
+            "config",
+            "l2 vfi customerA manual"
+        ));
+        assert!(!taken("network-advantage", "config", "l2 traceroute"));
+        assert!(!taken("network-essentials", "config-if", "l2 traceroute"));
     }
 }

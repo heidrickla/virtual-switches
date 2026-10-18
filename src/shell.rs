@@ -124,6 +124,9 @@ pub struct Session<'a> {
     vlans_seen: Option<Vec<(String, Vec<String>)>>,
     /// the lines entered that are known to crash a switch of this family (`enter`)
     pub warned: usize,
+    /// the licence level the switch booted at, as a replayed configuration's `license boot level`
+    /// line states it wherever it stands in the file (`check::type_traced`)
+    pub boot_level: Option<String>,
 }
 
 /// A time as VTP's last-change line prints it: month and day unpadded, the year in two digits
@@ -244,6 +247,7 @@ impl<'a> Session<'a> {
                 .map_or(0, |d| d.as_secs()),
             vlans_seen: None,
             warned: 0,
+            boot_level: None,
         }
     }
 
@@ -845,15 +849,14 @@ impl<'a> Session<'a> {
             return column;
         };
         // the words a real switch offered there when asked `?`, else the books' (a held refusal
-        // offers none)
+        // offers none); a heading (`VLAN configuration commands:`) offers no word
         let held = self
             .held_help(self.mode(), &line[..at])
             .filter(|a| !crate::live::is_refusal(a));
         let mut words: Vec<String> = match held {
-            Some(lines) => lines
-                .iter()
-                .filter_map(|l| l.split_whitespace().next())
-                .map(str::to_string)
+            Some(lines) => crate::live::answer_rows(lines)
+                .into_iter()
+                .map(|(w, _)| w.to_string())
                 .collect(),
             None => self
                 .offered_at(self.mode(), &toks[..i])
@@ -869,11 +872,23 @@ impl<'a> Session<'a> {
         let typed = toks[i].text.to_lowercase();
         // an argument the typed word could be stands here (`WORD`, `A.B.C.D`, `<1-4094>`), and the
         // caret marks the word's start; one it cannot be does not (17.15's `<1-99>` session number
-        // at `#` against `shw`); `<cr>` ends the line and `|` starts a modifier
+        // at `#` against `shw`); `<cr>` ends the line and `|` starts a modifier. Among interface
+        // types a word in capitals is a type (`PROTECTION_GROUP`, `BDI`): the lab C9300-24T (17.6.4)
+        // at network-essentials refused `interface nve1` past the `n` its `Null` begins
+        let types = words
+            .iter()
+            .filter(|w| {
+                cli::interface_types()
+                    .iter()
+                    .chain(cli::PHYSICAL_TYPES)
+                    .any(|(full, _)| *full == w.as_str())
+            })
+            .count();
         let could_be = |w: &str| {
             if w == "<cr>"
                 || w == "|"
                 || w.chars().any(|c| c.is_ascii_lowercase()) && !w.starts_with('<')
+                || types >= 2 && !matches!(w, "WORD" | "LINE") && !w.contains(['<', '.', ':'])
             {
                 return false;
             }
@@ -893,6 +908,43 @@ impl<'a> Session<'a> {
                 true
             }
         };
+        // a word running past a listed interface type's whole name into no type's (`Tunnel-tp`
+        // where the level lists `Tunnel` alone) is refused past the name, though a host name
+        // could stand there (the lab C9300-24T, 17.6.4, at network-essentials)
+        let past_type = words
+            .iter()
+            .filter(|w| {
+                cli::interface_types()
+                    .iter()
+                    .chain(cli::PHYSICAL_TYPES)
+                    .any(|(full, _)| *full == w.as_str())
+            })
+            .map(|w| w.to_lowercase())
+            .filter(|w| {
+                typed.starts_with(w.as_str())
+                    && typed[w.len()..].starts_with(|c: char| !c.is_ascii_digit())
+            })
+            .map(|w| w.len())
+            .max();
+        if let Some(n) = past_type
+            && !words.iter().any(|w| w.to_lowercase().starts_with(&typed))
+        {
+            return column + n;
+        }
+        // on IOS XE a port named by its type and a number refused whole reads no further into its
+        // type: the lab C9300-24T (17.6.4) refused `interface gigabitethernet4/0/1` under the `g`,
+        // and at network-advantage under the `i`, past the `g` its `GMPLS` begins
+        let alpha = typed
+            .split(|c: char| c.is_ascii_digit())
+            .next()
+            .unwrap_or("");
+        if types >= 2
+            && !self.device.stack.classic()
+            && alpha.len() < typed.len()
+            && let Some((full, _, _)) = cli::interface_name(&format!("{alpha}1"), None)
+        {
+            words.retain(|w| !w.eq_ignore_ascii_case(&full));
+        }
         if words.iter().any(|w| could_be(w)) {
             return column + past_the_top(&words, &typed);
         }
@@ -1101,7 +1153,8 @@ impl<'a> Session<'a> {
         // but for one this image's own answers refused in this mode and context: a held line's block
         // kind is any interface's (`ip address` held under a VLAN interface, refused on a switchport)
         let refused_by_held = !matches!(outcome, Outcome::Ok(_))
-            && matches!(self.parse(&mode, trimmed), Outcome::Ok(_));
+            && (matches!(self.parse(&mode, trimmed), Outcome::Ok(_))
+                || self.level_refusal(top, &mode, trimmed).is_some());
         if !matches!(outcome, Outcome::Ok(_))
             && !refused_by_held
             && let Some(done) = self.held_in_block(full)
@@ -1185,7 +1238,11 @@ impl<'a> Session<'a> {
         let p = match outcome {
             Outcome::Ok(p) => p,
             other => {
-                if let Some(done) = self.held_at_top(trimmed) {
+                // a line real switches held at another level is not taken where this one's leaves
+                // its words out
+                if self.level_refusal(2, "config", trimmed).is_none()
+                    && let Some(done) = self.held_at_top(trimmed)
+                {
                     return done;
                 }
                 self.frames.extend(closed.drain(..).rev());
@@ -1307,6 +1364,14 @@ impl<'a> Session<'a> {
                 Outcome::Invalid(at)
             };
             return (self.error(prompt_len, trimmed, &o), Result::Error);
+        }
+        // a line the licence level leaves out of the image: what IOS says, and the mode stays
+        if let Some(said) = self.unlicensed(&mode, &p) {
+            self.frames.extend(closed.drain(..).rev());
+            if let Some(i) = back_to {
+                self.frames.truncate(i + 1);
+            }
+            return (vec![said.to_string()], Result::Error);
         }
         // a line the configuration so far leaves IOS unable to take: what IOS says, and the line
         // changes nothing; one an enclosing mode read leaves for it
@@ -1508,6 +1573,30 @@ impl<'a> Session<'a> {
         match modifier {
             Some(m) if r == Result::Ok => (crate::filter::apply(&m, out), r),
             _ => (out, r),
+        }
+    }
+
+    /// What IOS XE says for a line its licence level leaves out of the image, where the level is gated
+    /// (`license::GATED`; the lab C9300-24T, 17.6.4, at network-essentials): `router bgp` and `router
+    /// isis` print `Protocol not in this image`, a VRF but the management port's `% Feature is not
+    /// supported`, and a redistribution from IS-IS `% Failed to create routing protocol isis`.
+    fn unlicensed(&self, mode: &str, p: &Parse) -> Option<&'static str> {
+        if p.negated || !self.engine.held.gated(self.level().as_deref()) {
+            return None;
+        }
+        let canonical = p.canonical();
+        let words: Vec<&str> = canonical.split_whitespace().collect();
+        let management =
+            |name: &str| name == "Mgmt-vrf" && self.device.stack.management().is_some();
+        match (mode, words.as_slice()) {
+            ("config", ["router", "bgp" | "isis", ..]) => Some("Protocol not in this image"),
+            ("config", ["vrf", "definition", name] | ["ip", "vrf", name]) if !management(name) => {
+                Some("% Feature is not supported")
+            }
+            (m, ["redistribute", "isis", ..]) if m.starts_with("config-router") => {
+                Some("% Failed to create routing protocol isis")
+            }
+            _ => None,
         }
     }
 
@@ -3032,25 +3121,115 @@ impl<'a> Session<'a> {
                 .is_some_and(|e| "address-family".starts_with(&e.to_lowercase()))
     }
 
-    /// A line read in the mode of frame `i`: as the books read it, and refused where a real switch
-    /// of this image refused it (`held_refusal`).
+    /// A line read in the mode of frame `i`: as the books read it, but for the earliest refusal of
+    /// a word the session's licence level leaves out (`level_refusal`) or one a real switch of this
+    /// image refused (`held_refusal`) before the books' own.
     fn read_at(&self, i: usize, mode: &str, line: &str) -> Outcome {
-        let o = self.parse(mode, line);
-        if matches!(o, Outcome::Ok(_))
-            && let Some(refused) = self.held_refusal(i, mode, line)
+        // a word the level takes though no book or answer lists it: its refusal stands
+        if let Some(o) = self.unlisted_refusal(mode, line) {
+            return o;
+        }
+        let mut o = self.parse(mode, line);
+        let level = self.level_refusal(i, mode, line);
+        // the level's caret inside a word the books refuse at its start stands (`refused_type`)
+        if let (Some(Outcome::Invalid(l)), Outcome::Invalid(b)) = (&level, &o)
+            && l > b
+            && token_at(line, *l) == token_at(line, *b)
         {
-            return refused;
+            o = Outcome::Invalid(*l);
+        }
+        for refused in [level, self.held_refusal(i, mode, line)]
+            .into_iter()
+            .flatten()
+        {
+            if reach(&refused, line) < reach(&o, line) {
+                o = refused;
+            }
         }
         o
     }
 
-    /// Where a configuration line the books take was refused by a real switch of this image, read
+    /// Where a line is refused for a word the session's licence level leaves out of the image, in the
+    /// mode and context of frame `i`, EXEC included: the gate's crawl at the level answered `?` before
+    /// the word without it and the crawl at the level above offered it (`live::Held::gate_answers`).
+    /// Reading stops at a word neither offers, at a `LINE` row and at a held refusal; a line the
+    /// level takes though its crawl offers it no word (`license::taken`) is not read. An interface
+    /// type the level lists and refuses (`license::refused_types`) is refused past its longest
+    /// start another row begins.
+    fn level_refusal(&self, i: usize, mode: &str, line: &str) -> Option<Outcome> {
+        let level = self.level();
+        if !self.engine.held.gated(level.as_deref()) {
+            return None;
+        }
+        if let Some(o) = self.unlisted_refusal(mode, line) {
+            return Some(o);
+        }
+        if crate::license::taken(level.as_deref().unwrap_or(""), mode, line) {
+            return None;
+        }
+        let refused_types = crate::license::refused_types(level.as_deref().unwrap_or(""));
+        let context = self.context_at(i)?;
+        let toks = cli::tokens(line);
+        for (k, t) in toks.iter().enumerate() {
+            let text = match k {
+                0 => String::new(),
+                _ => format!("{} ", &line[..toks[k - 1].at + toks[k - 1].text.len()]),
+            };
+            let Some((at, above)) =
+                self.engine
+                    .held
+                    .gate_answers(level.as_deref(), mode, Some(&context), &text, |l| {
+                        self.running_has(l)
+                    })
+            else {
+                continue;
+            };
+            if crate::live::is_refusal(at) || crate::live::is_refusal(above) {
+                return None;
+            }
+            if let Some(past) = refused_type(at, &t.text, refused_types) {
+                return Some(Outcome::Invalid(t.at + past));
+            }
+            if type_above_only(at, above, &t.text) {
+                return Some(Outcome::Invalid(t.at));
+            }
+            match (best_fit(at, &t.text), best_fit(above, &t.text)) {
+                (Fit::No, Fit::Word | Fit::Rest) => return Some(Outcome::Invalid(t.at)),
+                (Fit::Word, _) => {}
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// A line whose first word the session's level takes in `mode` though no `?` lists it
+    /// (`license::unlisted`), refused at the word after it; one whose first word the level refuses
+    /// where its crawl judges nothing (`license::left_out`), refused at that word.
+    fn unlisted_refusal(&self, mode: &str, line: &str) -> Option<Outcome> {
+        let level = self.level()?;
+        let toks = cli::tokens(line);
+        let first = toks.first()?;
+        let at = if crate::license::unlisted(&level, mode, &first.text) {
+            toks.get(1)?.at
+        } else if crate::license::left_out(&level, mode, &first.text) {
+            first.at
+        } else {
+            return None;
+        };
+        self.engine
+            .held
+            .gated(Some(&level))
+            .then_some(Outcome::Invalid(at))
+    }
+
+    /// Where a configuration line was refused by a real switch of this image, read
     /// against what it answered for `?` after each whole word in the mode and context of frame `i`
     /// (its own answers, never a donor's): a word no row of the answer before it offers is invalid
     /// there, and a line whose answer after its last word holds no `<cr>` is incomplete. A word
     /// with no answer held before it is not read; reading stops at a refusal held for the line so
     /// far and at a `LINE` row, which takes the rest. An interface type is left to the stack
-    /// (`on_stack`), and a routed port's lines are not read: the crawled ports were switchports.
+    /// (`on_stack`), and a routed port's lines are not read: a physical port's context holds the
+    /// crawled switchport's answers.
     fn held_refusal(&self, i: usize, mode: &str, line: &str) -> Option<Outcome> {
         if !cli::is_config(mode) {
             return None;
@@ -3082,13 +3261,14 @@ impl<'a> Session<'a> {
         }
         // `do` runs an exec line from any mode and `end` leaves any, and no submode's answer
         // need list them
+        let level = self.level();
         if ["do", "end"].contains(&first.as_str())
             || crate::context::unjudged(mode, line, |l| self.running_has(l))
+            || crate::license::taken(level.as_deref().unwrap_or(""), mode, line)
         {
             return None;
         }
         let context = self.context_at(i)?;
-        let level = self.level();
         let toks = cli::tokens(line);
         let mut before: Vec<&str> = vec![];
         for k in 0..=toks.len() {
@@ -3218,11 +3398,15 @@ impl<'a> Session<'a> {
         self.device.global.iter().any(|e| e.text.trim() == line)
     }
 
-    /// The session's license level: its running configuration's `license boot level`, else its
-    /// book's default (`license::of`); it picks which crawls answer `?`.
+    /// The session's license level: its running configuration's `license boot level`, else the
+    /// level it booted at (`boot_level`), else its book's default (`license::default_for`); it picks which
+    /// crawls answer `?` and which words the level leaves out (`level_refusal`).
     fn level(&self) -> Option<String> {
         let book = crate::grammars::book_of(&self.engine.grammar.platform)?;
-        crate::license::of(book, self.device.global.iter().map(|e| e.text.as_str()))
+        let running = self.device.global.iter().map(|e| e.text.as_str());
+        crate::license::stated(running)
+            .or_else(|| self.boot_level.clone())
+            .or_else(|| crate::license::default_for(book).map(str::to_string))
     }
 
     /// What a real switch of this image printed for `?` after `text` in `mode` and the current
@@ -3854,6 +4038,12 @@ const NO_VRF: &[(&str, &[&str], &str)] = &[
         &["ip", "helper-address", "vrf"],
         "% Vrf name {} does not exist. Create first",
     ),
+    // at network-essentials, after `vrf definition` was refused
+    (
+        "config",
+        &["ip", "route", "vrf"],
+        "% vrf {} does not exist. Create first",
+    ),
     (
         "config-mon-erspan-src-dst",
         &["vrf"],
@@ -4321,6 +4511,133 @@ fn names_type(word: &str) -> bool {
 
 fn fit(yes: bool) -> Fit {
     if yes { Fit::Word } else { Fit::No }
+}
+
+/// The index of the word of `line` holding byte `at`.
+fn token_at(line: &str, at: usize) -> Option<usize> {
+    cli::tokens(line)
+        .iter()
+        .position(|t| at >= t.at && at < t.at + t.text.len())
+}
+
+/// Where an interface type `typed` names, in an answer listing interface types, is one the level
+/// lists and refuses (`refused`), the characters of it the answer's other rows begin with: the
+/// caret stands past them. `template type ?` lists `pseudowire` as a template's type, which the
+/// level takes.
+fn refused_type(answer: &[String], typed: &str, refused: &[&str]) -> Option<usize> {
+    let t = typed.to_lowercase();
+    let alpha = t.split(|c: char| c.is_ascii_digit()).next().unwrap_or("");
+    let rows = crate::live::answer_rows(answer);
+    let listed = |w: &str| rows.iter().any(|(r, _)| r.eq_ignore_ascii_case(w));
+    let begins = |w: &str| alpha.len() >= 2 && w.to_lowercase().starts_with(alpha);
+    if !refused.iter().any(|r| listed(r) && begins(r)) {
+        return None;
+    }
+    let others: Vec<&str> = rows
+        .iter()
+        .map(|(w, _)| *w)
+        .filter(|w| !refused.iter().any(|r| r.eq_ignore_ascii_case(w)))
+        .collect();
+    let types = others
+        .iter()
+        .filter(|w| {
+            cli::interface_types()
+                .iter()
+                .chain(cli::PHYSICAL_TYPES)
+                .any(|(full, _)| *full == **w)
+        })
+        .count();
+    if types < 2 {
+        return None;
+    }
+    if others
+        .iter()
+        .any(|w| begins(w) && names_type(&w.to_lowercase()))
+    {
+        return None;
+    }
+    others
+        .iter()
+        .map(|w| {
+            t.chars()
+                .zip(w.to_lowercase().chars())
+                .take_while(|(a, b)| a == b)
+                .count()
+        })
+        .max()
+        .map(|n| n.min(alpha.len().saturating_sub(1)))
+}
+
+/// Whether `typed` names an interface type only the level above lists (`above`), beginning with a
+/// type the level's answer (`at`) lists: no host name, though `at` offers one. The lab C9300-24T
+/// (17.6.4) at network-essentials refused `show ip ospf neighbor Tunnel-tp` under its `-`.
+fn type_above_only(at: &[String], above: &[String], typed: &str) -> bool {
+    let alpha = typed
+        .to_lowercase()
+        .split(|c: char| c.is_ascii_digit())
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let is_type = |w: &str| {
+        cli::interface_types()
+            .iter()
+            .chain(cli::PHYSICAL_TYPES)
+            .any(|(full, _)| *full == w)
+    };
+    let rows = |a: &[String]| -> Vec<String> {
+        crate::live::answer_rows(a)
+            .iter()
+            .map(|(w, _)| w.to_string())
+            .collect()
+    };
+    let (at, above) = (rows(at), rows(above));
+    let begins = |w: &String| w.to_lowercase().starts_with(&alpha);
+    !alpha.is_empty()
+        && above
+            .iter()
+            .any(|w| begins(w) && w.starts_with(|c: char| c.is_ascii_uppercase()))
+        && !at.iter().any(begins)
+        && at
+            .iter()
+            .any(|w| is_type(w) && alpha.len() > w.len() && alpha.starts_with(&w.to_lowercase()))
+}
+
+/// How `typed` fits a `?` answer, for the licence gate (`level_refusal`), whose two answers list
+/// what each level's image holds: an interface named by its type and number fits a row of that
+/// type, where the answer lists types; a file system's row (`flash:`) is the keyword it is, a path
+/// after it included; any other word fits as `fits_row` reads it.
+fn best_fit(answer: &[String], typed: &str) -> Fit {
+    let file_system = |w: &str| {
+        w.strip_suffix(':').is_some_and(|n| {
+            !n.is_empty()
+                && n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+    };
+    let is_type = |w: &str| {
+        cli::interface_types()
+            .iter()
+            .chain(cli::PHYSICAL_TYPES)
+            .any(|(full, _)| *full == w)
+    };
+    let t = typed.to_lowercase();
+    let rows = crate::live::answer_rows(answer);
+    let types: Vec<&str> = rows
+        .iter()
+        .map(|(w, _)| *w)
+        .filter(|w| is_type(w))
+        .collect();
+    let alpha = t.split(|c: char| c.is_ascii_digit()).next().unwrap_or("");
+    if !types.is_empty() && names_type(alpha) {
+        return fit(types.iter().any(|w| w.to_lowercase().starts_with(alpha)));
+    }
+    rows.iter()
+        .map(|&(w, what)| match file_system(w) {
+            true => fit(w.starts_with(&t) || t.starts_with(w)),
+            false => fits_row(w, what, typed, types.len() >= 2),
+        })
+        .max()
+        .unwrap_or(Fit::No)
 }
 
 /// A class map's `match` on DSCP, precedence or CoS values as IOS XE writes it: each DSCP or
@@ -7157,7 +7474,56 @@ mod tests {
 
     #[test]
     fn a_held_refusal_leaves_an_executed_line_s_caret_where_the_books_put_it() {
-        let crawl = crawled();
+        // a crawl that answered every word before its `% Unrecognized command`
+        let text = transcript(&[
+            (
+                "Switch#configure terminal",
+                &["Enter configuration commands, one per line.  End with CNTL/Z."],
+            ),
+            (
+                "Switch(config)# ?",
+                &["Configure commands:", "  event  Event related commands", ""],
+            ),
+            (
+                "Switch(config)#event ?",
+                &["  manager  Event Manager configuration commands"],
+            ),
+            (
+                "Switch(config)#event manager ?",
+                &["  applet  Register an Event Manager applet"],
+            ),
+            (
+                "Switch(config)#event manager applet ?",
+                &["  WORD  Name of the Event Manager applet"],
+            ),
+            (
+                "Switch(config)#event manager applet 10 ?",
+                &["  class  Specify a class for the applet", "  <cr>   <cr>"],
+            ),
+            (
+                "Switch(config)#event manager applet 10 class ?",
+                &["  WORD  Class name"],
+            ),
+            (
+                "Switch(config)#event manager applet 10 class test ?",
+                &["% Unrecognized command"],
+            ),
+        ]);
+        let table = crate::corpus::HeldTable {
+            crawl: crate::corpus::crawled_help(&text)
+                .into_iter()
+                .map(|(m, c, k, a)| (ADVANTAGE.to_string(), m, c, k, a))
+                .collect(),
+            ..Default::default()
+        };
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let c = crate::corpus::Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        let crawl = Engine::with_held(grammar, held);
         let books = books_17_6();
         // the books offer `trap` there: the caret stands past `tr`, under the `x`
         for line in [
@@ -8947,5 +9313,216 @@ mod tests {
         let mut s = typed_24t(&e, &["vlan 10"]);
         assert_eq!(s.type_line("mdns-sd gateway").1, Result::Ok);
         assert_eq!(s.mode(), "config-mdns-sd");
+    }
+
+    /// The C9300 17.6 books with the crawls the corpus ships, network-essentials' among them.
+    fn shipped_17_6() -> Engine {
+        let r = crate::release::Release::parse("17.6").unwrap();
+        Engine::new(crate::grammars::grammar("c9300", r).unwrap())
+    }
+
+    const ESSENTIALS: &str = "license boot level network-essentials addon dna-essentials";
+
+    /// IOS's `% Invalid input` under a line typed at `prompt`, its caret `column` past the prompt.
+    fn invalid_under(prompt: &str, column: usize) -> Vec<String> {
+        vec![
+            format!("{}^", " ".repeat(prompt.chars().count() + column)),
+            "% Invalid input detected at '^' marker.".into(),
+            String::new(),
+        ]
+    }
+
+    #[test]
+    fn network_essentials_refuses_what_network_advantage_alone_offers_as_the_lab_switch_did() {
+        // the lab C9300-24T (17.6.4): each refused at network-essentials under the caret, the mode
+        // kept, and taken at network-advantage
+        let e = shipped_17_6();
+        for (line, column) in [
+            ("avb", 1),
+            ("service-export mdns-sd controller c1", 8),
+            ("monitor session 2 type erspan-source", 18),
+            ("interface pseudowire 100", 11),
+        ] {
+            let mut s = configured(&e, &[ESSENTIALS]);
+            let refused = (invalid_under("Switch(config)#", column), Result::Error);
+            assert_eq!(s.type_line(line), refused, "{line}");
+            assert_eq!(s.mode(), "config", "{line}");
+            let mut s = configured(&e, &[LICENSE]);
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        // `l2 traceroute` taken though `?` offers no `l2`, `l2 vfi` refused at the `vfi`
+        let mut s = configured(&e, &[ESSENTIALS]);
+        assert_eq!(s.type_line("l2 traceroute").1, Result::Ok);
+        let mut s = configured(&e, &[ESSENTIALS]);
+        assert_eq!(
+            s.type_line("l2 vfi v2 autodiscovery").0,
+            invalid_under("Switch(config)#", 3)
+        );
+        // `net` taken first though `?` lists it nowhere, the NET after it refused
+        let mut s = configured(&e, &[ESSENTIALS]);
+        assert_eq!(
+            s.type_line("net 47.0004.004d.0001.0001.0c11.1111.00").0,
+            invalid_under("Switch(config)#", 4)
+        );
+        // `xconnect` on a dot1Q sub-interface, refused at the word
+        let subif = [
+            ESSENTIALS,
+            "interface GigabitEthernet1/0/7.10",
+            "encapsulation dot1Q 10",
+        ];
+        let mut s = configured(&e, &subif);
+        assert_eq!(
+            s.type_line("xconnect 10.0.0.2 200 encapsulation mpls").0,
+            invalid_under("Switch(config-subif)#", 0)
+        );
+        // an EXEC line naming an interface type the level does not list, under the `-`
+        let mut s = configured(&e, &[ESSENTIALS]);
+        s.type_line("end");
+        assert_eq!(
+            s.type_line("show ip ospf neighbor Tunnel-tp").0,
+            invalid_under("Switch#", 28)
+        );
+    }
+
+    #[test]
+    fn a_protocol_or_vrf_the_level_leaves_out_says_what_the_lab_switch_said() {
+        let e = shipped_17_6();
+        let said = |s: &mut Session, line: &str| s.type_line(line);
+        let mut s = configured(&e, &[ESSENTIALS]);
+        for line in ["router bgp 65000", "router isis"] {
+            let (out, r) = said(&mut s, line);
+            assert_eq!(r, Result::Error, "{line}");
+            assert!(
+                out.iter().any(|l| l == "Protocol not in this image"),
+                "{line}: {out:?}"
+            );
+            assert_eq!(s.mode(), "config", "{line}");
+        }
+        let (out, r) = said(&mut s, "vrf definition blue");
+        assert_eq!(r, Result::Error);
+        assert!(
+            out.iter().any(|l| l == "% Feature is not supported"),
+            "{out:?}"
+        );
+        // the management port's VRF is taken, and at network-advantage every one
+        assert_eq!(said(&mut s, "vrf definition Mgmt-vrf").1, Result::Ok);
+        let mut s = configured(&e, &[LICENSE]);
+        for line in ["router bgp 65000", "exit", "vrf definition blue"] {
+            assert_eq!(said(&mut s, line).1, Result::Ok, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_held_answer_s_heading_offers_the_caret_no_word() {
+        // the lab C9300-24T (17.6.4) at both levels: `configure terminal` in global configuration
+        // under the `e` its `configuration` leaves; at network-essentials, `avb` in a VLAN under the
+        // `v` its `are` leaves, where the heading `VLAN configuration commands:` read as a
+        // placeholder put it under the `a`
+        let e = shipped_17_6();
+        for level in [LICENSE, ESSENTIALS] {
+            let mut s = configured(&e, &[level]);
+            let refused = s.type_line("configure terminal").0;
+            assert_eq!(refused, invalid_under("Switch(config)#", 8), "{level}");
+        }
+        let mut s = configured(&e, &[ESSENTIALS, "vlan 360"]);
+        assert_eq!(
+            s.type_line("avb").0,
+            invalid_under("Switch(config-vlan)#", 1)
+        );
+        assert_eq!(s.mode(), "config-vlan");
+    }
+
+    #[test]
+    fn the_gate_reads_a_typed_word_against_each_level_s_answer() {
+        let answer = |rows: &[&str]| -> Vec<String> {
+            std::iter::once("Interface types:".to_string())
+                .chain(rows.iter().map(|r| format!("  {r}")))
+                .collect()
+        };
+        let types = answer(&[
+            "Auto-Template     Auto-Template interface",
+            "GigabitEthernet   Gigabit Ethernet IEEE 802.3z",
+            "Loopback          Loopback interface",
+            "Port-channel      Ethernet Channel of interfaces",
+            "Tunnel            Tunnel interface",
+            "Vlan              Catalyst Vlans",
+            "pseudowire        Pseudowire interface",
+        ]);
+        let refused = ["pseudowire", "Auto-Template"];
+        // past the characters another row begins with: `P` of `Port-channel`, `A` of nothing else
+        assert_eq!(refused_type(&types, "pseudowire100", &refused), Some(1));
+        assert_eq!(refused_type(&types, "Auto-Template1", &refused), Some(0));
+        assert_eq!(refused_type(&types, "Loopback0", &refused), None);
+        assert_eq!(refused_type(&types, "p1", &refused), None);
+        // a template's type is no interface type
+        let template = answer(&[
+            "ethernet  Ethernet template",
+            "pseudowire  Pseudowire template",
+        ]);
+        assert_eq!(refused_type(&template, "pseudowire", &refused), None);
+
+        let at = answer(&[
+            "Hostname  Host name",
+            "Tunnel  Tunnel interface",
+            "Vlan  Catalyst Vlans",
+        ]);
+        let above = answer(&[
+            "Hostname  Host name",
+            "Tunnel  Tunnel interface",
+            "Tunnel-tp  MPLS Transport Profile interface",
+            "Vlan  Catalyst Vlans",
+        ]);
+        assert!(type_above_only(&at, &above, "Tunnel-tp"));
+        assert!(!type_above_only(&at, &above, "Tunnel5"));
+        assert!(!type_above_only(&at, &above, "host1"));
+        assert!(!type_above_only(&above, &above, "Tunnel-tp"));
+
+        assert_eq!(best_fit(&types, "Gi1/0/1"), Fit::Word);
+        assert_eq!(
+            best_fit(
+                &answer(&["Vlan  Catalyst Vlans", "Loopback  Loopback"]),
+                "Gi1/0/1"
+            ),
+            Fit::No
+        );
+        let files = answer(&["flash:  Directory or file name", "<cr>  <cr>"]);
+        assert_eq!(best_fit(&files, "flash:a.txt"), Fit::Word);
+        assert_eq!(best_fit(&files, "usbflash0:"), Fit::No);
+        let numbers = answer(&["<1-66>  SPAN session number", "LINE  Text"]);
+        assert_eq!(best_fit(&numbers[..2], "2"), Fit::Word);
+        assert_eq!(best_fit(&numbers[..2], "99"), Fit::No);
+        assert_eq!(best_fit(&numbers, "anything"), Fit::Rest);
+
+        assert_eq!(token_at("ip  address 10.0.0.1", 4), Some(1));
+        assert_eq!(token_at("ip  address 10.0.0.1", 2), None);
+        assert_eq!(token_at("ip  address 10.0.0.1", 13), Some(2));
+    }
+
+    #[test]
+    fn a_port_the_stack_lacks_is_refused_past_the_start_another_row_shares() {
+        // the lab C9300-24T (17.6.4), one member: `interface gigabitethernet4/0/1` under the `g` at
+        // network-essentials and under the `i` at network-advantage, whose `GMPLS` begins `g`;
+        // `interface nve1` at network-essentials past the `n` of `Null`, `PROTECTION_GROUP` listed
+        // beside it
+        let e = shipped_17_6();
+        let typed = |level: &str, line: &str| {
+            let stack = crate::platform::parse_stack("C9300-24T+C9300-NM-4G").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            for (l, boot) in [
+                ("enable", false),
+                ("configure terminal", false),
+                (level, true),
+            ] {
+                s.redacted = boot;
+                s.type_line(l);
+            }
+            s.redacted = false;
+            s.type_line(line).0
+        };
+        let at = |column| invalid_under("Switch(config)#", column);
+        assert_eq!(typed(ESSENTIALS, "interface gigabitethernet4/0/1"), at(10));
+        assert_eq!(typed(LICENSE, "interface gigabitethernet4/0/1"), at(11));
+        assert_eq!(typed(ESSENTIALS, "interface nve1"), at(11));
+        assert_eq!(typed(LICENSE, "interface nve1"), vec![] as Vec<String>);
     }
 }

@@ -7,12 +7,14 @@ use crate::platform::Stack;
 use crate::{device, shell};
 
 /// One configuration line as typed: its number in the file, the line, the switch's error when it
-/// refused it, and whether it was taken only because a real switch held it (`live`).
+/// refused it and the column of its caret under the line, and whether it was taken only because a
+/// real switch held it (`live`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Typed {
     pub number: usize,
     pub line: String,
     pub error: Option<String>,
+    pub caret: Option<usize>,
     pub held: bool,
 }
 
@@ -69,6 +71,11 @@ pub fn type_traced(s: &mut shell::Session<'_>, config: &str) -> Vec<Traced> {
                 .filter(|u| !u.is_empty());
         }
     }
+    // the switch boots at the level its licence store holds, which the file's line states: every
+    // line of it is read at that level, those before the line too
+    if let Some(level) = crate::license::stated(config.lines()) {
+        s.boot_level = Some(level);
+    }
     // a kept configuration was swept of its secrets: `<removed>` stands for each value
     let was = std::mem::replace(&mut s.redacted, true);
     let mut typed = Vec::new();
@@ -92,14 +99,22 @@ pub fn type_traced(s: &mut shell::Session<'_>, config: &str) -> Vec<Traced> {
         }
         let before = s.accepted.len();
         let mode = s.mode().to_string();
-        let error = match s.type_line(l) {
-            (_, shell::Result::Ok) => None,
-            (o, shell::Result::Error) => Some(
+        let prompt = s.prompt().chars().count();
+        let (error, caret) = match s.type_line(l) {
+            (_, shell::Result::Ok) => (None, None),
+            // the `%` line, else what the switch said (`Protocol not in this image`)
+            (o, shell::Result::Error) => (
+                Some(
+                    o.iter()
+                        .rev()
+                        .find(|x| x.starts_with('%'))
+                        .or_else(|| o.iter().find(|x| !x.trim().is_empty()))
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
                 o.iter()
-                    .rev()
-                    .find(|x| x.starts_with('%'))
-                    .cloned()
-                    .unwrap_or_default(),
+                    .find(|x| x.trim() == "^")
+                    .and_then(|x| x.len().checked_sub(prompt + 1)),
             ),
         };
         let held = s.accepted.len() > before && s.accepted.last().is_some_and(|a| a.key.is_none());
@@ -108,6 +123,7 @@ pub fn type_traced(s: &mut shell::Session<'_>, config: &str) -> Vec<Traced> {
                 number: i + 1,
                 line: t.to_string(),
                 error,
+                caret,
                 held,
             },
             accepted: before..s.accepted.len(),
@@ -285,6 +301,7 @@ mod tests {
                 number: i + 1,
                 line: l.to_string(),
                 error: (!ok).then(|| "% Invalid input detected at '^' marker.".to_string()),
+                caret: (!ok).then_some(0),
                 held: false,
             })
             .collect()
@@ -317,5 +334,24 @@ mod tests {
         let r = compare(&from, &typed(&[("e", false)]));
         assert!(r.breaks.is_empty());
         assert_eq!(r.unproven.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_line_keeps_its_caret_column_and_the_file_s_level_reads_every_line() {
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9300", r).unwrap());
+        let stack = || crate::platform::parse_stack("C9300-24T").unwrap();
+        // `avb` before the licence line is read at the level the line states
+        let essentials = "avb\nlicense boot level network-essentials addon dna-essentials\nend\n";
+        let (_, typed) = type_config(&e, stack(), essentials);
+        assert_eq!(typed[0].line, "avb");
+        assert_eq!(
+            typed[0].error.as_deref(),
+            Some("% Invalid input detected at '^' marker.")
+        );
+        assert_eq!(typed[0].caret, Some(1));
+        let advantage = essentials.replace("essentials", "advantage");
+        let (_, typed) = type_config(&e, stack(), &advantage);
+        assert_eq!((typed[0].error.as_ref(), typed[0].caret), (None, None));
     }
 }

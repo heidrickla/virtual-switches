@@ -23,9 +23,13 @@ The caret stands under the refused word of the line as typed, spaces and `do` in
 | an argument could stand there | at the start of the word |
 | a number past the range offered | under the digit that takes it past the top (`terminal length 600` under the last `0`) |
 | a number below the range, or a word where only a number stands | at the start of the word |
-| an interface the stack does not have | under the start of its number (`GigabitEthernet9/0/1` under the `9`); a port channel, VLAN, loopback or tunnel typed with its number, under the digit that takes it past the top (`Po10` on a 2960G under the `0`) |
+| an interface the stack does not have | classic IOS: under the start of its number (`GigabitEthernet9/0/1` under the `9`). IOS XE: past the start the word shares with another row of `?`, the type it names not counted (`interface gigabitethernet4/0/1` on a one-member C9300-24T under the `g`, and under the `i` where `GMPLS` is listed). A port channel, VLAN, loopback or tunnel typed with its number, under the digit that takes it past the top (`Po10` on a 2960G under the `0`) |
 
 The place of the caret in a word comes from a 2960-X session, checked against the words its own `?` offered where a capture has them.
+
+- The keywords are the rows of the `?` answer a real switch gave there, else the books'. A heading (`Configure commands:`, `VLAN configuration commands:`) offers none: `configure terminal` in global configuration is refused under the `e` that `configuration` leaves.
+- Among two or more interface types, a word in capitals is a type (`PROTECTION_GROUP`, `BDI`), and no argument stands there.
+- A word running past a listed type's whole name into no type's is refused past the name, though a host name could stand there: `show ip ospf neighbor Tunnel-tp` at a level whose `?` lists `Tunnel` alone, under the `-`.
 
 `vlan <n>` past 4094 answers two lines with no caret: `Command rejected: Bad VLAN list - character #<k> (EOL) delimits a VLAN` (k the position after the number) and `number which is out of the range 1..4094.`.
 
