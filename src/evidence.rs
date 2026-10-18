@@ -29,6 +29,7 @@ const BATCH: &str = "76 switches captured, each cabled as it ran: 2960-X at 15.2
 const SHOW_TECH: &str = "the show techs of 39 switches: 2960-Plus at 15.2(6)E, C9200L at 17.15, C9300 at 17.15, IE-3300 at 17.6; 2026-10-07";
 const C2960G: &str = "the lab C2960G (WS-C2960G-8TC-L, 15.0(2)SE11) over SSH";
 const LAB: &str = "the lab C9300-24T with a C9300-NM-4G (17.6.4) on its console and the lab C2960G (15.0(2)SE11) over SSH, each case configured, read and reset, 2026-10-16";
+const LAB_REPLAY: &str = "the lab C9300-24T with a C9300-NM-4G (17.6.4): its 745-line configuration, member 2 provisioned and absent, replayed and 39 outputs compared whole, and the follow-up measurements, 2026-10-17";
 
 pub const RULES: &[Rule] = &[
     Rule {
@@ -45,7 +46,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces switchport",
-        rule: "a bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`); IOS XE calls an LACP member it has not bundled, linked or not, `down (suspended member of bundle Po1)` with no operational encapsulation; a voice VLAN of `dot1p`, `untagged` or `none` as typed; the pruning lines read in turn as the allowed list reads, within 2-1001; one port's block alone with no blank line after it",
+        rule: "a bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`); IOS XE calls an LACP member it has not bundled, linked or not, and a PAgP or `on` member with no link, `down (suspended member of bundle Po1)` with no operational encapsulation; a voice VLAN of `dot1p`, `untagged` or `none` as typed; the pruning lines read in turn as the allowed list reads, within 2-1001; one port's block alone with no blank line after it",
         source: Source::Live,
         evidence: LAB,
     },
@@ -123,7 +124,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "other releases and classic IOS: the 17.6 places of `router`, `ip route` and `ip access-list`; `vlan filter` among the global lines before the access maps; a named VLAN inside the unnamed VLANs' list printed by its first VLAN; `vtp version` and `vtp password` after `vtp mode`",
+        rule: "other releases and classic IOS: the 17.6 places of `router`, `ip route` and `ip access-list`; `vlan filter` among the global lines before the access maps; `vtp version` and `vtp password` after `vtp mode`",
         source: Source::Inferred,
         evidence: "only the lab C9300 at 17.6.4 holds a routing process, a VLAN access map or a VLAN filter",
     },
@@ -180,6 +181,54 @@ pub const RULES: &[Rule] = &[
         rule: "IOS XE 17.6 prints `! Last configuration change at HH:MM:SS UTC Day Mon D YYYY` between two `!` lines after the first, counted in the size: the switch's boot, then the last line typed; a switch's own printed configuration replayed keeps the `!` and comment lines, the indented `!` lines and the trailing spaces it printed wherever the same lines meet again, and a line added between two of them takes the replayed `!` lines before it (all of them less those computed after it, where those are fewer)",
         source: Source::Live,
         evidence: "the lab C9300-24T (17.6.4): two factory boots and a configuration replace with `vtp domain`, a VLAN access map and filter, a loopback, OSPF, a static route and an access list added, compared whole, 2026-10-16",
+    },
+    Rule {
+        output: "show running-config",
+        rule: "a switch's own printed configuration replayed prints its top-level lines in its order, its blank lines, the comment lines in its blocks, each line's spacing and case, the user its last-change line named until a line is typed, and the `no` lines it printed; an empty line counts nothing in the size; the interface form of an interface not made prints `end` alone",
+        source: Source::Live,
+        evidence: LAB_REPLAY,
+    },
+    Rule {
+        output: "show running-config",
+        rule: "a line added to a replayed configuration prints after every replayed line whose command IOS prints before its own (a new `spanning-tree mst configuration` after `spanning-tree extend system-id`); two replayed lines differing only in case each print as printed",
+        source: Source::Live,
+        evidence: "the lab C2960G (WS-C2960G-8TC-L, 15.0(2)SE11) with an MST region typed and reset, 2026-10-16; the captures whose ports carry descriptions differing only in case",
+    },
+    Rule {
+        output: "show running-config",
+        rule: "unnamed VLANs as runs split at each VLAN with lines (`vlan 100-119 `, `vlan 120` named, `vlan 121-139 `); `state suspend` under its VLAN, `state active` nothing; `monitor session` ports short; the tunnels after the port-channels, each subinterface after its port, Bluetooth0/4 before the VLAN interfaces; a member provisioned with no switch there prints its ports; 17.6 pads an access list's `deny`; an IPv6 list's entries as `sequence <n> <entry>`; IOS XE's standard access lists, then its extended, each by name; class-map DSCP and precedence values each followed by a space, a space apart, a CoS value with a space either side",
+        source: Source::Live,
+        evidence: LAB_REPLAY,
+    },
+    Rule {
+        output: "show running-config",
+        rule: "an interface section's lines and its `exit-` line two spaces in (`vrrp`); EIGRP named mode's families and their `topology base`; `bmp server` and BGP templates closed at their header's depth; a router's own lines before its families; `no neighbor <x> activate` kept under the IPv4 family and `no protocol <p>` in a device-tracking policy",
+        source: Source::Live,
+        evidence: LAB_REPLAY,
+    },
+    Rule {
+        output: "show running-config, show ip interface brief, show access-lists",
+        rule: "an IPv6 entry typed with no number takes the highest plus 10; more than one CoS value spaced as one; `no switch <n> provision` removing an absent member's interfaces; the tunnels PIM makes numbered past the lowest free; one HTTP list entry per server; IOS XE's own access lists absent on other platforms and releases; other IOS XE releases padding a standard entry in `show ip access-lists`",
+        source: Source::Inferred,
+        evidence: "the lab C9300-24T (17.6.4) printed numbered IPv6 entries, one CoS value per line, two PIM tunnels after one configured, its own lists at 17.6 alone",
+    },
+    Rule {
+        output: "show vlan brief",
+        rule: "a port is listed under its voice VLAN too; a SPAN destination, linked or not, is not listed; VLANs past 1005 after 1002-1005; `state suspend` reads `suspended`; a suspended LACP member under its access VLAN",
+        source: Source::Live,
+        evidence: LAB_REPLAY,
+    },
+    Rule {
+        output: "show ip interface brief",
+        rule: "a provisioned absent member's ports `unassigned YES unset down down`; Bluetooth0/4 once made, `administratively down` while shut; a tunnel up, its protocol up while its source runs and a connected subnet holds its destination; the tunnels PIM makes after the configured ones, `unset`, the encapsulation tunnel addressed from the first sparse-mode interface and on the RP the decapsulation tunnel with the RP's address; each subinterface after its port",
+        source: Source::Live,
+        evidence: LAB_REPLAY,
+    },
+    Rule {
+        output: "show ip access-lists, show access-lists, show ipv6 access-list",
+        rule: "IOS XE lists standard lists then extended, each by name, a standard entry's action padded; a 9300 at 17.6 adds the lists it makes itself (`IP-Adm-V4-Int-ACL-global`, `implicit_deny`, `implicit_permit`, `meraki-fqdn-dns`, `preauth_v4`, and the `_v6` lists), the first empty once `no ip http server` and `no ip http secure-server` are typed; `show access-lists` adds the IPv6 lists, each entry with `sequence <n>` after it, then the MAC lists, each title with a space after it",
+        source: Source::Live,
+        evidence: LAB_REPLAY,
     },
     Rule {
         output: "show running-config",
@@ -345,7 +394,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show etherchannel summary",
-        rule: "with no link: the bundle `(SD)` or `(RD)`, each member `(D)`; LACP members cabled to each other in one channel do not bundle (`(SD)`, members `(I)`); no protocol prints ` -`",
+        rule: "with no link: the bundle `(SD)` or `(RD)`, each member `(D)`; LACP members cabled to each other in one channel do not bundle (`(SD)`, members flagged as a member with a link that does not bundle: `(s)` on IOS XE); no protocol prints ` -`",
         source: Source::Live,
         evidence: LAB,
     },
@@ -507,7 +556,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show vtp status",
-        rule: "layout under VTP version 1 or 2; version, domain, pruning and mode from vlan.dat; traps from `snmp-server enable traps vtp`; the updater the lowest-numbered VLAN interface with an address; the VLANs counted with 1 and 1002-1005; both digest lines end with a space on every platform, which a terminal log loses",
+        rule: "layout under VTP version 1 or 2; version, domain, pruning and mode from vlan.dat; traps from `snmp-server enable traps vtp`; the updater the lowest-numbered VLAN interface with an address; the VLANs counted with 1 and 1002-1005, an extended VLAN not counted; both digest lines end with a space on every platform, which a terminal log loses",
         source: Source::Live,
         evidence: "core-a, core-b (9400, 17.5), c2960x 15.2(7)E capture 8 (2960-X, 15.2(7)E0a), c2960 15.2(6)E capture 5 and c2960 15.2(6)E capture 6 (2960-Plus, 15.2(6)E1), the C2960G (15.0(2)SE11) and the lab C9300 (17.6.4)",
     },

@@ -79,11 +79,11 @@ The place of the caret in a word comes from a 2960-X session, checked against th
 
 ## show running-config
 
-The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too. n counts each line from the first `!` through `end` with its newline, plus one.
+The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too. n counts each line from the first `!` through `end` with its newline, plus one; an empty line counts nothing.
 
-IOS XE 17.6 prints `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` and a `!` line after the first `!`, counted in n: the time the switch booted, a replayed configuration's own line, else the last line typed, on the switch's clock. Other releases print no such line.
+IOS XE 17.6 prints `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` and a `!` line after the first `!`, counted in n: the time the switch booted, a replayed configuration's own line, else the last line typed, on the switch's clock. A replayed line's ` by <user>` prints until a line is typed. Other releases print no such line.
 
-`show running-config interface <name>` prints that block alone: a `!` line, the block, `end`. A port never configured prints as an empty block, and the byte count is that of the lines printed, plus one.
+`show running-config interface <name>` prints that block alone: a `!` line, the block, `end`. A port never configured prints as an empty block, and the byte count is that of the lines printed, plus one. An interface the switch has not made (Bluetooth0/4 before it is typed) prints `end` alone.
 
 ### Contents
 
@@ -95,6 +95,13 @@ IOS XE 17.6 prints `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` 
 - An interface is one block however its name is spaced (`interface vlan 20` is `interface Vlan20`).
 - A typed `version` line prints once, as the release the switch runs.
 - A new switch's default lines (`vrf definition Mgmt-vrf`, GigabitEthernet0/0's, `service timestamps`) print once typed.
+- A member provisioned with no switch there (`switch 2 provision c9300-48p`) prints its ports and takes their lines.
+- `monitor session` lines name their ports short (`Gi1/0/11`).
+- At IOS XE 17.6 an access list's `deny` pads to `permit`'s width (` 20 deny   any log`, ` 30 deny   ip any any log`); 17.15 pads none.
+- An IPv6 access list entry typed with no number prints `sequence <n>` before it, n 10 past the highest.
+- On IOS XE a class map's DSCP and precedence values print each followed by a space, a space apart (`match dscp cs4  cs5  ef `), and a CoS value with a space either side (`match cos  5 `).
+- A section closes at its `exit-` line: inside an interface at its lines' depth (`  exit-vrrp`), elsewhere at its header's. Sections nest (`topology base` under an EIGRP named-mode family).
+- A router's own lines print before its address and service families, whenever typed; its other sections (`bmp server`, templates) keep their place.
 
 ### Layout of a replayed configuration
 
@@ -102,7 +109,9 @@ A configuration a switch printed (one with a `version` line) keeps its layout wh
 
 - Two of its top-level lines that meet again keep the `!` and comment lines printed between them, a `! ` with its space included.
 - An indented `!` before a line in a block stays before that line.
-- A line that ended in spaces keeps them (certificate hex, class map descriptions).
+- Each line keeps its own spacing and case (certificate hex, `match cos  5 `, `mdns-sd service-list <name> IN`); two lines differing only in case each print as printed.
+- Its top-level lines print in its order; a line added since follows the line computed before it and every one of its lines whose command IOS prints before its own (the lab C2960G at 15.0(2)SE11: a new `spanning-tree mst configuration` after `spanning-tree extend system-id`).
+- Its blank lines and the comment lines inside its blocks stay where it printed them, and a `no` line it printed is kept (` no protocol udp`).
 - Lines added between two of its own take the printed `!` lines before the first added line, all of them less those computed after it where those are fewer; the rest take their computed ones.
 - At 17.6 a static route follows the `ip http` lines with no `!`, an access list follows the route after one, and `control-plane` follows the access list after three, the block's own closing `!` counted.
 
@@ -118,6 +127,7 @@ A configuration a switch printed (one with a `version` line) keeps its layout wh
 
 - `no aaa new-model`, `no ip http server`, `no ip http secure-server`, `no logging console`, `no ip forward-protocol nd`.
 - `no ip address` on a routed interface, `no vtp` on a port, and `no switchport` on a routed port.
+- `no neighbor <x> activate` under `router bgp`'s IPv4 family, unless `no bgp default ipv4-unicast`, and `no protocol <p>` in a device-tracking policy, which gleans from every protocol by default (the lab C9300-24T at 17.6.4).
 - IOS XE keeps `no port-channel standalone-disable` under a port-channel.
 
 These come from captured Catalyst 9400 running configurations at 17.5, and the lab C9300-24T at 17.6.4 for `no switchport`.
@@ -140,7 +150,8 @@ These come from captured Catalyst 9400 running configurations at 17.5, and the l
 ### VLAN and VTP lines
 
 - VLANs and VTP lines print only in VTP transparent or off mode. A VTP server or client keeps them in vlan.dat.
-- The VLANs with nothing under them print on one line, their list compressed and ending with a space (`vlan 10,100-141 `). Each named VLAN prints its own block, the blocks in order of their first VLAN.
+- The VLANs with nothing under them print as runs split at each VLAN with lines, each list compressed and ending with a space (`vlan 100-119 `, `vlan 120` with its name, `vlan 121-139 `). A VLAN with lines prints its own block, one given lines after a range named it included, the blocks in order of their first VLAN.
+- `state suspend` prints under its VLAN; `state active`, the default, prints nothing.
 - The VTP lines print together: `vtp domain`, `vtp mode`, then `vtp version` and `vtp password`.
 - `vtp version` prints whatever the VTP mode, but for mode off, which prints none (17.6.4, versions 1 and 3).
 - `vlan access-map` blocks print whatever the VTP mode. A `vlan configuration` with nothing under it is not kept.
@@ -151,7 +162,7 @@ Lines and sections print in the order the captures print them: top-level lines b
 
 - `logging buffered` and the other logging lines but host, origin-id, trap, source-interface and facility come at the top.
 - The VLAN blocks, the `cdp` lines, then class maps before policy maps.
-- Loopbacks come first among the interfaces, and `Null0` ahead of them when it has lines (it prints nothing when empty).
+- Loopbacks come first among the interfaces, and `Null0` ahead of them when it has lines (it prints nothing when empty). Then the port-channels, the tunnels, the management port, the ports with each subinterface after its port, Bluetooth0/4 and the VLAN interfaces (the lab C9300-24T at 17.6.4).
 - `no ip ssh` and the access lists follow the interfaces, the lists before `snmp-server`.
 - Routing processes follow the interfaces, before `ip forward-protocol` and the routes.
 - Line blocks print `con`, `aux`, then each `vty` range in order.
@@ -161,6 +172,7 @@ Lines and sections print in the order the captures print them: top-level lines b
 - `router` blocks print after the last interface (measured at 17.6, inferred elsewhere).
 - At IOS XE 17.6, `vlan filter` prints after the `vlan access-map` blocks and before the VLANs; elsewhere among the global lines before them (inferred).
 - At IOS XE 17.6, `ip route` follows the `ip http` lines, and `ip access-list` blocks follow `ip route`, before `control-plane`.
+- IOS XE writes the standard access lists, then the extended, each by name, whatever order they were typed in.
 
 ### Blank and comment lines
 
@@ -265,11 +277,13 @@ The columns and rows follow the Catalyst 9400 captures (17.5), cabled as they ra
 
 ## show vlan brief and show vlan
 
-`show vlan brief` is the cores' table: a blank line, the header, VLAN 1, the VLANs defined and 1002-1005.
+`show vlan brief` is the cores' table: a blank line, the header, VLAN 1, the VLANs defined to 1001, 1002-1005, then the extended VLANs.
 
 - Each port not trunking is listed under its access VLAN, comma-separated and wrapped between ports where the next port and its comma would pass the console's width (80 when output is not a terminal).
 - A bundled member's port-channel is listed in its place. A port-channel not trunking is listed under its access VLAN.
 - A port-channel appears only once a member is bundled. The management port never appears.
+- A port with a voice VLAN is listed under the voice VLAN too. A SPAN destination is listed under no VLAN.
+- A VLAN under `state suspend` reads `suspended`.
 - Classic IOS pads no line.
 
 `show vlan` prints the `show vlan brief` table, then each VLAN's type, SAID and MTU, then the Remote SPAN VLANs and private VLAN tables, empty. Source: 39 show techs.
@@ -298,7 +312,7 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 - A port with no mode is `dynamic auto`. An access VLAN no block defines prints `(Inactive)`.
 - AppGigabitEthernet is `static access` with encapsulation `native`.
 - A bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`).
-- IOS XE prints an LACP member it has not bundled, linked or not, as `down (suspended member of bundle Po1)` with no operational encapsulation.
+- IOS XE prints an LACP member it has not bundled, linked or not, as `down (suspended member of bundle Po1)` with no operational encapsulation, and a PAgP or `on` member with no link the same.
 - A port-channel prints `Access Mode VLAN: unassigned` and `Trunking Native Mode VLAN: 0 (Inactive)` while no member bundles, whatever its mode.
 - A voice VLAN of `dot1p`, `untagged` or `none` prints as typed.
 - The pruning list prints `NONE` when empty, and its `add` and `remove` lines apply in turn within 2-1001.
@@ -308,7 +322,7 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 - IOS XE prints the legend in groups with a blank line between, and a blank line after the table.
 - Each port-channel shows its protocol from `channel-group ... mode` (` -` for none), Layer 2 `S` or `no switchport` `R`, in use `U` while a member is bundled, else down `D`: `(SU)` or `(RU)` with bundled members `(P)`, `(SD)` or `(RD)` with no link and each member `(D)`.
 - A member with a link that does not bundle is `(s)` on IOS XE, where standalone-disable is the default, and `(I)` under `no port-channel standalone-disable` and on classic IOS.
-- LACP members cabled to each other in one channel do not bundle: the bundle `(SD)`, the members `(I)`.
+- LACP members cabled to each other in one channel do not bundle: the bundle `(SD)`, each member flagged as a member with a link that does not bundle, `(s)` on IOS XE.
 - IOS XE pads each member to 16, two a line, the rest under the Ports column at 35, at any terminal width, trailing spaces kept.
 - Classic IOS wraps the members under the Ports column before column 79 and keeps a memberless group's padding.
 - Classic IOS 15.2 adds `N` and `m` to the legend and spaces its groups; a down LACP bundle is `(SD)` with a down member `(D)`.
@@ -348,7 +362,7 @@ Versions 1 and 2 print the MD5 digest in two rows of eight `0xNN ` bytes. It is 
 - The secret was measured with six passwords on the lab C2960G; repeats of one password (`a`, `aa`, `aaaa`) give one digest.
 
 - Version, domain, pruning and mode come from the VTP lines vlan.dat keeps (version 1, Server and pruning off by default). Traps come from `snmp-server enable traps vtp`.
-- The VLANs count with 1 and 1002-1005.
+- The VLANs count with 1 and 1002-1005; versions 1 and 2 leave out the extended VLANs.
 - Device ID is the switch's base MAC address, as `show version` names it on every capture that prints both.
 - A new database shows `0.0.0.0 at 0-0-00 00:00:00` at revision 0.
 - A version 1 or 2 server counts one revision per VLAN database change typed at the console, once the VLAN submode is left, and stamps the updater and the switch's clock (`10-16-26 18:30:17`: month and day unpadded). A replayed configuration counts nothing.
@@ -450,7 +464,10 @@ A Catalyst 9400's ports and a classic stack's port-channels have no known number
 
 The layout and column widths follow C9200L captures at 17.6 and 17.15, with no blank line before the header.
 
-- Rows: the VLAN interfaces, the ports, the port-channels, loopbacks and tunnels.
+- Rows: the VLAN interfaces, the ports with each subinterface after its port, Bluetooth0/4 once made, the port-channels, loopbacks and tunnels.
+- A provisioned member's ports print `unassigned YES unset down down`.
+- A tunnel is up; its protocol is up while its source runs and a connected subnet or a static route's next hop reaches its destination.
+- Where `ip pim rp-address` names an RP and multicast routing runs, the tunnels PIM makes follow the configured ones, method `unset`: the encapsulation tunnel addressed from the first sparse-mode interface, and on the RP the decapsulation tunnel with the RP's address.
 - Vlan1 is `administratively down` until configured.
 - Up: a loopback, an AppGigabitEthernet port, a cabled port, a port-channel with a bundled member, and a VLAN interface whose VLAN a running port carries. A VLAN interface whose VLAN exists with no running port carrying it is up, its protocol down.
 - Method is `NVRAM` where a loaded configuration gives an address or `no ip address`, `manual` for an address typed at the console and for `no ip address` typed after it, and `DHCP` for `ip address dhcp` in a loaded configuration.
@@ -461,12 +478,14 @@ The layout and column widths follow C9200L captures at 17.6 and 17.15, with no b
 
 ## show ip access-lists and show access-lists
 
-`show ip access-lists [<name>]` and `show access-lists [<name>]` print each IPv4 list as created, or the one named. Sources are the lab C9300-24T (17.6.4) and the lab 2960G (15.0(2)SE11).
+`show ip access-lists [<name>]` prints each IPv4 list, or the one named: classic IOS as created, IOS XE the standard lists then the extended, each by name. A Catalyst 9300 at 17.6 adds the lists IOS XE makes itself (`IP-Adm-V4-Int-ACL-global`, `implicit_deny`, `implicit_permit`, `meraki-fqdn-dns`, `preauth_v4`); `IP-Adm-V4-Int-ACL-global` holds `permit tcp any any eq www` while `ip http server` runs and `eq 443` while `ip http secure-server` runs. `show access-lists [<name>]` prints the same, then on IOS XE the IPv6 lists and the MAC lists. Sources are the lab C9300-24T (17.6.4) and the lab 2960G (15.0(2)SE11).
 
 - The heading is `Extended IP access list <name>` or `Standard IP access list <name>`.
 - Each entry is four spaces in with its number. Remarks are left out.
 - A standard wildcard prints as `<address>, wildcard bits <wildcard>`.
-- Classic IOS lists a standard list's host entries first and pads its actions to `permit`'s width (`50 deny   any`).
+- A standard list's actions pad to `permit`'s width (`50 deny   any`). Classic IOS lists its host entries first.
+- An IPv6 list prints `IPv6 access list <name>`, then each entry four spaces in with `sequence <n>` after it; `show ipv6 access-list [<name>]` prints the IPv6 lists alone, by name. The 9300 at 17.6 adds `implicit_deny_v6`, `implicit_permit_v6` and `preauth_v6`.
+- A MAC list prints `Extended MAC access list <name> ` with a space after it, then each entry four spaces in.
 - Nothing prints when no list exists.
 
 ## Output filters

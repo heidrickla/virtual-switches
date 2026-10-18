@@ -6,7 +6,7 @@
 |---|---|
 | `cargo nextest run` | the unit tests, the corpus's integrity checks, the terminal tests, and with a captures folder the capture tests below |
 | `VSWITCH_CAPTURES=<captures folder> cargo test --release` | the full suite with captures, which takes about 10 minutes |
-| `VSWITCH_CAPTURES=<empty or missing folder> cargo test --release` | the suite without captures |
+| `VSWITCH_CAPTURES=<a path that is not a folder> cargo test --release` | the suite without captures |
 | `node --test tools/extract-releases.test.mjs` | the extractor tests |
 
 A build reads captures from the folder `VSWITCH_CAPTURES` names, else from `../virtual-switches-captures/live`. A name that is not a folder gives a build without captures.

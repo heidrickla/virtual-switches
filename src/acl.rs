@@ -202,11 +202,12 @@ fn listed(kind: Kind, lines: &[Entry], classic: bool) -> Vec<&Entry> {
     out
 }
 
-/// A classic standard entry's action padded to `permit`'s width (`deny   any`, the 2960G's session).
-fn padded(kind: Kind, text: &str, classic: bool) -> String {
+/// A standard entry's action padded to `permit`'s width (`deny   any`: the 2960G's session, and the
+/// lab C9300-24T's `show ip access-lists` at 17.6.4; other IOS XE releases inferred to pad too).
+fn padded(kind: Kind, text: &str) -> String {
     match text.split_once(' ') {
         Some((action, rest))
-            if classic && kind == Kind::Standard && (action == "permit" || action == "deny") =>
+            if kind == Kind::Standard && (action == "permit" || action == "deny") =>
         {
             format!("{action:<6} {rest}")
         }
@@ -214,20 +215,109 @@ fn padded(kind: Kind, text: &str, classic: bool) -> String {
     }
 }
 
-/// The list's lines as `show running-config` prints them under its header.
-pub fn running(kind: Kind, lines: &[Entry], classic: bool) -> Vec<String> {
+/// An IOS XE 17.6 running configuration's entry: `deny` padded to `permit`'s width in either kind of
+/// list (the lab C9300-24T, 17.6.4: ` 20 deny   any log`, ` 30 deny   ip any any log`); 17.15 pads
+/// none (ten C9200 and C9300 17.15 captures print ` 30 deny any log`).
+fn padded_running(text: &str, pad: bool) -> String {
+    match text.split_once(' ') {
+        Some(("deny", rest)) if pad => format!("deny   {rest}"),
+        _ => text.to_string(),
+    }
+}
+
+/// The IPv4 access lists IOS XE makes itself, each with its entries as `show ip access-lists`
+/// prints them: every one a Catalyst 9300 at 17.6 lists from its factory default on, none of them in
+/// the running configuration (the lab C9300-24T, 17.6.4, at factory and with http, web
+/// authentication, 802.1X and device tracking configured and removed).
+pub const SYSTEM_V4: &[(&str, &[&str])] = &[
+    (
+        "IP-Adm-V4-Int-ACL-global",
+        &[
+            "10 permit tcp any any eq www",
+            "20 permit tcp any any eq 443",
+        ],
+    ),
+    ("implicit_deny", &["10 deny ip any any"]),
+    ("implicit_permit", &["10 permit ip any any"]),
+    ("meraki-fqdn-dns", &[]),
+    (
+        "preauth_v4",
+        &[
+            "10 permit udp any any eq domain",
+            "20 permit tcp any any eq domain",
+            "30 permit udp any eq bootps any",
+            "40 permit udp any any eq bootpc",
+            "50 permit udp any eq bootpc any",
+            "60 deny ip any any",
+        ],
+    ),
+];
+
+/// The IPv6 access lists IOS XE makes itself, as `show ipv6 access-list` prints their entries (as
+/// `SYSTEM_V4`).
+pub const SYSTEM_V6: &[(&str, &[&str])] = &[
+    ("implicit_deny_v6", &["deny ipv6 any any sequence 10"]),
+    ("implicit_permit_v6", &["permit ipv6 any any sequence 10"]),
+    (
+        "preauth_v6",
+        &[
+            "permit udp any any eq domain sequence 10",
+            "permit tcp any any eq domain sequence 20",
+            "permit icmp any any nd-ns sequence 30",
+            "permit icmp any any nd-na sequence 40",
+            "permit icmp any any router-solicitation sequence 50",
+            "permit icmp any any router-advertisement sequence 60",
+            "permit icmp any any redirect sequence 70",
+            "permit udp any eq 547 any eq 546 sequence 80",
+            "permit udp any eq 546 any eq 547 sequence 90",
+            "deny ipv6 any any sequence 100",
+        ],
+    ),
+];
+
+/// An IPv6 list's entries as `show ipv6 access-list` prints them: the sequence number after the
+/// entry (the lab C9300-24T, 17.6.4: ` sequence 10 permit ipv6 2001:DB8::/32 any` prints `permit ipv6
+/// 2001:DB8::/32 any sequence 10`); an entry typed with none takes the highest plus 10 (inferred),
+/// a remark none.
+pub fn show_v6(lines: &[Entry]) -> Vec<String> {
+    let mut last = 0;
+    let mut out = vec![];
+    for e in lines {
+        let (seq, text) = match e
+            .text
+            .strip_prefix("sequence ")
+            .and_then(|r| r.split_once(' '))
+        {
+            Some((n, rest)) => match n.parse::<u32>() {
+                Ok(n) => (n, rest),
+                Err(_) => continue,
+            },
+            None => (last + 10, e.text.as_str()),
+        };
+        if text.starts_with("remark") {
+            continue;
+        }
+        last = last.max(seq);
+        out.push(format!("    {text} sequence {seq}"));
+    }
+    out
+}
+
+/// The list's lines as `show running-config` prints them under its header; `pad`: the release pads
+/// a `deny` (`padded_running`).
+pub fn running(kind: Kind, lines: &[Entry], classic: bool, pad: bool) -> Vec<String> {
     if classic {
         return listed(kind, lines, classic)
             .into_iter()
-            .map(|e| format!(" {}", padded(kind, &e.text, classic)))
+            .map(|e| format!(" {}", padded(kind, &e.text)))
             .collect();
     }
     // a line kept as a capture printed it carries its own number
     lines
         .iter()
         .map(|e| match e.key.starts_with("seq ") {
-            true => format!(" {} {}", seq_of(e), e.text),
-            false => format!(" {}", e.text),
+            true => format!(" {} {}", seq_of(e), padded_running(&e.text, pad)),
+            false => format!(" {}", padded_running(&e.text, pad)),
         })
         .collect()
 }
@@ -244,12 +334,12 @@ pub fn show(kind: Kind, name: &str, lines: &[Entry], classic: bool) -> Vec<Strin
         if is_remark(e) {
             continue;
         }
-        let mut text = padded(kind, &e.text, classic);
+        let mut text = padded(kind, &e.text);
         if kind == Kind::Standard {
             let words: Vec<&str> = e.text.split_whitespace().collect();
             let address = |w: &&str| w.parse::<std::net::Ipv4Addr>().is_ok();
             if words.len() >= 3 && address(&words[1]) && address(&words[2]) {
-                let head = padded(kind, &format!("{} {}", words[0], words[1]), classic);
+                let head = padded(kind, &format!("{} {}", words[0], words[1]));
                 let tail = words[3..]
                     .iter()
                     .map(|w| format!(" {w}"))
@@ -410,7 +500,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            running(Kind::Extended, &held, true),
+            running(Kind::Extended, &held, true, false),
             [
                 " permit ip host 10.0.0.1 any",
                 " permit ip host 10.0.0.3 any",
@@ -431,7 +521,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            running(Kind::Extended, &held, true),
+            running(Kind::Extended, &held, true, false),
             [
                 " permit ip host 10.0.0.1 any",
                 " permit ip host 10.0.0.2 any",
@@ -448,7 +538,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            running(Kind::Extended, &xe, false),
+            running(Kind::Extended, &xe, false, false),
             [
                 " 10 permit ip host 10.0.0.1 any",
                 " 15 permit ip host 10.0.0.3 any",
@@ -480,7 +570,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            running(Kind::Standard, &held, true),
+            running(Kind::Standard, &held, true, false),
             [
                 " permit 10.0.0.9",
                 " permit 10.0.0.1",
@@ -501,7 +591,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            running(Kind::Standard, &xe, false),
+            running(Kind::Standard, &xe, false, false),
             [
                 " 10 permit 10.0.0.9",
                 " 20 permit 10.0.0.1",
@@ -523,7 +613,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            running(Kind::Standard, &held, false),
+            running(Kind::Standard, &held, false, false),
             [
                 " 10 permit 192.0.2.148",
                 " 20 remark -MGMT_HOSTS-",
@@ -543,8 +633,8 @@ mod tests {
         );
         assert!(errors.is_empty());
         assert_eq!(
-            running(Kind::Standard, &again, false),
-            running(Kind::Standard, &held, false)
+            running(Kind::Standard, &again, false, false),
+            running(Kind::Standard, &held, false, false)
         );
         assert_eq!(next(&again), 40);
     }

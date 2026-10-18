@@ -28,7 +28,7 @@ fn levels(d: &Device) -> (String, String) {
 /// train, which prints the 17.6.4 image's lines (inferred: vswitch keeps no maintenance release).
 fn measured(d: &Device) -> bool {
     d.stack.family() == Some(crate::platform::Family::C9300)
-        && d.stack.members.len() == 1
+        && d.stack.members.iter().filter(|m| !m.absent).count() == 1
         && crate::release::Release::parse(&d.release).is_some_and(|r| r.config_version() == "17.6")
 }
 
@@ -281,7 +281,7 @@ pub fn show_version(d: &Device, now: u64, booted: u64) -> Vec<String> {
         .stack
         .physical()
         .iter()
-        .filter(|p| Some(p.as_str()) != d.stack.management())
+        .filter(|p| Some(p.as_str()) != d.stack.management() && !d.stack.absent(p))
         .count();
     out.push(format!(
         "*{:>5} {ports:<5} {model:<18} {:<17} {:<21} INSTALL",

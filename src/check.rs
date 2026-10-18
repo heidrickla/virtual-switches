@@ -56,12 +56,17 @@ pub fn type_traced(s: &mut shell::Session<'_>, config: &str) -> Vec<Traced> {
     // a switch's own printed configuration keeps its layout and its last change
     if let Some(layout) = device::Layout::of(config) {
         s.device.layout = Some(layout);
-        if let Some(t) = config
+        if let Some(stamp) = config
             .lines()
             .find_map(|l| l.trim().strip_prefix("! Last configuration change at "))
-            .and_then(crate::shell::parse_stamp)
+            && let Some(t) = crate::shell::parse_stamp(stamp)
         {
             s.device.last_change = Some(t);
+            // the lab C9300-24T (17.6.4) named the user who made it: `... 2026 by vswitch`
+            s.device.last_change_by = stamp
+                .split_once(" by ")
+                .map(|(_, user)| user.trim().to_string())
+                .filter(|u| !u.is_empty());
         }
     }
     // a kept configuration was swept of its secrets: `<removed>` stands for each value

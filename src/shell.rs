@@ -267,6 +267,7 @@ impl<'a> Session<'a> {
         self.accepted.clear();
         self.device.factory = true;
         self.device.last_change = Some(at);
+        self.device.last_change_by = None;
         self.booted = at;
         self.vlans_seen = Some(self.device.vlan_contents());
     }
@@ -940,6 +941,7 @@ impl<'a> Session<'a> {
         // a line taken at the console is the configuration's last change
         if !self.redacted && self.accepted.len() > taken {
             self.device.last_change = Some(self.now());
+            self.device.last_change_by = None;
         }
         out
     }
@@ -1267,6 +1269,53 @@ impl<'a> Session<'a> {
                 return (vec![], Result::Ok);
             }
         }
+        // an IPv6 list keeps its entries numbered: one typed without a number takes the highest
+        // plus 10 (the lab C9300-24T, 17.6.4, printed ` permit ipv6 2001:DB8::/32 any` and ` deny
+        // ipv6 any any`, typed in a new list, as ` sequence 10 permit ...` and ` sequence 20 deny
+        // ...`); `no` before an entry removes it
+        if back_to.is_none()
+            && mode == "config-ipv6-acl"
+            && !self.device.stack.classic()
+            && let Some(b) = self.frames.last().and_then(|f| f.blocks.first().copied())
+        {
+            let canonical = p.canonical();
+            let text = canonical
+                .strip_prefix("no ")
+                .unwrap_or(&canonical)
+                .to_string();
+            if matches!(text.split_whitespace().next(), Some("permit" | "deny")) {
+                let numbered = |e: &Entry| -> Option<(u32, String)> {
+                    let (n, rest) = e.text.strip_prefix("sequence ")?.split_once(' ')?;
+                    Some((n.parse().ok()?, rest.to_string()))
+                };
+                let lines = &mut self.device.blocks[b].lines;
+                if p.negated {
+                    lines.retain(|e| numbered(e).is_none_or(|(_, t)| t != text));
+                } else if !lines
+                    .iter()
+                    .any(|e| numbered(e).is_some_and(|(_, t)| t == text))
+                {
+                    let next = lines
+                        .iter()
+                        .filter_map(&numbered)
+                        .map(|(n, _)| n)
+                        .max()
+                        .unwrap_or(0)
+                        + 10;
+                    lines.push(Entry {
+                        key: format!("sequence #{next}"),
+                        text: format!("sequence {next} {text}"),
+                    });
+                }
+                let block = self.block_header();
+                self.accepted.push(Accepted {
+                    block,
+                    line: full.trim().to_string(),
+                    key: Some(crate::device::key(&p)),
+                });
+                return (vec![], Result::Ok);
+            }
+        }
         // the lab C2960G (15.0(2)SE11): `hidden` waits for version 3 and keeps the password set
         // before
         let canonical = p.canonical();
@@ -1502,7 +1551,16 @@ impl<'a> Session<'a> {
         self.raw = line.to_string();
         let cmd = &self.engine.grammar.commands[p.command];
         let name = cmd.name.as_str();
-        let enters = self.engine.enters(p).map(str::to_string);
+        let mut enters = self.engine.enters(p).map(str::to_string);
+        // a subinterface opens its own mode, where `encapsulation dot1Q` runs (the lab C9300-24T,
+        // 17.6.4: `interface GigabitEthernet1/0/7.10`)
+        if enters.as_deref() == Some("config-if")
+            && headers(p)
+                .first()
+                .is_some_and(|h| h.starts_with("interface ") && h.contains('.'))
+        {
+            enters = Some("config-subif".into());
+        }
         match name {
             "do" => {
                 let at = cli::tokens(line).get(1).map_or(line.len(), |t| t.at);
@@ -1704,7 +1762,43 @@ impl<'a> Session<'a> {
                     entered: line.trim().to_string(),
                 });
             }
-            Some(sub) if cli::is_config(sub) && top.mode.starts_with("config-if") => {
+            Some(sub)
+                if cli::is_config(sub)
+                    && (top.mode.starts_with("config-if") || top.mode == "config-subif")
+                    && top.prefix.is_empty()
+                    && self.closes(sub, &headers(p)[0]).is_some() =>
+            {
+                // a submode of an interface with an `exit-` line opens a section in the interface,
+                // whose lines and `exit-` line print two spaces in (the lab C9300-24T, 17.6.4:
+                // `  address 10.99.20.254 primary` and `  exit-vrrp` under `vrrp 20 address-family
+                // ipv4`, `  exit-vrrp` alone under an empty one)
+                let header = headers(p).remove(0);
+                let close = self.closes(sub, &header).unwrap_or_default();
+                for &b in &top.blocks {
+                    let lines = &mut self.device.blocks[b].lines;
+                    if !lines.iter().any(|e| e.key == header) {
+                        lines.push(Entry {
+                            key: header.clone(),
+                            text: header.clone(),
+                        });
+                        lines.push(Entry {
+                            key: crate::device::closing(&header),
+                            text: format!(" {close}"),
+                        });
+                    }
+                }
+                self.frames.push(Frame {
+                    mode: sub.into(),
+                    blocks: top.blocks.clone(),
+                    prefix: " ".into(),
+                    section: Some(header),
+                    entered: line.trim().to_string(),
+                });
+            }
+            Some(sub)
+                if cli::is_config(sub)
+                    && (top.mode.starts_with("config-if") || top.mode == "config-subif") =>
+            {
                 // a submode of an interface writes into the interface itself (`vrf forwarding`)
                 self.write(p);
                 self.frames.push(Frame {
@@ -1725,27 +1819,37 @@ impl<'a> Session<'a> {
                 if key_string {
                     self.pubkey = Some(String::new());
                 }
+                // a section inside a section is named by the enclosing one too, and goes at its
+                // end: an EIGRP address family's `topology base` and its service family's are two
+                // (the lab C9300-24T, 17.6.4)
+                let key = match &top.section {
+                    Some(outer) => format!("{}{header} @{outer}", top.prefix),
+                    None => format!("{}{header}", top.prefix),
+                };
                 for &b in top.blocks.iter().filter(|_| !key_string) {
-                    let key = format!("{}{header}", top.prefix);
                     let lines = &mut self.device.blocks[b].lines;
                     if !lines.iter().any(|e| e.key == key) {
-                        lines.push(Entry {
+                        let mut new = vec![Entry {
                             key: key.clone(),
-                            text: key.clone(),
-                        });
+                            text: format!("{}{header}", top.prefix),
+                        }];
                         if let Some(c) = &close {
-                            lines.push(Entry {
+                            new.push(Entry {
                                 key: crate::device::closing(&key),
                                 text: format!("{}{c}", top.prefix),
                             });
                         }
+                        let at = top.section.as_deref().map_or(lines.len(), |outer| {
+                            section_span(lines, outer, &top.prefix).1
+                        });
+                        lines.splice(at..at, new);
                     }
                 }
                 self.frames.push(Frame {
                     mode: sub.into(),
                     blocks: top.blocks.clone(),
                     prefix: format!("{} ", top.prefix),
-                    section: Some(format!("{}{header}", top.prefix)),
+                    section: Some(key),
                     entered: line.trim().to_string(),
                 });
             }
@@ -2281,12 +2385,16 @@ impl<'a> Session<'a> {
             .last()
             .cloned()
             .unwrap_or_else(|| Frame::top("config"));
-        // a line a real switch of this platform and release printed is kept as it printed it
+        // a line a real switch of this platform and release printed is kept as it printed it, as is
+        // one the switch whose configuration is replayed printed
         let printed = |d: &Device, b: Option<usize>| {
             let header = b.map_or("", |b| d.blocks[b].header.as_str());
             self.engine
                 .held
                 .has(&crate::live::kind(header), &p.canonical())
+                || d.layout
+                    .as_ref()
+                    .is_some_and(|l| l.lines.contains(&crate::device::layout_key(&p.canonical())))
         };
         let whole = self.whole(&top.mode, p);
         // `root primary` and `root secondary` store the priority each VLAN takes against the root
@@ -2410,6 +2518,12 @@ impl<'a> Session<'a> {
                     if let Some(t) = self.as_printed(&kind, &self.device.blocks[b].lines[i].text) {
                         self.device.blocks[b].lines[i].text = t;
                     }
+                    if header.starts_with("class-map ")
+                        && !self.device.stack.classic()
+                        && let Some(t) = match_spacing(&self.device.blocks[b].lines[i].text)
+                    {
+                        self.device.blocks[b].lines[i].text = t;
+                    }
                     // indented as switches print it: a block prints its lines one space in, an IOS XE
                     // class map its `description` two (c9200 17.12 capture 1)
                     let text = self.device.blocks[b].lines[i].text.trim_start().to_string();
@@ -2419,20 +2533,38 @@ impl<'a> Session<'a> {
                     }
                 }
             } else {
+                // IOS activates a neighbor in the IPv4 address family by default and keeps `no
+                // neighbor <x> activate` there (the lab C9300-24T, 17.6.4: `  no neighbor
+                // 2001:DB8:10::2 activate` under `address-family ipv4`)
+                let words: Vec<String> = p
+                    .canonical()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect();
+                let block = &self.device.blocks[b];
+                let deactivated = p.negated
+                    && block.header.starts_with("router bgp ")
+                    && top.section.as_deref().is_some_and(|s| {
+                        matches!(
+                            s.trim(),
+                            "address-family ipv4" | "address-family ipv4 unicast"
+                        )
+                    })
+                    && words.len() == 4
+                    && words[1] == "neighbor"
+                    && words[3] == "activate"
+                    && !block
+                        .lines
+                        .iter()
+                        .any(|e| e.text == "no bgp default ipv4-unicast");
                 let prefix = top.prefix.as_str();
                 let lines = &mut self.device.blocks[b].lines;
                 // within this section only: a policy map's classes each set their own `priority
                 // level` (c9300 17.15 capture 1)
-                let start = top
-                    .section
-                    .as_ref()
-                    .and_then(|s| lines.iter().rposition(|e| &e.key == s))
-                    .map_or(0, |i| i + 1);
-                let depth = |s: &str| s.len() - s.trim_start().len();
-                let end = lines[start..]
-                    .iter()
-                    .position(|e| depth(&e.text) < prefix.len())
-                    .map_or(lines.len(), |i| start + i);
+                let (start, end) = match top.section.as_deref() {
+                    Some(s) => section_span(lines, s, prefix),
+                    None => (0, lines.len()),
+                };
                 // the section's lines as a block's, its indentation off, changed as a block's are
                 let strip = |s: String| s.strip_prefix(prefix).map_or(s.clone(), str::to_string);
                 let mut section: Vec<Entry> = lines
@@ -2442,7 +2574,13 @@ impl<'a> Session<'a> {
                         text: strip(e.text),
                     })
                     .collect();
-                crate::device::apply_to(&mut section, p, crate::device::key(p), kept, whole);
+                crate::device::apply_to(
+                    &mut section,
+                    p,
+                    crate::device::key(p),
+                    kept || deactivated,
+                    whole,
+                );
                 let back = section.into_iter().map(|e| Entry {
                     key: format!("{prefix}{}", e.key),
                     text: format!("{prefix}{}", e.text),
@@ -2574,6 +2712,44 @@ fn whole_words(p: &Parse) -> bool {
         Item::Kw { exact, .. } => *exact,
         Item::Arg { .. } => true,
     })
+}
+
+/// A class map's `match` on DSCP, precedence or CoS values as IOS XE writes it: each DSCP or
+/// precedence value followed by a space, the values a space apart (the lab C9300-24T, 17.6.4: `match
+/// dscp cs4  cs5  ef `; 41 17.15 captures `match dscp ef `), a CoS value with a space either side
+/// (`match cos  5 `; more than one inferred the same).
+fn match_spacing(text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let (head, values) = match words.as_slice() {
+        ["match", "ip", kind @ ("dscp" | "precedence"), rest @ ..] => {
+            (format!("match ip {kind} "), rest)
+        }
+        ["match", kind @ ("dscp" | "precedence"), rest @ ..] => (format!("match {kind} "), rest),
+        ["match", "cos", rest @ ..] if rest.iter().all(|v| v.parse::<u8>().is_ok()) => {
+            let spaced: String = rest.iter().map(|v| format!(" {v} ")).collect();
+            return (!rest.is_empty()).then(|| format!("match cos {spaced}"));
+        }
+        _ => return None,
+    };
+    let spaced: Vec<String> = values.iter().map(|v| format!("{v} ")).collect();
+    (!values.is_empty()).then(|| format!("{head}{}", spaced.join(" ")))
+}
+
+/// Where the lines of the section keyed `section` lie in a block's lines: after its header, up to
+/// the first line less indented than `prefix`, its lines' indent, or its own `exit-` line, which an
+/// interface section prints at its lines' depth.
+fn section_span(lines: &[Entry], section: &str, prefix: &str) -> (usize, usize) {
+    let start = lines
+        .iter()
+        .rposition(|e| e.key == section)
+        .map_or(0, |i| i + 1);
+    let depth = |s: &str| s.len() - s.trim_start().len();
+    let close = crate::device::closing(section);
+    let end = lines[start..]
+        .iter()
+        .position(|e| depth(&e.text) < prefix.len() || e.key == close)
+        .map_or(lines.len(), |i| start + i);
+    (start, end)
 }
 
 fn headers(p: &Parse) -> Vec<String> {

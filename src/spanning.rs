@@ -368,7 +368,7 @@ impl Spanning {
                 }
                 // the application hosting port runs with no cable (the lab C9300, 17.6.4)
                 if p.starts_with("AppGigabitEthernet") {
-                    if !c.contains(&"shutdown") {
+                    if !c.contains(&"shutdown") && !d.stack.absent(&p) {
                         logical.push(Candidate {
                             name: p.clone(),
                             members: vec![p.clone()],
@@ -401,6 +401,9 @@ impl Spanning {
                     if crate::show::suspended(d, &p) {
                         continue;
                     }
+                }
+                if crate::show::monitoring(d, &p) {
+                    continue;
                 }
                 logical.push(Candidate {
                     name: p.clone(),

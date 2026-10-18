@@ -706,6 +706,7 @@ impl Builder {
                     number: m.number,
                     model: MODELS[m.model].name.to_string(),
                     module: m.module.map(|i| MODULES[i].name.to_string()),
+                    absent: false,
                 })
                 .collect(),
         }

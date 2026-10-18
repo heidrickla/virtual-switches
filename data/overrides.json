@@ -963,6 +963,362 @@
       "modes": ["config"],
       "lines": ["service unsupported-transceiver", "no service unsupported-transceiver"],
       "evidence": "no 9300 book documents it; the lab C9300-24T (17.6.4) took it, printed it after 'service call-home' in its running configuration, and brought up the third-party SFP in Gi1/1/1 that it err-disabled as gbic-invalid without it"
+    },
+    {
+      "name": "aaa accounting network (method list)",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["aaa accounting network <list-name>", "no aaa accounting network <list-name>"],
+      "args": {"list-name": {"kind": "Word"}},
+      "enters": "cfg-acct-mlist",
+      "evidence": "the books give the list only with its methods, no space before them ('<accounting-list>start-stop radius'), which refused the list alone; the lab C9300-24T (17.6.4) took 'aaa accounting network TESTACCT', entered (cfg-acct-mlist)# and printed the line in its running configuration"
+    },
+    {
+      "name": "ip dhcp pool",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "dhcp-config",
+      "evidence": "four of the guides' examples enter (config-dhcp), two (dhcp-config); the lab C9300-24T (17.6.4) entered (dhcp-config)# from 'ip dhcp pool LAB20' and took 'network', 'default-router' and 'dns-server' there"
+    },
+    {
+      "name": "dns-server (DHCP pool)",
+      "platform": "Catalyst 9300",
+      "modes": ["dhcp-config"],
+      "lines": ["dns-server <address> [<address> [<address> [<address> [<address> [<address> [<address> [<address>]]]]]]]", "no dns-server"],
+      "args": {"address": {"kind": "Ipv4"}},
+      "evidence": "no 9300 book lists it for an IPv4 pool; the lab C9300-24T (17.6.4) took 'dns-server 10.99.20.5' in (dhcp-config)# and printed it in its running configuration; up to eight servers as 'default-router' takes (inferred)"
+    },
+    {
+      "name": "network (DHCP pool)",
+      "platform": "Catalyst 9300",
+      "modes": ["dhcp-config"],
+      "lines": ["network <network-number> [<mask>]", "no network"],
+      "args": {"network-number": {"kind": "Ipv4"}, "mask": {"kind": "Ipv4"}},
+      "evidence": "the books' pool form takes 'mask' before the mask; the lab C9300-24T (17.6.4) took 'network 10.99.20.0 255.255.255.0' in (dhcp-config)# and printed it so in its running configuration"
+    },
+    {
+      "name": "protocol (device-tracking policy)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-device-tracking"],
+      "lines": ["protocol {arp | dhcp4 | dhcp6 | ndp | udp} [prefix-list <prefix-list-name>]", "no protocol {arp | dhcp4 | dhcp6 | ndp | udp}"],
+      "args": {"prefix-list-name": {"kind": "Word"}},
+      "evidence": "no 9300 book lists it in a device-tracking policy; the lab C9300-24T (17.6.4) took 'no protocol udp' in (config-device-tracking)# and printed it in its running configuration"
+    },
+    {
+      "name": "table-map",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["table-map <table-map-name>", "no table-map <table-map-name>"],
+      "args": {"table-map-name": {"kind": "Word"}},
+      "enters": "config-tablemap",
+      "evidence": "the guide writes the submode's lines into the command's own; the lab C9300-24T (17.6.4) took 'table-map costocos' and ' default copy' after it, and printed both in its running configuration; the guide's examples enter (config-tablemap)"
+    },
+    {
+      "name": "default (table map)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-tablemap"],
+      "lines": ["default {copy | ignore | <default-value>}", "no default"],
+      "args": {"default-value": {"kind": "Word"}},
+      "evidence": "the guide writes it into 'table-map'; the lab C9300-24T (17.6.4) took ' default copy' under 'table-map costocos' and printed it in its running configuration"
+    },
+    {
+      "name": "l2vpn (global)",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["l2vpn", "no l2vpn"],
+      "enters": "config-l2vpn",
+      "evidence": "the books list only 'l2vpn evpn', 'l2vpn vfi context' and 'l2vpn xconnect context'; the lab C9300-24T (17.6.4) took 'l2vpn' alone, entered (config-l2vpn)# and printed it in its running configuration"
+    },
+    {
+      "name": "object-group network (subnet)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-network-group"],
+      "lines": ["<network-address> <network-mask>", "no <network-address> <network-mask>"],
+      "args": {"network-address": {"kind": "Ipv4"}, "network-mask": {"kind": "Ipv4"}},
+      "evidence": "no 9300 book lists the subnet line, which starts with no keyword; the lab C9300-24T (17.6.4) took ' 10.99.0.0 255.255.0.0' in (config-network-group)# and printed it in its running configuration"
+    },
+    {
+      "name": "permit (MAC access-list configuration)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-ext-macl"],
+      "lines": ["permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]", "no permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]"],
+      "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "protocol": {"kind": "Word"}},
+      "evidence": "the security reference's line runs every choice together ('permit any host <src-MAC-addr> <src-MAC-addr mask> any host ...'), which refused a plain entry; the lab C9300-24T (17.6.4) took 'permit host 0011.2233.4455 any' in (config-ext-macl)# and printed it in its running configuration and 'show access-lists'"
+    },
+    {
+      "name": "deny (MAC access-list configuration)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-ext-macl"],
+      "lines": ["deny {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]", "no deny {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]"],
+      "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "protocol": {"kind": "Word"}},
+      "evidence": "as 'permit (MAC access-list configuration)': the reference's line runs every choice together; the lab C9300-24T (17.6.4) took its permit entry"
+    },
+    {
+      "name": "service-list mdns-sd",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["service-list mdns-sd <service-list-name> query", "no service-list mdns-sd <service-list-name> query"],
+      "args": {"service-list-name": {"kind": "Word"}},
+      "enters": "config-mdns-sd-sl",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'service-list mdns-sd TESTSL2 query', entered (config-mdns-sd-sl)# and printed the line in its running configuration"
+    },
+    {
+      "name": "state (VLAN configuration)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-vlan"],
+      "lines": ["state {active | suspend}", "no state"],
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took ' state suspend' under 'vlan 151', printed it in its running configuration and listed VLAN 151 'suspended' in 'show vlan brief'"
+    },
+    {
+      "name": "match dscp",
+      "platform": "Catalyst 9300",
+      "modes": ["config-cmap"],
+      "lines": ["match [ip] dscp <dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value>]]]]]]]", "no match [ip] dscp <dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value>]]]]]]]"],
+      "args": {"dscp-value": {"kind": "Dscp"}},
+      "evidence": "the guide's line takes either one value or eight, its seven optional ones in one bracket, which refused 'match dscp cs4 cs5 ef' as incomplete; the lab C9300-24T (17.6.4) took two to four values and printed each line in its running configuration"
+    },
+    {
+      "name": "match precedence",
+      "platform": "Catalyst 9300",
+      "modes": ["config-cmap"],
+      "lines": ["match [ip] precedence <precedence-value> [<precedence-value> [<precedence-value> [<precedence-value>]]]", "no match [ip] precedence <precedence-value> [<precedence-value> [<precedence-value> [<precedence-value>]]]"],
+      "args": {"precedence-value": {"kind": "Word"}},
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'match precedence 4 5' in a class map and printed it in its running configuration; four values as the reference's 'match cos' (inferred)"
+    },
+    {
+      "name": "bandwidth remaining (policy-map class)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-pmap-c"],
+      "lines": ["bandwidth remaining {percent <percentage> | ratio <ratio>}", "no bandwidth remaining {percent [<percentage>] | ratio [<ratio>]}"],
+      "args": {"percentage": {"kind": "Number", "min": 1, "max": 100}, "ratio": {"kind": "Number", "min": 1, "max": 1000}},
+      "evidence": "the guides' 'bandwidth' lines read 'remaining' then a value, which refused 'remaining percent'; the lab C9300-24T (17.6.4) took 'bandwidth remaining percent 30' in a policy-map class and printed it in its running configuration"
+    },
+    {
+      "name": "macro auto mac-address-group",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["macro auto mac-address-group <grp-name>", "no macro auto mac-address-group <grp-name>"],
+      "args": {"grp-name": {"kind": "Word"}},
+      "enters": "config-addr-grp-mac",
+      "evidence": "the reference sets it in its own submode with the submode's lines after the name; the lab C9300-24T (17.6.4) took 'macro auto mac-address-group TESTMAG' in global configuration, entered (config-addr-grp-mac)# and printed the line in its running configuration"
+    },
+    {
+      "name": "ip dhcp snooping trust",
+      "platform": "Catalyst 9300",
+      "modes": ["config-if"],
+      "lines": ["ip dhcp snooping trust", "no ip dhcp snooping trust"],
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took it on Gi1/0/1 and Gi1/0/2 and printed it under each in its running configuration"
+    },
+    {
+      "name": "ip ospf area",
+      "platform": "Catalyst 9300",
+      "modes": ["config-if"],
+      "lines": ["ip ospf <process-id> area <area-id> [secondaries none]", "no ip ospf <process-id> area [<area-id>]"],
+      "args": {"process-id": {"kind": "Number", "min": 1, "max": 65535}, "area-id": {"kind": "Word"}},
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'ip ospf 1 area 0' under two interfaces and printed it in its running configuration"
+    },
+    {
+      "name": "exit-vrrp",
+      "platform": "Catalyst 9300",
+      "modes": ["config-if-vrrp"],
+      "lines": ["exit-vrrp"],
+      "enters": "config-if",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) printed '  exit-vrrp' under each 'vrrp <group> address-family ipv4' in its running configuration and took it back"
+    },
+    {
+      "name": "address-family (EIGRP named mode)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router"],
+      "lines": ["address-family {ipv4 | ipv6} [unicast | multicast] [vrf <vrf-name>] autonomous-system <as-number>", "no address-family {ipv4 | ipv6} [unicast | multicast] [vrf <vrf-name>] autonomous-system <as-number>"],
+      "args": {"vrf-name": {"kind": "Word"}, "as-number": {"kind": "Number", "min": 1, "max": 65535}},
+      "enters": "config-router-af",
+      "evidence": "the books' EIGRP form drops the space before the number ('autonomous-system<as-number>'); the lab C9300-24T (17.6.4) took 'address-family ipv4 unicast autonomous-system 100' under 'router eigrp TESTE' and entered (config-router-af)#"
+    },
+    {
+      "name": "topology (EIGRP address family)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-af"],
+      "lines": ["topology {base | <topology-name> tid <tid>}", "no topology {base | <topology-name>}"],
+      "args": {"topology-name": {"kind": "Word"}, "tid": {"kind": "Number", "min": 1, "max": 65535}},
+      "enters": "config-router-af-topology",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'topology base' in an EIGRP address family, entered (config-router-af-topology)# and printed it with 'exit-af-topology'"
+    },
+    {
+      "name": "exit-af-topology",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-af-topology"],
+      "lines": ["exit-af-topology"],
+      "enters": "config-router-af",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4)'s (config-router-af-topology)# lists it, and the switch printed it under 'topology base'"
+    },
+    {
+      "name": "service-family (EIGRP named mode)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router"],
+      "lines": ["service-family {ipv4 | ipv6} [vrf <vrf-name>] autonomous-system <as-number>", "no service-family {ipv4 | ipv6} [vrf <vrf-name>] autonomous-system <as-number>"],
+      "args": {"vrf-name": {"kind": "Word"}, "as-number": {"kind": "Number", "min": 1, "max": 65535}},
+      "enters": "config-router-sf",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'service-family ipv4 autonomous-system 200' under 'router eigrp TESTE' and entered (config-router-sf)#"
+    },
+    {
+      "name": "topology (EIGRP service family)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-sf"],
+      "lines": ["topology base", "no topology base"],
+      "enters": "config-router-sf-topology",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4)'s (config-router-sf)# lists 'topology', and the switch printed 'topology base' with 'exit-sf-topology' under its service family; the mode is named as the address family's (inferred)"
+    },
+    {
+      "name": "exit-sf-topology",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-sf-topology"],
+      "lines": ["exit-sf-topology"],
+      "enters": "config-router-sf",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) printed it under a service family's 'topology base'"
+    },
+    {
+      "name": "exit-service-family",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-sf"],
+      "lines": ["exit-service-family"],
+      "enters": "config-router",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4)'s (config-router-sf)# lists it, and the switch printed it under 'service-family ipv4 autonomous-system 200'"
+    },
+    {
+      "name": "template peer-policy",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-router-ptmp",
+      "evidence": "the lab C9300-24T (17.6.4) entered (config-router-ptmp)# from 'template peer-policy TESTPP' and printed 'exit-peer-policy' under it"
+    },
+    {
+      "name": "template peer-session",
+      "platform": "Catalyst 9300",
+      "lines": [],
+      "enters": "config-router-stmp",
+      "evidence": "the lab C9300-24T (17.6.4) entered (config-router-stmp)# from 'template peer-session TESTPSN' and printed 'exit-peer-session' under it"
+    },
+    {
+      "name": "exit-peer-policy",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-ptmp"],
+      "lines": ["exit-peer-policy"],
+      "enters": "config-router",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4)'s (config-router-ptmp)# lists it, and the switch printed it under 'template peer-policy TESTPP'"
+    },
+    {
+      "name": "exit-peer-session",
+      "platform": "Catalyst 9300",
+      "modes": ["config-router-stmp"],
+      "lines": ["exit-peer-session"],
+      "enters": "config-router",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4)'s (config-router-stmp)# takes it, and the switch printed it under 'template peer-session TESTPSN'"
+    },
+    {
+      "name": "ip rcmd rcp-enable",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["ip rcmd rcp-enable", "no ip rcmd rcp-enable"],
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took it and printed it in its running configuration"
+    },
+    {
+      "name": "ip rcmd rsh-enable",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["ip rcmd rsh-enable", "no ip rcmd rsh-enable"],
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took it and printed it in its running configuration"
+    },
+    {
+      "name": "route-map",
+      "platform": "Catalyst 9300",
+      "drop_modes": ["config-router"],
+      "lines": [],
+      "evidence": "a guide sets it in router configuration, where it opened a route map inside the router; the lab C9300-24T (17.6.4) took 'route-map LAB-RM permit 10' typed under 'ipv6 router ospf 1' as its own top-level route map and printed it after the router"
+    },
+    {
+      "name": "set metric",
+      "platform": "Catalyst 9300",
+      "modes": ["config-route-map"],
+      "lines": ["set metric <metric-value> [<delay> <reliability> <loading> <mtu>]", "no set metric [<metric-value> [<delay> <reliability> <loading> <mtu>]]"],
+      "args": {"metric-value": {"kind": "Word"}, "delay": {"kind": "Word"}, "reliability": {"kind": "Word"}, "loading": {"kind": "Word"}, "mtu": {"kind": "Word"}},
+      "evidence": "the guide's lines have no space before the value ('set metric<metric value>'); the lab C9300-24T (17.6.4) took 'set metric 100' in a route map and printed it in its running configuration"
+    },
+    {
+      "name": "performance-measurement",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["performance-measurement", "no performance-measurement"],
+      "enters": "config-perf-meas",
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took it, entered (config-perf-meas)# and printed it in its running configuration"
+    },
+    {
+      "name": "sequence (IPv6 access list)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-ipv6-acl"],
+      "lines": ["sequence <sequence-number> {permit | deny} <entry>", "no sequence <sequence-number>"],
+      "args": {"sequence-number": {"kind": "Number", "min": 1, "max": 4294967295}, "entry": {"kind": "Text"}},
+      "evidence": "the guide lists 'sequence' only in an FQDN list; the lab C9300-24T (17.6.4) printed the entries ' permit ipv6 2001:DB8::/32 any' and ' deny ipv6 any any' typed in (config-ipv6-acl)# as ' sequence 10 permit ...' and ' sequence 20 deny ...' in its running configuration"
+    },
+    {
+      "name": "audit",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["audit", "no audit"],
+      "evidence": "no 9300 book lists it; the lab C9300-24T (17.6.4) took 'audit' in global configuration with no answer and no change of prompt, and printed it in its running configuration"
+    },
+    {
+      "name": "vlan (app-hosting trunk)",
+      "platform": "Catalyst 9300",
+      "modes": ["config-config-app-hosting-trunk"],
+      "lines": ["vlan <vlan-id> guest-interface <guest-interface-number>", "no vlan <vlan-id>"],
+      "args": {"vlan-id": {"kind": "Number", "min": 1, "max": 4094}, "guest-interface-number": {"kind": "Number", "min": 0, "max": 63}},
+      "enters": "config-config-app-hosting-vlan-access-ip",
+      "evidence": "the guide's examples type it in (config-config-app-hosting-trunk)#; the lab C9300-24T (17.6.4) took 'vlan 10 guest-interface 1' there, entered (config-config-app-hosting-vlan-access-ip)# and printed it under 'app-vnic AppGigabitEthernet trunk'; its '?' gives VLANs 1-4094 and guest interfaces 0-63"
+    },
+    {
+      "name": "app-vnic gateway0",
+      "platform": "Catalyst 9300",
+      "modes": ["config-app-hosting"],
+      "lines": ["app-vnic gateway0 virtualportgroup <number> guest-interface <guest-interface-number>", "no app-vnic gateway0"],
+      "args": {"number": {"kind": "Word"}, "guest-interface-number": {"kind": "Number", "min": 0, "max": 63}},
+      "enters": "config-app-hosting-gateway0",
+      "evidence": "the books do not list it in 17.6; the lab C9300-24T (17.6.4) took 'app-vnic gateway0 virtualportgroup 0 guest-interface 0', entered (config-app-hosting-gateway0)# and printed the line in its running configuration"
+    },
+    {
+      "name": "app-vnic gateway1",
+      "platform": "Catalyst 9300",
+      "modes": ["config-app-hosting"],
+      "lines": ["app-vnic gateway1 virtualportgroup <number> guest-interface <guest-interface-number>", "no app-vnic gateway1"],
+      "args": {"number": {"kind": "Word"}, "guest-interface-number": {"kind": "Number", "min": 0, "max": 63}},
+      "enters": "config-app-hosting-gateway1",
+      "evidence": "as 'app-vnic gateway0', which the lab C9300-24T (17.6.4) took; the mode is named as gateway0's (inferred)"
+    },
+    {
+      "name": "app-vnic management guest-interface",
+      "platform": "Catalyst 9300",
+      "modes": ["config-app-hosting"],
+      "lines": ["app-vnic management guest-interface <guest-interface-number>", "no app-vnic management"],
+      "args": {"guest-interface-number": {"kind": "Number", "min": 0, "max": 63}},
+      "enters": "config-app-hosting-mgmt-gateway",
+      "evidence": "the guide reads the guest interface as an interface name; the lab C9300-24T (17.6.4) took 'app-vnic management guest-interface 0', entered (config-app-hosting-mgmt-gateway)# and printed it in its running configuration"
+    },
+    {
+      "name": "mdns-sd service-list",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["mdns-sd service-list <service-list-name> IN", "no mdns-sd service-list <service-list-name> IN"],
+      "args": {"service-list-name": {"kind": "Word"}},
+      "enters": "config-mdns-sl-in",
+      "evidence": "the guide writes {in | out}, one mode for both; the lab C9300-24T (17.6.4) took 'mdns-sd service-list TESTSLI IN', entered (config-mdns-sl-in)# and printed IN in its running configuration"
+    },
+    {
+      "name": "mdns-sd service-list (OUT)",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["mdns-sd service-list <service-list-name> OUT", "no mdns-sd service-list <service-list-name> OUT"],
+      "args": {"service-list-name": {"kind": "Word"}},
+      "enters": "config-mdns-sl-out",
+      "evidence": "as 'mdns-sd service-list': the lab C9300-24T (17.6.4) took 'mdns-sd service-list TESTSLO OUT', entered (config-mdns-sl-out)# and printed OUT in its running configuration"
     }
   ]
 }

@@ -58,22 +58,45 @@ pub struct Device {
     /// when the configuration last changed, as seconds since 1970 UTC: a replayed configuration's
     /// own line, a factory boot, else the last line typed at the console
     pub last_change: Option<u64>,
+    /// the user the replayed line named (`... 2026 by admin`); none once a line is typed here
+    pub last_change_by: Option<String>,
 }
 
-/// A switch's own printed configuration as replayed: the `!` and comment lines between each two
-/// top-level lines as it printed them, the ` !` lines inside a block before a line, and the lines
-/// it ended with spaces. The running configuration prints them where the same lines meet again.
+/// A switch's own printed configuration as replayed: its top-level lines in order, the `!`, comment
+/// and blank lines between each two as it printed them, the ` !` lines inside a block before a
+/// line, and each line as it printed it (spaces and case). The running configuration prints them
+/// where the same lines meet again. Lines are matched by `layout_key`.
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
-    /// the separator lines between two top-level lines that followed each other, by their text
+    /// the separator lines between two top-level lines that followed each other, by their keys
     /// (`version 17.6` first; `end` last)
     pub pairs: std::collections::BTreeMap<(String, String), Vec<String>>,
     /// the top-level lines it held
     pub tops: std::collections::BTreeSet<String>,
+    /// each top-level line's place
+    pub order: std::collections::BTreeMap<String, usize>,
     /// the separator lines inside a block before one of its lines, by the block's header and line
     pub inner: std::collections::BTreeMap<(String, String), Vec<String>>,
-    /// the lines it ended with spaces, by their text without them
-    pub trailing: std::collections::BTreeMap<String, String>,
+    /// each line as printed, by `layout_key`: every form, where lines differing only in case or
+    /// spacing were printed (` description Uplink` and ` description UPLINK` on two ports)
+    pub raw: std::collections::BTreeMap<String, Vec<String>>,
+    /// every line it held at any depth, by `layout_key` of the line unindented: a `no` line it
+    /// printed is kept so (` no protocol udp`, `  no neighbor 2001:DB8:10::2 activate`)
+    pub lines: std::collections::BTreeSet<String>,
+}
+
+/// The key a replayed line is matched by: its indent, then its words single-spaced and lowercase
+/// (the lab C9300-24T, 17.6.4, printed `match cos  5 ` and `mdns-sd service-list TESTSLI IN`).
+pub fn layout_key(l: &str) -> String {
+    let body = l.trim_start();
+    let indent = &l[..l.len() - body.len()];
+    format!(
+        "{indent}{}",
+        body.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    )
 }
 
 impl Layout {
@@ -86,7 +109,7 @@ impl Layout {
             .trim_end()
             .to_string();
         let mut out = Layout::default();
-        let mut prev = version;
+        let mut prev = layout_key(&version);
         let mut header = String::new();
         let mut seps: Vec<String> = vec![];
         let mut inner: Vec<String> = vec![];
@@ -109,29 +132,40 @@ impl Layout {
                 }
                 continue;
             }
+            // an empty line between top-level lines prints where it stood (the lab C9300-24T,
+            // 17.6.4, after `udld enable` and `errdisable recovery interval 60`)
             if t.is_empty() {
+                if raw.is_empty() {
+                    seps.append(&mut inner);
+                    seps.push(String::new());
+                }
                 continue;
             }
-            if raw != l {
-                out.trailing.insert(l.to_string(), raw.to_string());
+            let k = layout_key(l);
+            let forms = out.raw.entry(k.clone()).or_default();
+            if !forms.iter().any(|f| f == raw) {
+                forms.push(raw.to_string());
             }
+            out.lines.insert(layout_key(t));
             if l.starts_with([' ', '\t']) {
                 if !inner.is_empty() {
                     out.inner
-                        .insert((header.clone(), l.to_string()), std::mem::take(&mut inner));
+                        .insert((header.clone(), k), std::mem::take(&mut inner));
                 }
                 continue;
             }
             seps.append(&mut inner);
             out.pairs
-                .insert((prev.clone(), l.to_string()), std::mem::take(&mut seps));
-            out.tops.insert(l.to_string());
+                .insert((prev.clone(), k.clone()), std::mem::take(&mut seps));
+            out.tops.insert(k.clone());
+            let n = out.order.len();
+            out.order.entry(k.clone()).or_insert(n);
             if l == "end" {
                 break;
             }
             banner = crate::live::banner_opens(l);
-            prev = l.to_string();
-            header = l.to_string();
+            prev = k.clone();
+            header = k;
         }
         Some(out)
     }
@@ -289,6 +323,18 @@ const MULTI: &[(&str, Names)] = &[
     // by its address and wildcard)
     ("neighbor", Names::First(1)),
     ("network", Names::First(2)),
+    // a class map's match lines, each kept, and a policy class's queue limit per DSCP value (the
+    // lab C9300-24T, 17.6.4: `match dscp af41  af42  af43` beside `match dscp af31  af32  af33`;
+    // `queue-limit dscp af41 percent 80` beside `queue-limit dscp af31 percent 80`)
+    ("match dscp", Names::All),
+    ("match ip dscp", Names::All),
+    ("match precedence", Names::All),
+    ("match ip precedence", Names::All),
+    ("queue-limit dscp", Names::First(1)),
+    // a MAC list's entries, and an IPv6 list's by number
+    ("permit", Names::All),
+    ("deny", Names::All),
+    ("sequence", Names::First(1)),
 ];
 
 /// Instances whose keywords after the instance name a setting of it, each kept on its own line:
@@ -462,6 +508,7 @@ const CHOICES: &[(&str, &[&str])] = &[
     ("flowcontrol send", &["desired", "off", "on"]),
     ("ip arp inspection validate", &["dst-mac", "ip", "src-mac"]),
     ("file prompt", &["alert", "noisy", "quiet"]),
+    ("state", &["active", "suspend"]),
 ];
 
 /// A line's keywords, as the grammar spells them and without its `no`.
@@ -535,6 +582,11 @@ fn instance(p: &Parse, names: Names) -> Vec<String> {
 /// beside `... permit udp ...`).
 pub fn key(p: &Parse) -> String {
     let words = keywords(p);
+    // a line with no keyword is named by its words (an object group's ` 10.99.0.0 255.255.0.0`)
+    if words.is_empty() {
+        let c = p.canonical();
+        return c.strip_prefix("no ").unwrap_or(&c).to_lowercase();
+    }
     let joined = words.join(" ");
     let multi = MULTI
         .iter()
@@ -685,6 +737,7 @@ impl Device {
             transceivers: Default::default(),
             layout: None,
             last_change: None,
+            last_change_by: None,
         }
     }
 
@@ -785,6 +838,27 @@ impl Device {
     /// ` no ip igmp snooping tcn flood`). `whole`: a `no` line names a whole command, which the
     /// books take without it (`negates`).
     pub fn apply_as(&mut self, p: &Parse, at: Option<usize>, printed: bool, whole: bool) {
+        // a SPAN session's interfaces print short, however typed (the lab C9300-24T, 17.6.4:
+        // `monitor session 1 source interface Gi1/0/11`)
+        let shortened;
+        let p = if at.is_none() && key(p).starts_with("monitor session") {
+            let mut q = p.clone();
+            for it in &mut q.items {
+                if let Item::Arg { value, .. } = it
+                    && crate::cli::interface_name(value, None).is_some()
+                {
+                    *value = value
+                        .split(" , ")
+                        .map(crate::show::short)
+                        .collect::<Vec<_>>()
+                        .join(" , ");
+                }
+            }
+            shortened = q;
+            &shortened
+        } else {
+            p
+        };
         self.apply_one(p, at, printed, whole);
         let Some(b) = at else { return };
         let Some(n) = self.blocks[b].header.strip_prefix("interface Port-channel") else {
@@ -807,6 +881,52 @@ impl Device {
         }
     }
 
+    /// `switch <n> provision <model>` for a member the stack lacks provisions it absent: its
+    /// interfaces take configuration and print, and none runs (the lab C9300-24T, 17.6.4, member 2
+    /// provisioned `c9300-48p`). `no` removes an absent member and its interfaces (inferred).
+    fn provision(&mut self, p: &Parse) {
+        let text = p.canonical();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let (negated, rest) = match words[..] {
+            ["no", ref rest @ ..] => (true, rest),
+            ref rest => (false, rest),
+        };
+        let ["switch", n, "provision", ref ty @ ..] = rest[..] else {
+            return;
+        };
+        let Ok(n) = n.parse::<u32>() else { return };
+        let members = &mut self.stack.members;
+        if negated {
+            if !members.iter().any(|m| m.number == n && m.absent) {
+                return;
+            }
+            members.retain(|m| m.number != n);
+            self.blocks.retain(|b| {
+                let Some(name) = b.header.strip_prefix("interface ") else {
+                    return true;
+                };
+                !crate::platform::locate(name).is_some_and(|(_, m, _, _)| m == n)
+            });
+            return;
+        }
+        let Some(model) = ty.first().and_then(|t| crate::platform::model(t)) else {
+            return;
+        };
+        if members.iter().any(|m| m.number == n) {
+            return;
+        }
+        let at = members.partition_point(|m| m.number < n);
+        members.insert(
+            at,
+            crate::platform::Member {
+                number: n,
+                model: model.name.to_string(),
+                module: None,
+                absent: true,
+            },
+        );
+    }
+
     fn apply_one(&mut self, p: &Parse, at: Option<usize>, printed: bool, whole: bool) {
         let k = key(p);
         if at.is_none() && k == "hostname" {
@@ -816,10 +936,18 @@ impl Device {
                 self.hostname = h;
             }
         }
+        if at.is_none() {
+            self.provision(p);
+        }
         // IOS XE disables a stand-alone LACP member by default and prints `no port-channel
         // standalone-disable` under a port-channel (the lab C9300, 17.6.4); classic IOS does not
         let standalone_off = k == "port-channel standalone-disable" && !self.stack.classic();
+        // a device-tracking policy gleans from every protocol by default and keeps `no protocol
+        // <p>` (the lab C9300-24T, 17.6.4: ` no protocol udp`)
+        let gleaned = k.starts_with("protocol ")
+            && at.is_some_and(|b| self.blocks[b].header.starts_with("device-tracking policy "));
         let keeps_no = printed
+            || gleaned
             || match at {
                 // `no spanning-tree vlan 1` (c2960x 15.2(7)E capture 8) is kept per VLAN
                 // an err-disable cause is detected by default: `no errdisable detect cause
@@ -840,10 +968,17 @@ impl Device {
                             && routed(&self.blocks[b].header, &self.blocks[b].lines)
                 }
             };
+        let vlan = at.is_some_and(|b| self.blocks[b].header.starts_with("vlan "));
         let lines = match at {
             Some(b) => &mut self.blocks[b].lines,
             None => &mut self.global,
         };
+        // a VLAN is active unless suspended, and active prints nothing (inferred: the lab
+        // C9300-24T, 17.6.4, printed ` state suspend` and no ` state active`)
+        if vlan && k == "state" && !p.negated && p.canonical() == "state active" {
+            lines.retain(|e| e.key != k);
+            return;
+        }
         // an interface has one primary address: `ip address dhcp`, an address or `no ip address`
         // replaces the other (the lab C9300, 17.6.4: Vlan1's `no ip address`, then `ip address dhcp`)
         if at.is_some() && (k == "ip address" || k == "ip address dhcp") {
@@ -867,7 +1002,11 @@ impl Device {
         // a default turned back on prints nothing, unless a real switch printed it so; an argument
         // sets something else (`keepalive 10`), but an instance's names the default's instance
         let bare = k.contains(" #") || !p.items.iter().any(|i| matches!(i, Item::Arg { .. }));
-        if !p.negated && !printed && bare && (default_on(&k, at.is_none()) || standalone_off) {
+        if !p.negated
+            && !printed
+            && bare
+            && (default_on(&k, at.is_none()) || standalone_off || gleaned)
+        {
             lines.retain(|e| e.key != k);
             return;
         }
@@ -933,12 +1072,17 @@ pub fn closing(section: &str) -> String {
     format!("{section}{CLOSES}")
 }
 
-/// Adds an entry to a block's lines ahead of its sections: a router's own lines print before its
-/// address families, whenever typed.
+/// Adds an entry to a block's lines ahead of its address and service families: a router's own lines
+/// print before them, whenever typed. Its other sections keep their place (the lab C9300-24T,
+/// 17.6.4, printed `bmp server 1` and the peer templates before `bgp router-id`, as typed).
 fn put(lines: &mut Vec<Entry>, e: Entry) {
     let first = lines
         .iter()
         .filter_map(|x| x.key.strip_suffix(CLOSES))
+        .filter(|s| {
+            let h = s.trim_start();
+            h.starts_with("address-family ") || h.starts_with("service-family ")
+        })
         .filter_map(|s| lines.iter().position(|h| h.key == s))
         .min();
     match first {

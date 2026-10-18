@@ -249,9 +249,9 @@ An IPv4 access list's entries are numbered as IOS numbers them.
 | Remarks | a remark takes the number of the entry after it; a remark's number may repeat |
 | Resequence | `ip access-list resequence <name> <start> <step>` renumbers, each remark with the entry after it |
 | Standard `host` | a standard list keeps `permit host 10.0.0.7` as `permit 10.0.0.7` |
-| IOS XE print | each entry's number prints in the running configuration |
+| IOS XE print | each entry's number prints in the running configuration; at 17.6 `deny` pads to the width of `permit` |
 | Classic print | classic IOS prints none (a remark at its place), a standard list's host entries first and its actions padded to the width of `permit` |
-| `show ip access-lists` | the title, then each entry four spaces in with its number, remarks left out, a standard wildcard written out (`10.1.0.0, wildcard bits 0.0.255.255`) |
+| `show ip access-lists` | the title, then each entry four spaces in with its number, remarks left out, a standard wildcard written out (`10.1.0.0, wildcard bits 0.0.255.255`), a standard entry's action padded to the width of `permit` |
 
 ### Classic entries
 

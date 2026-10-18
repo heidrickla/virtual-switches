@@ -1995,6 +1995,7 @@ pub fn infer_stack(config: &str) -> Option<String> {
                                 number: *n,
                                 model: m.name.to_string(),
                                 module: md.map(|x| x.name.to_string()),
+                                absent: false,
                             })
                         })
                         .collect::<Option<Vec<Member>>>()?;
@@ -2101,6 +2102,7 @@ fn candidates(
                     number: n,
                     model: m.name.to_string(),
                     module: md.map(|x| x.name.to_string()),
+                    absent: false,
                 }],
             };
             let ports: BTreeSet<String> = member_ports(&one)
@@ -2171,6 +2173,7 @@ fn fixed_model(
                     number: 1,
                     model: m.name.to_string(),
                     module: None,
+                    absent: false,
                 }],
             };
             let ports = member_ports(&one);
@@ -2239,6 +2242,7 @@ pub fn parse_stack(spec: &str) -> Result<Stack, String> {
             number,
             model: model.to_string(),
             module,
+            absent: false,
         });
     }
     Ok(Stack { members })
@@ -2275,10 +2279,12 @@ fn too_new(name: &str, since: &str, release: Release) -> String {
 }
 
 impl Stack {
-    /// `--stack` notation for this stack: numbers written where they differ from the position.
+    /// `--stack` notation for this stack: numbers written where they differ from the position. A
+    /// member provisioned and absent is the configuration's, not the hardware's, and is left out.
     pub fn spec(&self) -> String {
         self.members
             .iter()
+            .filter(|m| !m.absent)
             .enumerate()
             .map(|(i, m)| {
                 let mut s = if m.number != i as u32 + 1 || self.family() == Some(Family::C9400) {
@@ -2303,6 +2309,11 @@ pub struct Member {
     pub model: String,
     #[serde(default)]
     pub module: Option<String>,
+    /// provisioned by `switch <n> provision <model>` with no switch there: its interfaces take
+    /// configuration and print in the running configuration, and no port of it runs (the lab
+    /// C9300-24T, 17.6.4, with member 2 provisioned `c9300-48p`)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -2318,6 +2329,7 @@ impl Stack {
                 number: 1,
                 model: model.into(),
                 module: module.map(Into::into),
+                absent: false,
             }],
         }
     }
@@ -2445,16 +2457,26 @@ impl Stack {
             .flatten()
     }
 
+    /// Whether a port is a provisioned member's that is not there (`Member::absent`).
+    pub fn absent(&self, name: &str) -> bool {
+        locate(name).is_some_and(|(_, member, _, _)| {
+            self.members.iter().any(|m| m.number == member && m.absent)
+        })
+    }
+
     /// Whether a port is there to run: a module slot's port is only where its module is fitted, the
-    /// slot listing every module's ports (`Family::slot1`) whatever is in it.
+    /// slot listing every module's ports (`Family::slot1`) whatever is in it; no absent member's.
     pub fn fitted(&self, name: &str) -> bool {
-        let Some((ty, member, 1, port)) = locate(name) else {
+        let Some((ty, member, slot, port)) = locate(name) else {
             return true;
         };
         let Some(m) = self.members.iter().find(|m| m.number == member) else {
             return true;
         };
-        if Self::slot_listing(&m.model).is_none() {
+        if m.absent {
+            return false;
+        }
+        if slot != 1 || Self::slot_listing(&m.model).is_none() {
             return true;
         }
         m.module
@@ -2486,7 +2508,7 @@ impl Stack {
         let mut out = Vec::new();
         let family = self.family();
         let mut numbers = std::collections::BTreeSet::new();
-        for m in &self.members {
+        for m in self.members.iter().filter(|m| !m.absent) {
             let Some(md) = model(&m.model) else {
                 out.push((
                     m.number,
@@ -2968,7 +2990,20 @@ impl Stack {
             Some((lo, hi)) => num.parse::<u64>().is_ok_and(|v| v >= lo && v <= hi),
             // one null interface (the lab C9300, 17.6.4: `ip route ... Null0`)
             None if ty == "Null" => num == "0",
-            None => self.physical().iter().any(|p| p == name),
+            // the Bluetooth port, made when typed (the lab C9300-24T, 17.6.4; other families inferred
+            // to lack it)
+            None if ty == "Bluetooth" => num == "0/4" && self.family() == Some(Family::C9300),
+            None => match name.split_once('.') {
+                // a subinterface of a front-panel port on IOS XE (the lab C9300-24T, 17.6.4:
+                // `interface GigabitEthernet1/0/7.10`)
+                Some((port, sub)) => {
+                    !self.classic()
+                        && Some(port) != self.management()
+                        && sub.parse::<u32>().is_ok_and(|s| s >= 1)
+                        && self.physical().iter().any(|p| p == port)
+                }
+                None => self.physical().iter().any(|p| p == name),
+            },
         }
     }
 
@@ -3005,6 +3040,7 @@ mod tests {
                     number: n,
                     model: "C9300X-24Y".into(),
                     module: Some("C9300X-NM-4C".into()),
+                    absent: false,
                 })
                 .collect(),
         }
@@ -3033,6 +3069,7 @@ mod tests {
             number,
             model: model.into(),
             module: None,
+            absent: false,
         };
         let one = Stack {
             members: vec![card(2, "C9400-LC-24XS"), card(3, "C9400-SUP-1XL")],

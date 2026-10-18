@@ -3605,6 +3605,13 @@ mod stp2_tests {
     include!(concat!(env!("VSWITCH_SITE_TESTS"), "/stp2-tests.rs"));
 }
 
+#[cfg(all(test, captures))]
+mod lab3_tests {
+    use super::*;
+
+    include!(concat!(env!("VSWITCH_SITE_TESTS"), "/lab3-tests.rs"));
+}
+
 #[cfg(test)]
 mod show_tests {
     use super::*;

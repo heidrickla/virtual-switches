@@ -433,7 +433,7 @@ fn end(built: &[Built], names: &[&str], text: &str) -> Result<Option<End>, Strin
     let d = &built[i].session.device;
     let full = crate::cli::interface_name(port.trim(), None)
         .map(|(ty, num, _)| format!("{ty}{num}"))
-        .filter(|f| d.stack.physical().contains(f))
+        .filter(|f| d.stack.physical().contains(f) && !d.stack.absent(f))
         .ok_or(format!(
             "cable end {text}: {sw} has no port {}",
             port.trim()
@@ -816,7 +816,15 @@ pub fn connect_with(
         let ty = y
             .as_ref()
             .is_some_and(|y| !y.routed && trunks(y.mode, far(Some(&x))));
+        // LACP members cabled to each other in one channel hear their own system ID and do not
+        // bundle (the lab C9300-24T, 17.6.4: Gi1/0/1 to Gi1/0/2, both active in Po1)
+        let looped = y.as_ref().is_some_and(|y| {
+            y.sw == x.sw
+                && matches!((&x.channel, &y.channel), (Some((a, ma)), Some((b, mb)))
+                    if a == b && protocol(ma) == "LACP" && protocol(mb) == "LACP")
+        });
         let (bx, by) = match (&x.channel, y.as_ref().map(|y| &y.channel)) {
+            _ if looped => (false, false),
             (Some((_, mx)), Some(Some((_, my)))) => {
                 let both = bundles(mx, my);
                 (both || mx == "on", both || my == "on")
@@ -854,7 +862,25 @@ pub fn connect_with(
             "access".into()
         });
         if let Some((n, m)) = &x.channel {
-            state.push(format!("Po{n} {m} {}", if bx { "(P)" } else { "(I)" }));
+            // IOS XE suspends an LACP member it does not bundle unless its port-channel has `no
+            // port-channel standalone-disable`
+            let dx = &built[x.sw].session.device;
+            let held = protocol(m) == "LACP"
+                && !dx.stack.classic()
+                && !dx
+                    .config_of(&format!("Port-channel{n}"))
+                    .contains(&"no port-channel standalone-disable");
+            let flag = match (bx, held) {
+                (true, _) => "(P)",
+                (false, true) => "(s)",
+                (false, false) => "(I)",
+            };
+            state.push(format!("Po{n} {m} {flag}"));
+        }
+        if looped {
+            r.note(format!(
+                "{label}: LACP members of one channel cabled to each other do not bundle"
+            ));
         }
         if let Some(o) = optic {
             state.push(format!("{} {}", platform::speed_text(o.mbps), o.part));
@@ -1208,6 +1234,37 @@ mod tests {
             let e = write(&body).err().unwrap();
             assert!(e.contains(why), "{e}");
         }
+    }
+
+    #[test]
+    fn lacp_members_cabled_to_each_other_do_not_bundle() {
+        // the lab C9300-24T (17.6.4): Gi1/0/1 cabled to Gi1/0/2, both active in Po1
+        let e = engine();
+        let config = "interface range GigabitEthernet1/0/1 - 2\n channel-group 1 mode active\n";
+        let (mut built, r) = lab(
+            &e,
+            ("C9300-24T", config),
+            ("C9300-24T", ""),
+            &[("a:Gi1/0/1", "a:Gi1/0/2", None)],
+        );
+        assert!(
+            has(
+                &r.notes,
+                "a Gi1/0/1 - a Gi1/0/2: LACP members of one channel cabled to each other do not bundle"
+            ),
+            "{r:?}"
+        );
+        assert!(has(&r.links, "Po1 active (s)"), "{r:?}");
+        let s = &mut built[0].session;
+        // the configuration was typed; the session is in configuration mode
+        s.type_line("end");
+        let summary = s.type_line("show etherchannel summary").0;
+        assert!(
+            summary.contains(
+                &"1      Po1(SD)         LACP        Gi1/0/1(s)      Gi1/0/2(s)      ".to_string()
+            ),
+            "{summary:?}"
+        );
     }
 
     const X: &str = "C9300X-24Y";

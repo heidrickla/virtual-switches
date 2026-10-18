@@ -165,6 +165,8 @@ pub fn interface_types() -> &'static [(&'static str, &'static str)] {
     // full name, shortest abbreviation IOS shows
     &[
         ("AppGigabitEthernet", "Ap"),
+        // the lab C9300-24T (17.6.4) logs `Bl0/4` for Bluetooth0/4
+        ("Bluetooth", "Bl"),
         // a 2960-X's management port, FastEthernet0
         ("FastEthernet", "Fa"),
         ("FiveGigabitEthernet", "Fi"),
@@ -760,6 +762,15 @@ impl Engine {
                     .or_default() += 1;
             }
         }
+        // an override that names the mode a command enters has a switch's word for it, which the
+        // examples do not overrule (the lab C9300-24T, 17.6.4, entered `(dhcp-config)#` from `ip dhcp
+        // pool`, four of the guides' six examples `(config-dhcp)#`)
+        let measured: BTreeSet<usize> = (0..e.grammar.commands.len())
+            .filter(|&i| {
+                let c = &e.grammar.commands[i];
+                c.enters.is_some() && c.evidence.is_some()
+            })
+            .collect();
         let mut best: BTreeMap<usize, (usize, String)> = BTreeMap::new();
         for ((ci, to), n) in seen {
             if n >= 2 && e.has_mode(&to) && best.get(&ci).is_none_or(|(m, _)| n > *m) {
@@ -782,6 +793,7 @@ impl Engine {
             if n >= 2
                 && n * 2 > total
                 && e.has_mode(&to)
+                && !measured.contains(&ci)
                 && e.grammar.commands[ci].enters.as_deref() != Some(to.as_str())
             {
                 e.forms.insert((ci, words), to);
@@ -802,7 +814,8 @@ impl Engine {
     /// Whether some command runs in the mode (an interface range runs the interface commands).
     pub fn has_mode(&self, mode: &str) -> bool {
         self.by_mode.contains_key(mode)
-            || (mode == "config-if-range" && self.by_mode.contains_key("config-if"))
+            || ((mode == "config-if-range" || mode == "config-subif")
+                && self.by_mode.contains_key("config-if"))
     }
 
     fn candidates(&self, mode: &str) -> Vec<usize> {
@@ -815,8 +828,9 @@ impl Engine {
         if is_submode(mode) {
             out.extend(self.by_mode.get("*config").cloned().unwrap_or_default());
         }
-        // an interface range takes the interface commands, applied to each member
-        if mode == "config-if-range" {
+        // an interface range takes the interface commands, applied to each member; a subinterface
+        // takes them too (inferred: IOS lists an address, a VRF and shutdown under one)
+        if mode == "config-if-range" || mode == "config-subif" {
             out.extend(self.by_mode.get("config-if").cloned().unwrap_or_default());
         }
         out.sort_unstable();
