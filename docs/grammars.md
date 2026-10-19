@@ -238,14 +238,15 @@ A line typed at a prompt is read against the commands the mode runs.
 
 ### Measured forms
 
-A sweep's forms (`captures.md`, Sweeps) join the grammar as commands after the books' own, one per first two words (`show ip (measured)`), in privileged EXEC, each held for its level. A session reads a level's forms only at that level, and its measured refusals before either.
+A sweep's forms (`captures.md`, Sweeps) join the grammar as commands after the books' own, one per first two words (`show ip (measured)`), in privileged EXEC, each held for its level. A session reads a level's forms only at that level, and its measured refusals before either. At `network-essentials`, a line nothing else takes is also read against the `network-advantage` forms its image's own crawls carry at both levels (Carry-down).
 
 | Rule | Detail |
 |---|---|
 | Order | a line the books take runs as the books read it; a line only a form takes runs as the form, its output picked by the line as written, and a line with no model prints `% vswitch has no output model for '<line>' yet` |
 | Matching | a form is matched as a book's command, by unique starts; an abbreviation read through a form is ambiguous among the books' keywords and the level's forms' at its point |
 | Longer forms | a whole keyword is never read as the start of a longer keyword of a form: `knob` is refused where forms hold `knobs` and `knob extra` |
-| `no` | no form is read after `no` |
+| `no` | no form is read after `no`, and `?` and Tab after `no` offer the books' words alone |
+| Carry-down | at `network-essentials` on an image whose own crawls hold both levels, a privileged EXEC line its measured refusals and forms, the books, the licence gate and the held refusals leave refused is taken by a `network-advantage` form where both crawls offer each keyword at its place and type each value with the same kind; the books' command runs where they take the line, else the form's. A donor's crawl or another release's sweep carries nothing (`captures.md`, Enter, `?` and Tab) |
 | Arguments | `<number:lo-hi>` a decimal number in the range, `<hex:lo-hi>` a hexadecimal one, `<interface:Type>` the type and a number; addresses, prefixes and MAC addresses as the books' kinds |
 | Ports | a form's interface of a type vswitch models is refused where the session's stack lacks the port, as a book's is |
 | Book tables | the modes commands enter, the examples and the `enter` modes borrowed across releases are the books' alone: the forms join after they are built |

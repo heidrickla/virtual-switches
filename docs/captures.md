@@ -270,6 +270,7 @@ A level that runs less of an image than another (`license::GATED`: `network-esse
 - A line whose numbers neither crawl typed is read as a line both typed with other numbers in the same `<lo-hi>` ranges: `monitor session 2 type` as `monitor session 1 type`.
 - The refusal that reads the line least far stands, among the books', the gate's and the one read against the image's answers; where the books and the gate refuse the same word, the gate's place in it is kept.
 - Every physical port shares one context, which holds the crawled switchport's answers, and a routed port's lines are read against them.
+- A keyword the gate refuses stays refused under the carry-down (Sweeps), which takes a line only where the level's own crawl offers every keyword of it.
 
 Measured exceptions, `src/license.rs`:
 
@@ -297,7 +298,8 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 
 - The log is `<book>-<release>/sweep/enter.log`, or `sweep-<name>/enter.log` beside it for the same image at another level, with a `level` file as a crawl folder has.
 - Each line is written after its prompt. After it stands nothing where the switch answered (output, nothing, or a state message), else the caret line and `% Invalid input detected at '^' marker.`, `% Incomplete command.`, or `% Ambiguous command:  "<line>"`.
-- The caret's column counts the prompt and the line as typed.
+- The caret's column counts the prompt and the line as typed. A caret before the first word stands at its start.
+- A line the switch answered `% Unrecognized command` gives no row, as no data says how vswitch prints that answer.
 - `vswitch corpus` prints each sweep folder with its level, then per level the forms and refusals held and the lines that gave neither, by reason.
 
 ### Forms
@@ -324,14 +326,15 @@ An answered line becomes a form: its words, each value a typed argument. Each wo
 A refused line becomes a refusal, written `invalid <word> <offset>` (the caret's word and its place in it), `incomplete` or `ambiguous`.
 
 - Its words before the caret are read as a form's are, numbers and interfaces kept as typed.
-- The caret's word is kept as typed where it is digits, an interface or a lowercase word. It is `<word>` where the answer before it holds no value row and the word starts no keyword there.
-- Words after the caret are kept as typed, an address as its token, else `<word>`.
+- The caret's word is kept as typed where it is digits, an interface or an offered lowercase word (Privacy). It is `<word>` where the answer before it holds no value row and the word starts no keyword there.
+- Words after the caret are kept as typed where Privacy allows, an address as its token, else `<word>`.
 - A refusal is matched whole: the same number of words, each word before the caret its keyword or a unique start of it among the keywords offered there, numbers equal by value and interfaces by name, the caret's word and those after it as written.
 
 ### Privacy
 
 - Values are tokens and configured objects give no form, so a form names nothing of the site.
-- A form or refusal holding a denied word is left out whole, as crawl answers are. The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
+- A word a row holds as typed is digits (a minus first), an interface name, a word some privileged EXEC `?` answer of the image's own crawls offers at any level, or such a word with a number after it. A row that would hold any other word is left out (`Unoffered`).
+- A form or refusal holding a denied word is left out whole, as crawl answers are. The denied words include each sweep's prompt name and the addresses, MAC addresses, serials and numbered names its lines and answers hold. The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
 
 ### Enter, `?` and Tab
 
@@ -342,9 +345,11 @@ At the privileged prompt of a session whose image and level a sweep covers:
 | 1 | a refusal of that level stands over the books and the forms, with its caret where the switch drew it |
 | 2 | a line a form of that level takes is taken; where the books take it too, the books' command runs, else the form's (Measured forms in `grammars.md`) |
 | 3 | otherwise the books, held refusals and the licence gate read it |
+| 4 | at `network-essentials`, where the image's own crawls hold both levels, a line no refusal of that level holds and rows 2 and 3 leave refused is taken by a `network-advantage` form that both crawls carry (the carry-down); the books' command runs where they take the line, else the form's |
 
-- A level reads its own sweep alone; another level's or a donor's sweep grants and refuses nothing.
-- `?` and Tab answer from the held crawl first. Where none is held, the books' keywords and the level's forms' together answer.
+- A form is carried where each of its keywords is offered at its place by both levels' crawls, each alone, and each value fits a value row of the same kind at both (a number in any range). A keyword the level's crawl leaves out keeps the line refused, a value typed otherwise or a word with no answer before it at either level makes it ineligible, and other rows the two answers offer do not count.
+- Outside row 4 a level reads its own sweep alone. A donor's crawls and sweeps, and another release's, carry, grant and refuse nothing.
+- `?` and Tab answer from the held crawl first. Where none is held, the books' keywords and the level's forms' together answer; after `no`, the books' alone.
 - A switch-observed `?` row that Enter refused stays offered: `show ip route ?` lists `Hostname`, and `show ip route Hostname` is refused.
 
 ## capture

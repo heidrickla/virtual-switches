@@ -688,6 +688,47 @@ impl Held {
     }
 }
 
+/// A crawl's privileged EXEC answers at the top level, as `swept::Tier` reads them.
+struct Privileged<'a>(&'a Crawl);
+
+impl crate::swept::Tier for Privileged<'_> {
+    fn answer(&self, key: &str) -> Option<&Vec<String>> {
+        self.0
+            .get(&("privileged".to_string(), key.to_string()))?
+            .iter()
+            .find(|(c, _)| c.is_empty())
+            .map(|(_, a)| a)
+    }
+
+    fn keys<'k>(&'k self, prefix: &'k str) -> Box<dyn Iterator<Item = &'k str> + 'k> {
+        Box::new(
+            self.0
+                .range(("privileged".to_string(), prefix.to_string())..)
+                .take_while(move |((m, k), _)| m == "privileged" && k.starts_with(prefix))
+                .filter(|(_, v)| v.iter().any(|(c, _)| c.is_empty()))
+                .map(|((_, k), _)| k.as_str()),
+        )
+    }
+}
+
+impl Held {
+    /// How this image's own crawls at `level` and at `above` read a line's words at the privileged
+    /// prompt (`swept::carriage`); none where it lacks either crawl. A donor's crawl never reads them.
+    pub fn carriage(
+        &self,
+        level: &str,
+        above: &str,
+        words: &[&str],
+    ) -> Option<crate::swept::Carriage> {
+        let (at, up) = (self.crawls.get(level)?, self.crawls.get(above)?);
+        Some(crate::swept::carriage(
+            words,
+            &Privileged(at),
+            &Privileged(up),
+        ))
+    }
+}
+
 impl<'a> Answers<'a> {
     /// What a real switch printed for `?` typed after `text` in `mode`, entered through `context`
     /// (`context::of`; none where the session's context is unknown). A capture's answer holds in

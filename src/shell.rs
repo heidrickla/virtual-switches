@@ -3208,6 +3208,49 @@ impl<'a> Session<'a> {
                 Outcome::Ok(p)
             };
         }
+        let o = self.read_unmeasured(i, mode, line);
+        // a line refused there that a form of the level it is gated against takes, its words
+        // carried at both levels by this image's own crawls
+        if !matches!(o, Outcome::Ok(_))
+            && mode == "privileged"
+            && let Some((crate::swept::Carriage::Carried, p)) = self.carriage(line)
+        {
+            let books = self.books(mode, line);
+            return if matches!(books, Outcome::Ok(_)) {
+                books
+            } else {
+                Outcome::Ok(p)
+            };
+        }
+        o
+    }
+
+    /// How this image's own crawls at the session's gated level and at the level it is gated
+    /// against read a privileged line that a form measured at the level above takes
+    /// (`live::Held::carriage`), with that form's parse: the form's keywords whole, its values as
+    /// read.
+    fn carriage(&self, line: &str) -> Option<(crate::swept::Carriage, Parse)> {
+        let level = self.level()?;
+        let above = crate::license::gated_by(&level)?;
+        let Outcome::Ok(p) = self.engine.parse_measured("privileged", line, above) else {
+            return None;
+        };
+        let words: Vec<String> = p
+            .items
+            .iter()
+            .flat_map(|it| match it {
+                Item::Kw { kw, .. } => vec![kw.clone()],
+                Item::Arg { value, .. } => value.split_whitespace().map(str::to_string).collect(),
+            })
+            .collect();
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let c = self.engine.held.carriage(&level, above, &words)?;
+        Some((c, p))
+    }
+
+    /// `read_at` past the measured lines: the unlisted words, the books, the licence gate and the
+    /// held refusals.
+    fn read_unmeasured(&self, i: usize, mode: &str, line: &str) -> Outcome {
         // a word the level takes though no book or answer lists it: its refusal stands
         if let Some(o) = self.unlisted_refusal(mode, line) {
             return o;
@@ -7078,6 +7121,131 @@ mod tests {
         assert!(!no_model(&out), "{out:?}");
         let (out, r) = s.type_line("show widget knobs");
         assert!(r == Result::Ok && no_model(&out), "{out:?}");
+    }
+
+    /// A C9300 17.6 table whose crawls at both levels answer `?` at the privileged prompt, with forms
+    /// the sweep measured at network-advantage: network-essentials' `show ?` leaves out `gadget`,
+    /// and after `show widget` it takes a word where network-advantage takes a number. Its
+    /// essentials sweep refused `show widget detail` under `detail`.
+    fn carried_table() -> crate::corpus::HeldTable {
+        let essentials = "network-essentials";
+        let answer = |rows: &[&str]| rows.iter().map(|r| format!("  {r}")).collect::<Vec<_>>();
+        let mut crawl = vec![];
+        for level in [ADVANTAGE, essentials] {
+            let at = |key: &str, rows: &[&str]| {
+                (
+                    level.to_string(),
+                    "privileged".to_string(),
+                    String::new(),
+                    key.to_string(),
+                    answer(rows),
+                )
+            };
+            let (show, widget): (&[&str], &[&str]) = if level == ADVANTAGE {
+                (
+                    &["gadget  Gadget", "widget  Widget"],
+                    &["<1-10>  Number", "brief  Brief", "detail  Detail"],
+                )
+            } else {
+                (
+                    &["widget  Widget"],
+                    &["WORD  Name", "brief  Brief", "detail  Detail"],
+                )
+            };
+            crawl.extend([
+                at("", &["show  Show running system information"]),
+                at("show ", show),
+                at("show widget ", widget),
+                at("show widget brief ", &["<cr>  <cr>"]),
+                at("show widget detail ", &["<cr>  <cr>"]),
+            ]);
+        }
+        let row = |level: &str, line: &str, taken: &str| {
+            (level.to_string(), line.to_string(), taken.to_string())
+        };
+        crate::corpus::HeldTable {
+            crawl,
+            swept: vec![
+                row(ADVANTAGE, "show gadget", ""),
+                row(ADVANTAGE, "show widget brief", ""),
+                row(ADVANTAGE, "show widget detail", ""),
+                row(ADVANTAGE, "show widget <number:1-10>", ""),
+                row(essentials, "show widget detail", "invalid 2 0"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// An engine of `book` at `release` on a corpus holding `carried_table` as the C9300 17.6's,
+    /// with the donor mappings `enabled` lists.
+    fn carried_engine(book: &str, release: &str, enabled: &[(&str, &str, &str)]) -> Engine {
+        let r = crate::release::Release::parse(release).unwrap();
+        let grammar = crate::grammars::grammar(book, r).unwrap();
+        let c = crate::corpus::Corpus {
+            held: vec![("c9300".into(), "17.6".into(), carried_table())],
+            ..Default::default()
+        };
+        let held = crate::live::Held::with_donors(&c, &grammar.platform, &grammar.release, enabled);
+        Engine::with_held(grammar, held)
+    }
+
+    #[test]
+    fn a_form_of_the_level_above_is_taken_where_both_crawls_carry_its_words() {
+        let e = carried_engine("c9300", "17.6", &[]);
+        let mut ess = configured(&e, &[ESSENTIALS, "end"]);
+        for line in ["show widget brief", "sh wid br"] {
+            let (out, r) = ess.type_line(line);
+            assert!(r == Result::Ok && no_model(&out), "{line}: {out:?}");
+        }
+        // a keyword the level's `?` leaves out stays refused, under it
+        let (out, r) = ess.type_line("show gadget");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show ".len());
+        // a value the level types otherwise: a word there, a number above
+        let (out, r) = ess.type_line("show widget 5");
+        assert!(r == Result::Error && !no_model(&out), "{out:?}");
+        // the level's own measured refusal stands over a carried form
+        let (out, r) = ess.type_line("show widget detail");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show widget ".len());
+        // at the level above, each of them is its form
+        let mut adv = configured(&e, &["end"]);
+        for line in ["show gadget", "show widget 5", "show widget detail"] {
+            let (out, r) = adv.type_line(line);
+            assert!(r == Result::Ok && no_model(&out), "{line}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn no_form_is_carried_through_a_donor_or_from_another_release() {
+        let essentials = "network-essentials";
+        for (book, release) in [("c9200", "17.15"), ("c9300", "17.15")] {
+            let on = [(book, release, essentials), (book, release, ADVANTAGE)];
+            let e = carried_engine(book, release, &on);
+            let mut s = configured(&e, &[ESSENTIALS, "end"]);
+            let (out, r) = s.type_line("show widget brief");
+            assert!(
+                r == Result::Error && !no_model(&out),
+                "{book} {release}: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_and_tab_after_no_offer_no_form() {
+        let e = measured();
+        let s = configured(&e, &["end"]);
+        assert!(s.help("show widget ").iter().any(|l| l.contains("gadget")));
+        let after_no = s.help("no show widget ");
+        assert!(
+            !after_no.iter().any(|l| l.contains("gadget")),
+            "{after_no:?}"
+        );
+        assert_eq!(s.complete("no show widget gadgetr"), None);
+        // and Enter reads none there
+        let mut s = configured(&e, &["end"]);
+        let (out, _) = s.type_line("no show widget gadget");
+        assert!(!no_model(&out), "{out:?}");
     }
 
     /// A C9200 at 17.15 whose donor is `crawl()`'s C9300 17.6 crawl at network-advantage, with that

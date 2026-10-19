@@ -383,10 +383,16 @@ pub enum Left {
     Configured,
     /// the word under a caret holds an address or a name, which no row reads as a pattern
     Caret,
+    /// a word the row would hold as typed is no word any answer of the image's crawls offers, nor
+    /// digits or an interface name
+    Unoffered,
+    /// the switch answered `% Unrecognized command`, which no data says how vswitch should print
+    Unrecognized,
 }
 
 /// The rows a sweep's Enter log gives at one level, as (line, `Taken::write`), and the lines left
-/// out by why. `tiers` are the image's crawls, the sweep's own level first (`Reader`).
+/// out by why. `tiers` are the image's crawls, the sweep's own level first (`Reader`). A word a row
+/// holds as typed is a word some answer of `tiers` offers, digits or an interface name.
 pub fn derive(
     text: &str,
     tiers: &[&Answers<'_>],
@@ -397,25 +403,35 @@ pub fn derive(
         return (rows, left);
     };
     let prompt = host.chars().count() + 1;
+    let vocabulary = tiers
+        .iter()
+        .flat_map(|t| t.values())
+        .flat_map(|a| crate::live::answer_rows(a))
+        .filter(|(r, _)| !r.starts_with('<') && *r != "|")
+        .map(|(r, _)| r.to_lowercase())
+        .collect();
     let reader = Reader {
-        tiers: tiers.to_vec(),
+        tiers: tiers.iter().map(|t| *t as &dyn Tier).collect(),
+        vocabulary: Some(vocabulary),
     };
     for e in exchanges
         .iter()
         .filter(|e| e.mode == "privileged" && !e.command.trim().is_empty())
     {
         let words: Vec<&str> = e.command.split_whitespace().collect();
-        let taken = taken(e, prompt);
-        let row = match &taken {
-            Taken::Answered => reader.read(&words, words.len(), false).map(|(t, _)| t),
-            Taken::Incomplete | Taken::Ambiguous => {
-                reader.read(&words, words.len(), true).map(|(t, _)| t)
-            }
-            Taken::Invalid { word, .. } => reader.refused(&words, *word),
-        };
+        let row = taken(e, prompt).and_then(|taken| {
+            let tokens = match &taken {
+                Taken::Answered => reader.read(&words, words.len(), false).map(|(t, _)| t),
+                Taken::Incomplete | Taken::Ambiguous => {
+                    reader.read(&words, words.len(), true).map(|(t, _)| t)
+                }
+                Taken::Invalid { word, .. } => reader.refused(&words, *word),
+            }?;
+            Ok((tokens.join(" "), taken.write()))
+        });
         match row {
-            Ok(tokens) => {
-                rows.insert((tokens.join(" "), taken.write()));
+            Ok(row) => {
+                rows.insert(row);
             }
             Err(why) => *left.entry(why).or_default() += 1,
         }
@@ -425,49 +441,97 @@ pub fn derive(
 
 /// How the switch took an exchange: its first answer lines, the caret's column counted from the
 /// line's start (`prompt` characters in).
-fn taken(e: &crate::capture::Exchange, prompt: usize) -> Taken {
+fn taken(e: &crate::capture::Exchange, prompt: usize) -> Result<Taken, Left> {
     let body: Vec<&String> = e.output.iter().filter(|l| !l.trim().is_empty()).collect();
-    match body[..] {
+    Ok(match body[..] {
         [caret, said, ..] if caret.trim() == "^" && said.starts_with("% Invalid input") => {
             let col = caret.find('^').unwrap_or(0).saturating_sub(prompt);
             let toks = cli::tokens(&e.command);
-            // a caret past a word's end (on the space after it) is still that word's
+            // a caret past a word's end (on the space after it) is still that word's; one before
+            // the first word is at its start
             let word = toks.iter().rposition(|t| t.at <= col).unwrap_or(0);
             Taken::Invalid {
                 word,
-                offset: col - toks.get(word).map_or(0, |t| t.at),
+                offset: col.saturating_sub(toks.get(word).map_or(0, |t| t.at)),
             }
         }
         [first, ..] if first.starts_with("% Incomplete command") => Taken::Incomplete,
         [first, ..] if first.starts_with("% Ambiguous command") => Taken::Ambiguous,
+        [first, ..] if first.starts_with(crate::corpus::UNRECOGNIZED) => {
+            return Err(Left::Unrecognized);
+        }
         _ => Taken::Answered,
-    }
+    })
 }
 
 /// A crawl's privileged EXEC answers at one level, by `context::key` of the line before `?`.
 pub type Answers<'a> = BTreeMap<String, &'a Vec<String>>;
 
+/// One crawl's privileged EXEC answers at the top level, as a line's words are read against them.
+pub trait Tier {
+    /// The answer after the line whose `context::key` is `key`.
+    fn answer(&self, key: &str) -> Option<&Vec<String>>;
+    /// The keys beginning `prefix`, in order.
+    fn keys<'k>(&'k self, prefix: &'k str) -> Box<dyn Iterator<Item = &'k str> + 'k>;
+}
+
+impl Tier for Answers<'_> {
+    fn answer(&self, key: &str) -> Option<&Vec<String>> {
+        self.get(key).copied()
+    }
+
+    fn keys<'k>(&'k self, prefix: &'k str) -> Box<dyn Iterator<Item = &'k str> + 'k> {
+        Box::new(
+            self.range(prefix.to_string()..)
+                .take_while(move |(k, _)| k.starts_with(prefix))
+                .map(|(k, _)| k.as_str()),
+        )
+    }
+}
+
 /// The crawls a sweep's words are read against: the sweep's own level first, then the image's other
 /// levels, whose rows type a value where the level's own `?` leaves its word out (the lab
 /// C9300-24T, 17.6.4, answered `show mpls traffic-eng ...` lines at network-essentials, whose
-/// `show ?` lists no `mpls`).
+/// `show ?` lists no `mpls`). A word read as typed is one of `vocabulary` (lowercase), digits or
+/// an interface name; with no vocabulary, every word is read by an answer.
 struct Reader<'a> {
-    tiers: Vec<&'a Answers<'a>>,
+    tiers: Vec<&'a dyn Tier>,
+    vocabulary: Option<BTreeSet<String>>,
 }
 
 impl Reader<'_> {
     /// A crawl's answer after the words it typed.
-    fn answer<'t>(tier: &Answers<'t>, typed: &[String]) -> Option<&'t Vec<String>> {
+    fn answer<'t>(tier: &'t dyn Tier, typed: &[String]) -> Option<&'t Vec<String>> {
         let text = match typed {
             [] => String::new(),
             t => format!("{} ", t.join(" ")),
         };
-        tier.get(&crate::context::key(&text)).copied()
+        tier.answer(&crate::context::key(&text))
     }
 
     /// The first tier's answer after `typed`.
     fn first(&self, typed: &[String]) -> Option<&Vec<String>> {
-        self.tiers.iter().find_map(|t| Self::answer(t, typed))
+        self.tiers.iter().find_map(|t| Self::answer(*t, typed))
+    }
+
+    /// Whether a row may hold `w` as typed: digits (a minus first), an interface name (a type some
+    /// answer offers and its number), or a word some answer offers.
+    fn literal(&self, w: &str) -> bool {
+        let Some(words) = &self.vocabulary else {
+            return false;
+        };
+        let lw = w.to_lowercase();
+        let numbered = |n: &str| {
+            n.starts_with(|c: char| c.is_ascii_digit())
+                && n.chars()
+                    .all(|c| c.is_ascii_digit() || c == '/' || c == '.' || c == ':')
+        };
+        digits(w.strip_prefix('-').unwrap_or(w))
+            || cli::interface_name(w, None).is_some()
+            || words.contains(&lw)
+            || lw
+                .find(|c: char| c.is_ascii_digit())
+                .is_some_and(|i| i > 0 && words.contains(&lw[..i]) && numbered(&lw[i..]))
     }
 
     /// The tokens of the first `upto` words as the crawls' answers read them (`fit`), the first tier
@@ -485,13 +549,13 @@ impl Reader<'_> {
         for (k, w) in words.iter().enumerate().take(upto) {
             let mut why = Left::NoAnswer;
             let mut read = None;
-            for t in &self.tiers {
+            for &t in &self.tiers {
                 match Self::answer(t, &typed) {
                     None => {}
                     Some(a) if crate::live::is_refusal(a) => why = why.max(Left::Refused),
                     Some(a) => match fit(w, a) {
                         Ok(tok) => {
-                            read = Some((tok, *t, a));
+                            read = Some((tok, t, a));
                             break;
                         }
                         Err(Left::Configured) => {
@@ -505,9 +569,13 @@ impl Reader<'_> {
             let (tok, at) = match read {
                 Some((tok, t, a)) => (tok, Some((t, a))),
                 // the first word, where the crawl asked nothing before it
-                None if k == 0 => (w.to_string(), None),
+                None if k == 0 && self.literal(w) => (w.to_string(), None),
+                None if k == 0 && self.vocabulary.is_some() => return Err(Left::Unoffered),
                 // a word the switch read before its caret, which the `?` rows leave out
-                None if literal => (shaped(w).ok_or(why)?, None),
+                None if literal => match shaped(w).ok_or(why)? {
+                    t if !t.starts_with('<') && !self.literal(w) => return Err(Left::Unoffered),
+                    t => (t, None),
+                },
                 None => return Err(why),
             };
             if tok == "<line>" {
@@ -526,6 +594,7 @@ impl Reader<'_> {
             }
             typed = next;
             let keep = literal
+                && self.literal(w)
                 && (tok.starts_with("<number:")
                     || tok.starts_with("<hex:")
                     || tok.starts_with("<interface:"));
@@ -535,19 +604,13 @@ impl Reader<'_> {
     }
 
     /// A word a crawl typed after `typed` that fits `answer` as `tok` does, as its key holds it.
-    fn sibling(
-        tier: &Answers<'_>,
-        typed: &[String],
-        tok: &str,
-        answer: &[String],
-    ) -> Option<String> {
+    fn sibling(tier: &dyn Tier, typed: &[String], tok: &str, answer: &[String]) -> Option<String> {
         let prefix = crate::context::key(&match typed {
             [] => String::new(),
             t => format!("{} ", t.join(" ")),
         });
-        tier.range(prefix.clone()..)
-            .take_while(|(k, _)| k.starts_with(&prefix))
-            .filter_map(|(k, _)| {
+        tier.keys(&prefix)
+            .filter_map(|k| {
                 let w = k[prefix.len()..].strip_suffix(' ')?;
                 (!w.is_empty() && !w.contains(' ')).then_some(w)
             })
@@ -558,7 +621,8 @@ impl Reader<'_> {
     /// A refused line's tokens, its caret in word `caret`: the words before it as `read` reads them,
     /// numbers and interfaces as typed; the caret word as typed where it is a keyword's spelling, a
     /// number or an interface, else `<word>` where the answer before it offered no value (any other
-    /// word is refused there alike); the words after it by their shape, any other as `<word>`.
+    /// word is refused there alike); the words after it by their shape, any other as `<word>`. A
+    /// word kept as typed is one `literal` takes.
     fn refused(&self, words: &[&str], caret: usize) -> Result<Vec<String>, Left> {
         let (mut tokens, typed) = self.read(words, caret, true)?;
         let w = words.get(caret).ok_or(Left::NoFit)?;
@@ -567,10 +631,16 @@ impl Reader<'_> {
                 && w.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
         };
-        let tok = if digits(w) || cli::interface_name(w, None).is_some() || plain(w) {
+        let spelled = digits(w) || cli::interface_name(w, None).is_some() || plain(w);
+        let tok = if spelled && self.literal(w) {
             w.to_string()
         } else {
-            let answer = self.first(&typed).ok_or(Left::Caret)?;
+            let unoffered = if spelled {
+                Left::Unoffered
+            } else {
+                Left::Caret
+            };
+            let answer = self.first(&typed).ok_or(unoffered)?;
             let rows = crate::live::answer_rows(answer);
             let valueless = rows
                 .iter()
@@ -578,13 +648,17 @@ impl Reader<'_> {
             let starts = rows
                 .iter()
                 .any(|(r, _)| r.to_lowercase().starts_with(&w.to_lowercase()));
+            // a keyword spelling in capitals (`Hostname`, `BDI`)
+            let capitals =
+                !spelled && w.chars().all(|c| c.is_ascii_alphabetic() || c == '-') && !shape_of(w);
             if valueless && !starts && !crate::live::is_refusal(answer) {
                 "<word>".to_string()
-            } else if w.chars().all(|c| c.is_ascii_alphabetic() || c == '-') && !shape_of(w) {
-                // a keyword spelling in capitals (`Hostname`, `BDI`)
+            } else if capitals && self.literal(w) {
                 w.to_string()
+            } else if capitals {
+                return Err(Left::Unoffered);
             } else {
-                return Err(Left::Caret);
+                return Err(unoffered);
             }
         };
         tokens.push(tok);
@@ -592,9 +666,82 @@ impl Reader<'_> {
         // (the lab C9300-24T, 17.6.4, at network-essentials refused `show m|pls traffic-eng tunnels
         // attributes 10 auto-tunnel ...` and answered `show mpls traffic-eng link-management ...`)
         for w in &words[caret + 1..] {
-            tokens.push(shaped(w).unwrap_or_else(|| "<word>".into()));
+            tokens.push(match shaped(w) {
+                Some(t) if t.starts_with('<') || self.literal(w) => t,
+                _ => "<word>".into(),
+            });
         }
         Ok(tokens)
+    }
+}
+
+/// How the image's own crawls at a level and at the level above read a line's words (`carriage`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carriage {
+    /// every keyword offered at its place at both levels, every value typed alike at both
+    Carried,
+    /// a keyword the level's crawl does not offer at its place where the level above's does
+    Gated,
+    /// a word with no answer held before it at one level
+    Missing,
+    /// a value typed otherwise at the two levels, or a word the level above's crawl does not read
+    Divergent,
+}
+
+/// How the image's own crawl at a level (`at`) and at the level above (`above`), each alone, read
+/// a line's words: carried where every keyword is offered whole at its place in both and every
+/// value fits a value row of the same kind in both (`fit`). Other rows the two answers offer may
+/// differ.
+pub fn carriage(words: &[&str], at: &dyn Tier, above: &dyn Tier) -> Carriage {
+    let read = |t: &dyn Tier, upto: usize| {
+        let reader = Reader {
+            tiers: vec![t],
+            vocabulary: None,
+        };
+        reader.read(words, upto, false).map(|(t, _)| t)
+    };
+    // a value's kind: `number` and `hex` whatever their range, any other token whole
+    fn kind(t: &str) -> Option<&str> {
+        let inner = t.strip_prefix('<')?.strip_suffix('>')?;
+        Some(match inner.split_once(':') {
+            Some((n @ ("number" | "hex"), _)) => n,
+            _ => inner,
+        })
+    }
+    let up = match read(above, words.len()) {
+        Ok(up) => up,
+        Err(Left::NoAnswer) => return Carriage::Missing,
+        Err(_) => return Carriage::Divergent,
+    };
+    let mine = match read(at, words.len()) {
+        Ok(mine) => mine,
+        Err(Left::NoAnswer) => return Carriage::Missing,
+        Err(_) => {
+            // the first word the level's crawl does not read, a keyword or a value above
+            let fails = (1..=words.len())
+                .find(|&n| read(at, n).is_err())
+                .unwrap_or(1)
+                - 1;
+            return match up.get(fails) {
+                Some(t) if kind(t).is_none() => Carriage::Gated,
+                _ => Carriage::Divergent,
+            };
+        }
+    };
+    if mine.len() != up.len() {
+        return Carriage::Divergent;
+    }
+    match mine
+        .iter()
+        .zip(&up)
+        .find(|(x, y)| match (kind(x), kind(y)) {
+            (Some(p), Some(q)) => p != q,
+            (None, None) => !x.eq_ignore_ascii_case(y),
+            _ => true,
+        }) {
+        None => Carriage::Carried,
+        Some((_, y)) if kind(y).is_none() => Carriage::Gated,
+        Some(_) => Carriage::Divergent,
     }
 }
 
@@ -862,6 +1009,118 @@ mod tests {
             Some(Outcome::Invalid(11))
         );
         assert_eq!(s.refused("show group na", &offered), None);
+    }
+
+    /// `derive` on an Enter log against one crawl answering `?` at the prompt, after `show`, after
+    /// `show widget` and after `show widget 1`.
+    fn derived(log: &str) -> (BTreeSet<(String, String)>, BTreeMap<Left, usize>) {
+        let held = [
+            ("", answer(&["show  Show"])),
+            ("show ", answer(&["widget  Widget", "gadget  Gadget"])),
+            (
+                "show widget ",
+                answer(&["<1-10>  Number", "brief  Brief", "detail  Detail"]),
+            ),
+            ("show widget 1 ", answer(&["detail  Detail", "<cr>  <cr>"])),
+        ];
+        let tier: Answers<'_> = held.iter().map(|(k, a)| (k.to_string(), a)).collect();
+        derive(log, &[&tier])
+    }
+
+    fn row(line: &str, taken: &str) -> (String, String) {
+        (line.to_string(), taken.to_string())
+    }
+
+    /// An Enter log line refused under word `word`, its caret drawn after the prompt `Switch#`.
+    fn refusal(line: &str, word: usize) -> String {
+        let at = cli::tokens(line)[word].at;
+        format!(
+            "Switch#{line}\n{}^\n% Invalid input detected at '^' marker.\n",
+            " ".repeat(7 + at)
+        )
+    }
+
+    #[test]
+    fn a_row_holds_as_typed_only_words_the_crawls_offer_digits_and_interfaces() {
+        let log = [
+            refusal("show widget sitename", 2),
+            refusal("show sitename brief", 1),
+            refusal("show widget brief sitename", 2),
+            refusal("show gadget sitename detail", 3),
+            refusal("show widget 7 GigabitEthernet1/0/1", 3),
+            "Switch#show widget 7 detail\n".to_string(),
+        ]
+        .concat();
+        let (rows, left) = derived(&log);
+        assert_eq!(
+            rows,
+            [
+                // `sitename` starts no keyword where none but keywords stand
+                row("show <word> brief", "invalid 1 0"),
+                // after the caret, a word no answer offers is any word
+                row("show widget brief <word>", "invalid 2 0"),
+                row("show widget 7 GigabitEthernet1/0/1", "invalid 3 0"),
+                row("show widget <number:1-10> detail", ""),
+            ]
+            .into_iter()
+            .collect()
+        );
+        // under the caret where a value stands, and before it with no answer, a word no answer
+        // offers leaves its line out
+        assert_eq!(left.get(&Left::Unoffered), Some(&2), "{left:?}");
+    }
+
+    #[test]
+    fn an_unrecognized_line_has_no_row_and_a_caret_before_the_first_word_is_at_its_start() {
+        let log = format!(
+            "Switch#show zz\n% Unrecognized command\nSwitch#  show widget\n{}^\n% Invalid input detected at '^' marker.\n",
+            " ".repeat(7)
+        );
+        let (rows, left) = derived(&log);
+        assert_eq!(left.get(&Left::Unrecognized), Some(&1), "{left:?}");
+        assert_eq!(
+            rows,
+            [row("show widget", "invalid 0 0")].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn a_line_is_carried_where_both_crawls_read_each_word_alike() {
+        let shared = [
+            ("", answer(&["show  Show"])),
+            ("show widget 1 ", answer(&["detail  Detail", "<cr>  <cr>"])),
+        ];
+        let above = [
+            ("show ", answer(&["widget  Widget", "gadget  Gadget"])),
+            ("show widget ", answer(&["<1-10>  Number", "brief  Brief"])),
+        ];
+        let at = [
+            ("show ", answer(&["widget  Widget"])),
+            ("show widget ", answer(&["<1-4>  Number", "WORD  Name"])),
+        ];
+        let tier = |rows: &[(&str, Vec<String>)]| -> Vec<(String, Vec<String>)> {
+            shared
+                .iter()
+                .chain(rows)
+                .map(|(k, a)| (k.to_string(), a.clone()))
+                .collect()
+        };
+        let (above, at) = (tier(&above), tier(&at));
+        fn map(t: &[(String, Vec<String>)]) -> Answers<'_> {
+            t.iter().map(|(k, a)| (k.clone(), a)).collect()
+        }
+        let (above, at) = (map(&above), map(&at));
+        let of = |line: &str| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            carriage(&words, &at, &above)
+        };
+        // a number in both ranges, whatever their bounds, and the answer after the crawls' own
+        assert_eq!(of("show widget 3 detail"), Carriage::Carried);
+        assert_eq!(of("show gadget"), Carriage::Gated);
+        // `brief` a word below and a keyword above; 7 a word below and a number above
+        assert_eq!(of("show widget brief"), Carriage::Gated);
+        assert_eq!(of("show widget 7"), Carriage::Divergent);
+        assert_eq!(of("show widget 3 detail extra"), Carriage::Missing);
     }
 
     #[test]

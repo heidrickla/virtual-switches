@@ -1117,6 +1117,21 @@ impl Deny {
                 }
             }
         }
+        // a sweep's typed lines and the parser's answers: their addresses, MAC addresses and serials,
+        // and the name at its prompt
+        for f in &src.sweeps {
+            raw.extend(crate::capture::exchanges(&f.text).map(|(host, _)| host));
+            for line in f.text.lines() {
+                raw.extend(
+                    ip.find_iter(line)
+                        .map(|m| m.as_str().to_string())
+                        .filter(|a| !mask_like(a)),
+                );
+                raw.extend(mac.find_iter(line).map(|m| m.as_str().to_string()));
+                raw.extend(serial.captures_iter(line).map(|c| c[1].to_string()));
+                raw.extend(numbered.find_iter(line).map(|m| m.as_str().to_string()));
+            }
+        }
         // words a site's free text shares with ordinary use, and the lab's own test names and
         // addresses, which name nothing of a site
         const GENERIC: [&str; 45] = [
@@ -1553,6 +1568,33 @@ mod tests {
             "a short word counts only whole or as a part"
         );
         assert!(!deny.hits("hostname plant-x"));
+    }
+
+    #[test]
+    fn a_sweep_s_addresses_macs_serials_and_prompt_name_are_site_words() {
+        let sweep = CrawlLog {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            folder: "sweep".into(),
+            level: "network-advantage".into(),
+            text: "plantsw07#show ip route 172.31.207.77\nplantsw07#show mac address-table address 00aa.bb12.3456\n\
+                   % Serial number: FOC2233X0AB\nplantsw07#show clock\n"
+                .into(),
+        };
+        let src = Source {
+            sweeps: vec![sweep],
+            ..Default::default()
+        };
+        let deny = Deny::of(&src);
+        for w in [
+            "plantsw07",
+            "172.31.207.77",
+            "00aa.bb12.3456",
+            "FOC2233X0AB",
+        ] {
+            assert!(deny.hits(&format!("show x {w}")), "{w}");
+        }
+        assert!(!deny.hits("show ip route"));
     }
 
     /// A build that names a captures folder checks the embedded corpus against it: the corpus is what

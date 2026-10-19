@@ -966,9 +966,17 @@ impl Engine {
         self.next_in(mode, toks, Sel::Books)
     }
 
-    /// `next` with the measured forms of a session's `level` beside the books'.
+    /// `next` with the measured forms of a session's `level` beside the books'; after `no` the books'
+    /// alone, as no form is read there (`parse_measured`).
     pub fn next_at(&self, mode: &str, toks: &[Tok], level: Option<&str>) -> (Vec<Next>, bool) {
-        self.next_in(mode, toks, level.map_or(Sel::Books, Sel::Both))
+        let negated = toks
+            .first()
+            .is_some_and(|t| t.text.eq_ignore_ascii_case("no"));
+        let sel = match level {
+            Some(l) if !negated => Sel::Both(l),
+            _ => Sel::Books,
+        };
+        self.next_in(mode, toks, sel)
     }
 
     fn next_in(&self, mode: &str, toks: &[Tok], sel: Sel<'_>) -> (Vec<Next>, bool) {
