@@ -60,13 +60,25 @@ pub struct Swept {
     pub forms: Vec<Vec<String>>,
     /// each refused line's words up to its caret (all of them for an incomplete or ambiguous one)
     pub refusals: Vec<(Vec<String>, Taken)>,
+    /// the `%` lines each answered form printed before any output, as `said` holds them
+    pub said: BTreeMap<Vec<String>, Vec<String>>,
 }
 
 impl Swept {
-    pub fn add(&mut self, line: &str, taken: Taken) {
-        let words = line.split_whitespace().map(str::to_string).collect();
+    /// A row: its line, how the switch took it, and an answered form's message lines (`said`),
+    /// one per line of `said`.
+    pub fn add(&mut self, line: &str, taken: Taken, said: &str) {
+        let words: Vec<String> = line.split_whitespace().map(str::to_string).collect();
         match taken {
-            Taken::Answered => self.forms.push(words),
+            Taken::Answered => {
+                if !said.is_empty() {
+                    self.said.insert(
+                        words.clone(),
+                        said.split('\n').map(str::to_string).collect(),
+                    );
+                }
+                self.forms.push(words);
+            }
             t => self.refusals.push((words, t)),
         }
     }
@@ -390,17 +402,28 @@ pub enum Left {
     Unrecognized,
 }
 
-/// The rows a sweep's Enter log gives at one level, as (line, `Taken::write`), and the lines left
-/// out by why. `tiers` are the image's crawls, the sweep's own level first (`Reader`). A word a row
-/// holds as typed is a word some answer of `tiers` offers, digits or an interface name.
-pub fn derive(
-    text: &str,
-    tiers: &[&Answers<'_>],
-) -> (BTreeSet<(String, String)>, BTreeMap<Left, usize>) {
+/// A sweep's rows, as (line, `Taken::write`).
+pub type Rows = BTreeSet<(String, String)>;
+
+/// One answered line of a sweep: the line, its form, and the `%` lines the switch printed before
+/// any output (none where it printed output or nothing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub line: String,
+    pub form: String,
+    pub said: Vec<String>,
+}
+
+/// The rows a sweep's Enter log gives at one level, as (line, `Taken::write`), the lines left out
+/// by why, and the answered lines. `tiers` are the image's crawls, the sweep's own level first
+/// (`Reader`). A word a row holds as typed is a word some answer of `tiers` offers, digits or an
+/// interface name.
+pub fn derive(text: &str, tiers: &[&Answers<'_>]) -> (Rows, BTreeMap<Left, usize>, Vec<Answer>) {
     let mut rows = BTreeSet::new();
     let mut left: BTreeMap<Left, usize> = BTreeMap::new();
+    let mut answers = vec![];
     let Some((host, exchanges)) = crate::capture::exchanges(text) else {
-        return (rows, left);
+        return (rows, left, answers);
     };
     let prompt = host.chars().count() + 1;
     let vocabulary = tiers
@@ -427,16 +450,91 @@ pub fn derive(
                 }
                 Taken::Invalid { word, .. } => reader.refused(&words, *word),
             }?;
-            Ok((tokens.join(" "), taken.write()))
+            Ok((tokens.join(" "), taken))
         });
         match row {
-            Ok(row) => {
-                rows.insert(row);
+            Ok((form, taken)) => {
+                if taken == Taken::Answered {
+                    answers.push(Answer {
+                        line: e.command.trim().to_string(),
+                        form: form.clone(),
+                        said: e
+                            .output
+                            .iter()
+                            .filter(|l| l.starts_with('%'))
+                            .cloned()
+                            .collect(),
+                    });
+                }
+                rows.insert((form, taken.write()));
             }
             Err(why) => *left.entry(why).or_default() += 1,
         }
     }
-    (rows, left)
+    (rows, left, answers)
+}
+
+/// The message lines each answered form holds (`messages::template`), by (level, form), from the
+/// lines each level's sweeps answered. Every line of a form at its level printed the same held
+/// lines, and each printed the same `%` lines wherever another level answered it. A line that
+/// printed output agrees with a form whose lines end in a state message: the configuration decides
+/// between them (`messages::print`).
+pub fn said(answers: &BTreeMap<String, Vec<Answer>>) -> BTreeMap<(String, String), Vec<String>> {
+    use crate::messages::{Kind, kind, template};
+    let stateful = |t: &[String]| t.iter().any(|l| matches!(kind(l), Some(Kind::State(_))));
+    // by form at its level: each message answer's held lines, and whether a line printed output
+    type Seen<'a> = BTreeMap<(&'a str, &'a str), (BTreeSet<Vec<String>>, bool)>;
+    let mut seen: Seen<'_> = BTreeMap::new();
+    for (level, list) in answers {
+        for a in list {
+            let e = seen.entry((level, &a.form)).or_default();
+            if a.said.is_empty() {
+                e.1 = true;
+                continue;
+            }
+            let form: Vec<&str> = a.form.split(' ').collect();
+            let words: Vec<&str> = a.line.split_whitespace().collect();
+            e.0.insert(template(&a.said, &form, &words));
+        }
+    }
+    let mut held: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for ((level, form), (mut ts, output)) in seen {
+        if ts.len() != 1 {
+            continue;
+        }
+        let t = ts.pop_first().unwrap_or_default();
+        if !t.is_empty() && (!output || stateful(&t)) {
+            held.insert((level.to_string(), form.to_string()), t);
+        }
+    }
+    // each line by the levels that answered it
+    let mut by_line: BTreeMap<&str, Vec<(&str, &Answer)>> = BTreeMap::new();
+    for (level, list) in answers {
+        for a in list {
+            by_line.entry(&a.line).or_default().push((level, a));
+        }
+    }
+    let mut drop = BTreeSet::new();
+    for at in by_line.values() {
+        for (i, (la, a)) in at.iter().enumerate() {
+            for (lb, b) in &at[i + 1..] {
+                if la == lb || a.said == b.said {
+                    continue;
+                }
+                for ((level, x), y) in [((la, a), b), ((lb, b), a)] {
+                    let key = (level.to_string(), x.form.clone());
+                    if held
+                        .get(&key)
+                        .is_some_and(|t| !(y.said.is_empty() && stateful(t)))
+                    {
+                        drop.insert(key);
+                    }
+                }
+            }
+        }
+    }
+    held.retain(|k, _| !drop.contains(k));
+    held
 }
 
 /// How the switch took an exchange: its first answer lines, the caret's column counted from the
@@ -973,8 +1071,13 @@ mod tests {
         s.add(
             "show widget table Hostname",
             Taken::Invalid { word: 3, offset: 0 },
+            "",
         );
-        s.add("show widget gadget", Taken::Invalid { word: 2, offset: 3 });
+        s.add(
+            "show widget gadget",
+            Taken::Invalid { word: 2, offset: 3 },
+            "",
+        );
         let offered = |text: &str| -> Option<Vec<String>> {
             let words: &[&str] = match text.split_whitespace().count() {
                 0 => &["show", "ssh"],
@@ -1002,7 +1105,11 @@ mod tests {
     #[test]
     fn a_word_under_a_caret_where_no_value_stands_is_any_word_starting_no_keyword() {
         let mut s = Swept::default();
-        s.add("show group <word>", Taken::Invalid { word: 2, offset: 0 });
+        s.add(
+            "show group <word>",
+            Taken::Invalid { word: 2, offset: 0 },
+            "",
+        );
         let offered = |text: &str| -> Option<Vec<String>> {
             (text.split_whitespace().count() == 2).then(|| vec!["name".to_string()])
         };
@@ -1026,7 +1133,8 @@ mod tests {
             ("show widget 1 ", answer(&["detail  Detail", "<cr>  <cr>"])),
         ];
         let tier: Answers<'_> = held.iter().map(|(k, a)| (k.to_string(), a)).collect();
-        derive(log, &[&tier])
+        let (rows, left, _) = derive(log, &[&tier]);
+        (rows, left)
     }
 
     fn row(line: &str, taken: &str) -> (String, String) {
@@ -1084,6 +1192,110 @@ mod tests {
             rows,
             [row("show widget", "invalid 0 0")].into_iter().collect()
         );
+    }
+
+    const NOTICE: &str =
+        "% Command accepted but obsolete, unreleased or unsupported; see documentation.";
+
+    fn answered(line: &str, form: &str, said: &[&str]) -> Answer {
+        Answer {
+            line: line.into(),
+            form: form.into(),
+            said: said.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn an_answered_line_keeps_the_percent_lines_before_its_output() {
+        let held = [
+            ("", answer(&["show  Show"])),
+            ("show ", answer(&["widget  Widget"])),
+            ("show widget ", answer(&["<1-10>  Number"])),
+        ];
+        let tier: Answers<'_> = held.iter().map(|(k, a)| (k.to_string(), a)).collect();
+        let log = format!(
+            "Switch#show widget 3\n{NOTICE}\n% LISP is not running.\nSwitch#show widget\nSwitch#"
+        );
+        let (_, _, answers) = derive(&log, &[&tier]);
+        assert_eq!(
+            answers,
+            [
+                answered(
+                    "show widget 3",
+                    "show widget <number:1-10>",
+                    &[NOTICE, "% LISP is not running."]
+                ),
+                answered("show widget", "show widget", &[]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_form_holds_the_lines_every_answer_to_it_agreed_on() {
+        let adv = "network-advantage".to_string();
+        let ess = "network-essentials".to_string();
+        let held = |answers: Vec<(String, Vec<Answer>)>| said(&answers.into_iter().collect());
+        let key = |level: &str, form: &str| (level.to_string(), form.to_string());
+        let unsupported = "% Error: Unsupported command";
+        let not_running = "% LISP is not running.";
+        // a fixed message, its value-free lines alike
+        let h = held(vec![(
+            adv.clone(),
+            vec![
+                answered("show widget 1", "show widget <number:1-10>", &[unsupported]),
+                answered("show widget 2", "show widget <number:1-10>", &[unsupported]),
+            ],
+        )]);
+        assert_eq!(
+            h.get(&key(&adv, "show widget <number:1-10>")),
+            Some(&vec![unsupported.to_string()])
+        );
+        // two messages for one form, or a fixed one beside output, hold nothing
+        let h = held(vec![(
+            adv.clone(),
+            vec![
+                answered("show widget 1", "show widget <number:1-10>", &[unsupported]),
+                answered("show widget 2", "show widget <number:1-10>", &[not_running]),
+                answered("show gadget 1", "show gadget <number:1-10>", &[unsupported]),
+                answered("show gadget 2", "show gadget <number:1-10>", &[]),
+            ],
+        )]);
+        assert!(h.is_empty(), "{h:?}");
+        // a state message beside output: the configuration decides
+        let h = held(vec![(
+            adv.clone(),
+            vec![
+                answered("show widget 1", "show widget <number:1-10>", &[not_running]),
+                answered("show widget 2", "show widget <number:1-10>", &[]),
+            ],
+        )]);
+        assert_eq!(
+            h.get(&key(&adv, "show widget <number:1-10>")),
+            Some(&vec![not_running.to_string()])
+        );
+        // the same line answered otherwise at another level: a fixed message goes at both, a state
+        // message beside output stays
+        let h = held(vec![
+            (
+                adv.clone(),
+                vec![
+                    answered("show widget", "show widget", &[unsupported]),
+                    answered("show gadget", "show gadget", &[not_running]),
+                    answered("show knob", "show knob", &[not_running]),
+                ],
+            ),
+            (
+                ess.clone(),
+                vec![
+                    answered("show widget", "show widget", &[]),
+                    answered("show gadget", "show gadget", &[]),
+                    answered("show knob", "show knob", &[unsupported]),
+                ],
+            ),
+        ]);
+        let mut kept: Vec<_> = h.keys().cloned().collect();
+        kept.sort();
+        assert_eq!(kept, [key(&adv, "show gadget")]);
     }
 
     #[test]

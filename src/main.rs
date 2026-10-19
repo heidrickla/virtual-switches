@@ -25,6 +25,7 @@ mod library;
 mod license;
 mod lint;
 mod live;
+mod messages;
 mod platform;
 mod probe;
 mod pubkey;
@@ -1983,7 +1984,8 @@ fn run(args: &[String]) -> Result<bool, String> {
                     t.swept.iter().map(|(l, ..)| l.as_str()).collect();
                 for l in levels {
                     let rows = t.swept.iter().filter(|(x, ..)| x == l);
-                    let forms = rows.clone().filter(|(.., k)| k.is_empty()).count();
+                    let forms = rows.clone().filter(|(_, _, k, _)| k.is_empty()).count();
+                    let said = rows.clone().filter(|(.., s)| !s.is_empty()).count();
                     let refused = rows.count() - forms;
                     let left: Vec<String> = t
                         .swept_left
@@ -1992,7 +1994,7 @@ fn run(args: &[String]) -> Result<bool, String> {
                         .map(|(_, why, n)| format!("{n} {why}"))
                         .collect();
                     println!(
-                        "{b}-{r} swept at {l}: {forms} forms, {refused} refusals; no row: {}",
+                        "{b}-{r} swept at {l}: {forms} forms ({said} with messages), {refused} refusals; no row: {}",
                         if left.is_empty() {
                             "none".to_string()
                         } else {

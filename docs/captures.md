@@ -312,10 +312,10 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 ### Sweep folders
 
 - The log is `<book>-<release>/sweep/enter.log`, or `sweep-<name>/enter.log` beside it for the same image at another level, with a `level` file as a crawl folder has.
-- Each line is written after its prompt. After it stands nothing where the switch answered (output, nothing, or a state message), else the caret line and `% Invalid input detected at '^' marker.`, `% Incomplete command.`, or `% Ambiguous command:  "<line>"`.
+- Each line is written after its prompt. After it stands nothing where the switch answered with output or nothing, the `%` lines it printed before any output where it answered with a message, else the caret line and `% Invalid input detected at '^' marker.`, `% Incomplete command.`, or `% Ambiguous command:  "<line>"`.
 - The caret's column counts the prompt and the line as typed. A caret before the first word stands at its start.
 - A line the switch answered `% Unrecognized command` gives no row, as no data says how vswitch prints that answer.
-- `vswitch corpus` prints each sweep folder with its level, then per level the forms and refusals held and the lines that gave neither, by reason.
+- `vswitch corpus` prints each sweep folder with its level, then per level the forms, those holding messages, the refusals and the lines that gave neither, by reason.
 
 ### Forms
 
@@ -336,6 +336,16 @@ An answered line becomes a form: its words, each value a typed argument. Each wo
 - A line gives no form where a word fits no row, or names an object the configuration made: a `User defined` row, or a VRF's `VRF Name` row other than `Mgmt-vrf`.
 - A form's value is never another keyword: one observed name stays that name.
 
+### Messages
+
+A form holds the `%` lines its answered lines printed before any output, as the fourth field of its row, one per line (`src/swept.rs`, `said`; `src/messages.rs`).
+
+- A line is held only where it fits a message of `messages::MESSAGES`: a notice, a fixed message or a state message (Measured show messages in `output.md`). Notices before a line no message fits are held alone. A fixed or state message is held only where it ends the lines.
+- A value the message names is held as its place in the form (`% No VRF named {3}`), the one value token whose word of the line it is; an interface by its full name. A message naming no value of the form, or two, is not held. A value the form holds as a keyword stays as printed.
+- Every line of a form at its level printed the same held lines. A form whose lines printed output beside a fixed message or a notice holds none. A state message beside output is held: the configuration decides between them.
+- A line answered at two levels printed the same `%` lines at both, or neither level's form holds a fixed message or notice for it. A state message at one level beside output at the other is held.
+- A level's messages print from its own forms. The carry-down carries none.
+
 ### Refusals
 
 A refused line becomes a refusal, written `invalid <word> <offset>` (the caret's word and its place in it), `incomplete` or `ambiguous`.
@@ -347,7 +357,7 @@ A refused line becomes a refusal, written `invalid <word> <offset>` (the caret's
 
 ### Privacy
 
-- Values are tokens and configured objects give no form, so a form names nothing of the site.
+- Values are tokens and configured objects give no form, so a form names nothing of the site. A held message is a fixed text of `messages::MESSAGES` with each value written as its place in the form.
 - A word a row holds as typed is digits (a minus first), an interface name, a word some privileged EXEC `?` answer of the image's own crawls offers at any level, or such a word with a number after it. A row that would hold any other word is left out (`Unoffered`).
 - A form or refusal holding a denied word is left out whole, as crawl answers are. The denied words include each sweep's prompt name and the addresses, MAC addresses, serials and numbered names its lines and answers hold, and no word of IOS's vocabulary (Site words). The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
 
@@ -366,6 +376,7 @@ At the privileged prompt of a session whose image and level a sweep covers:
 - Outside row 4 a level reads its own sweep alone. A donor's crawls and sweeps, and another release's, carry, grant and refuse nothing.
 - `?` and Tab answer from the held crawl first. Where none is held, the books' keywords and the level's forms' together answer; after `no`, the books' alone.
 - A switch-observed `?` row that Enter refused stays offered: `show ip route ?` lists `Hostname`, and `show ip route Hostname` is refused.
+- A line a form of the session's level takes prints the messages the form holds where they stand, whichever command runs (Measured show messages in `output.md`). A word the books or the level's forms read as a keyword where it stands makes the line that keyword's, and the messages of a form reading it as a value do not print (`show ip vrf detail` beside `show ip vrf <word>`).
 
 ## capture
 

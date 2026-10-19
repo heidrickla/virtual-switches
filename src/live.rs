@@ -453,9 +453,12 @@ impl Held {
                     .push((c.clone(), a.clone()));
             }
             h.captures = t.captures.clone();
-            for (level, line, taken) in &t.swept {
+            for (level, line, taken, said) in &t.swept {
                 if let Some(taken) = crate::swept::Taken::read(taken) {
-                    h.swept.entry(level.clone()).or_default().add(line, taken);
+                    h.swept
+                        .entry(level.clone())
+                        .or_default()
+                        .add(line, taken, said);
                 }
             }
         }

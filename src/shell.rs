@@ -844,6 +844,65 @@ impl<'a> Session<'a> {
         }
     }
 
+    /// What a privileged line prints where the form the session's level measured for it holds the
+    /// switch's `%` lines (`messages::print`): those that stand, else the command's output `out`.
+    /// A line the messages stand in place of is refused, as `unconfigured`'s are; a line the shell
+    /// warns of before it runs (`taken_with_warning`) prints that warning and its output instead.
+    fn said(&self, mode: &str, line: &str, p: &Parse, out: Vec<String>) -> (Vec<String>, Result) {
+        if self.taken_with_warning(mode, p).is_some() {
+            return (out, Result::Ok);
+        }
+        let held = self.measured(mode, line).and_then(|m| {
+            let level = self.level()?;
+            let swept = self.engine.held.swept.get(&level)?;
+            // IOS reads a word that is a keyword where it stands as that keyword: the line is that
+            // keyword's command, not the form's value (`show ip vrf detail` beside `show ip vrf <word>`)
+            let toks = cli::tokens(line);
+            let keyword = |at: usize| {
+                let word = &toks[at].text;
+                let crawled = self
+                    .engine
+                    .held
+                    .help_for(Some(&level), mode, Some(""), &line[..toks[at].at], |l| {
+                        self.running_has(l)
+                    })
+                    .filter(|a| !crate::live::is_refusal(a))
+                    .is_some_and(|a| {
+                        crate::live::keywords(a)
+                            .iter()
+                            .any(|k| k.eq_ignore_ascii_case(word))
+                    });
+                let (next, _) = self.engine.next_at(mode, &toks[..at], Some(&level));
+                crawled
+                    || next
+                        .iter()
+                        .any(|n| matches!(n, Next::Kw { kw, .. } if kw.eq_ignore_ascii_case(word)))
+            };
+            if m.items
+                .iter()
+                .any(|i| matches!(i, Item::Arg { tok, .. } if *tok < toks.len() && keyword(*tok)))
+            {
+                return None;
+            }
+            let form: Vec<String> = m
+                .items
+                .iter()
+                .map(|i| match i {
+                    Item::Kw { kw, .. } => kw.clone(),
+                    Item::Arg { name, .. } => format!("<{name}>"),
+                })
+                .collect();
+            Some((swept.said.get(&form)?, m))
+        });
+        let Some((held, m)) = held else {
+            return (out, Result::Ok);
+        };
+        match crate::messages::print(held, &m.items, &self.device, out) {
+            (lines, true) => (lines, Result::Error),
+            (lines, false) => (lines, Result::Ok),
+        }
+    }
+
     /// The refusal the switch of this image gave a line on Enter at the session's level, where it is
     /// a measured one (`swept::Swept::refused`): its words read against the keywords the held answer
     /// offers before each, else the books' and forms'.
@@ -2733,7 +2792,7 @@ impl<'a> Session<'a> {
         }
         if !cli::is_config(mode) {
             // EXEC: show commands print; the rest run silently
-            return (show::render(self, name, p, line), Result::Ok);
+            return self.said(mode, line, p, show::render(self, name, p, line));
         }
         // an `exit-` line (`exit-address-family`) closes the section it is typed in: IOS prints it
         // under the section's lines, and the mode goes to the one it names or else the enclosing one
@@ -6994,7 +7053,12 @@ mod tests {
     /// network-advantage, an interface form at network-essentials.
     fn measured() -> Engine {
         let row = |level: &str, line: &str, taken: &str| {
-            (level.to_string(), line.to_string(), taken.to_string())
+            (
+                level.to_string(),
+                line.to_string(),
+                taken.to_string(),
+                String::new(),
+            )
         };
         let essentials = "network-essentials";
         let table = crate::corpus::HeldTable {
@@ -7022,6 +7086,118 @@ mod tests {
     fn no_model(out: &[String]) -> bool {
         out.first()
             .is_some_and(|l| l.starts_with("% vswitch has no output model for '"))
+    }
+
+    /// `measured`'s C9300 with forms whose sweep printed `%` lines: a fixed message, a notice, a
+    /// state message naming the line's VRF (in a form of its own, whose crawled answer offers a
+    /// keyword, and in one beside the books') and two naming the spanning-tree mode, one of them on
+    /// a line the shell warns of.
+    fn measured_with_messages() -> Engine {
+        let row = |line: &str, said: &str| {
+            (
+                ADVANTAGE.to_string(),
+                line.to_string(),
+                String::new(),
+                said.to_string(),
+            )
+        };
+        let table = crate::corpus::HeldTable {
+            swept: vec![
+                row("show widget gadget", "% Error: Unsupported command"),
+                row(
+                    "show widget knobs",
+                    "% Command accepted but obsolete, unreleased or unsupported; see documentation.",
+                ),
+                row("show widget vrf <word>", "% No VRF named {3}"),
+                row("show widget mode", "% Switch is not in mst mode"),
+                row("show ip vrf <word>", "% No VRF named {3}"),
+                row(
+                    "show spanning-tree mst configuration",
+                    "% Switch is not in mst mode",
+                ),
+            ],
+            // the crawl's answer after `show widget vrf`, a keyword among its rows
+            crawl: vec![(
+                ADVANTAGE.to_string(),
+                "privileged".to_string(),
+                String::new(),
+                "show widget vrf ".to_string(),
+                vec![
+                    "  WORD    VRF name".to_string(),
+                    "  select  Select".to_string(),
+                ],
+            )],
+            ..Default::default()
+        };
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let c = crate::corpus::Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        Engine::with_held(grammar, held)
+    }
+
+    #[test]
+    fn a_measured_form_prints_the_switch_s_message_where_it_stands() {
+        let e = measured_with_messages();
+        let mut s = configured(&e, &["end"]);
+        let typed = |s: &mut Session, line: &str| s.type_line(line);
+        assert_eq!(
+            typed(&mut s, "sh wid gadg"),
+            (vec!["% Error: Unsupported command".into()], Result::Error)
+        );
+        let (out, r) = typed(&mut s, "show widget knobs");
+        assert_eq!(r, Result::Ok);
+        assert!(
+            out[0].starts_with("% Command accepted but obsolete"),
+            "{out:?}"
+        );
+        assert!(no_model(&out[1..]), "{out:?}");
+        // the VRF the line names, as typed
+        assert_eq!(
+            typed(&mut s, "show widget vrf RED"),
+            (vec!["% No VRF named RED".into()], Result::Error)
+        );
+        assert_eq!(
+            typed(&mut s, "show widget mode"),
+            (vec!["% Switch is not in mst mode".into()], Result::Error)
+        );
+        // the shell's warning before the region's configuration stands, its output after it
+        let (out, r) = typed(&mut s, "show spanning-tree mst configuration");
+        assert_eq!(r, Result::Ok, "{out:?}");
+        assert!(
+            out[0] == "% Switch is not in mst mode" && out.len() > 1,
+            "{out:?}"
+        );
+        // the feature configured: the line prints what it printed before
+        let mut s = configured(
+            &e,
+            &[
+                "vrf definition RED",
+                "exit",
+                "spanning-tree mode mst",
+                "end",
+            ],
+        );
+        for line in ["show widget vrf RED", "show widget mode"] {
+            let (out, r) = typed(&mut s, line);
+            assert!(r == Result::Ok && no_model(&out), "{line}: {out:?}");
+        }
+        assert_eq!(
+            typed(&mut s, "show widget vrf BLUE"),
+            (vec!["% No VRF named BLUE".into()], Result::Error)
+        );
+        assert_eq!(typed(&mut s, "show widget gadget").1, Result::Error);
+        // a word the books or the crawl read as a keyword where it stands is that keyword's line
+        for line in ["show ip vrf detail", "show widget vrf select"] {
+            let (out, _) = typed(&mut s, line);
+            assert!(
+                !out.iter().any(|l| l.contains("No VRF named")),
+                "{line}: {out:?}"
+            );
+        }
     }
 
     #[test]
@@ -7161,7 +7337,12 @@ mod tests {
             ]);
         }
         let row = |level: &str, line: &str, taken: &str| {
-            (level.to_string(), line.to_string(), taken.to_string())
+            (
+                level.to_string(),
+                line.to_string(),
+                taken.to_string(),
+                String::new(),
+            )
         };
         crate::corpus::HeldTable {
             crawl,

@@ -606,6 +606,42 @@ A single C9300 at IOS XE 17.6 prints them as the lab C9300-24T at 17.6.4 did. Ot
 - The base MAC address prints colon-separated from the switch's own. The serial numbers are derived from it: three letters, a year and week, four letters or digits.
 - `show license summary` lists the base level and its addon, each `1 IN USE`, with an entitlement tag of the model's first eight characters and the level's title, cut to 22 characters and `...` past 25.
 
+## Measured show messages
+
+A privileged line a form of the session's level takes prints the `%` lines the switch printed for it, where the form holds them (Messages in `captures.md`). `src/messages.rs` holds the messages and their rules. A notice prints before the command's output. A fixed message is all the line prints. A state message is all the line prints where the running configuration lacks what it names; otherwise the line prints what it prints without it. A value a message names is the line's word as typed, an interface by its full name. A line printing messages alone is refused, as a message the configuration gives is, and those messages (Messages the configuration gives) print first. A line the shell warns of before it runs prints that warning and its output: the switch printed `% Switch is not in mst mode` before the MST region's configuration and digest.
+
+| Kind | Message |
+|---|---|
+| notice | `% Command accepted but obsolete, unreleased or unsupported; see documentation.` |
+| notice | `% Command accepted but obsolete, see 'show (ip\|ipv6) cef switching statistics [feature]'` |
+| notice | `% NOTE: This command is deprecated. Please use 'show bgp ipv6 unicast'` |
+| notice | `% Command "show ipv6 nd suppress <...>" is obsolete.`, `% Please use "show flooding-suppression <...>" instead.` |
+| fixed | `% Error: Unsupported command`, `% Error: ngwc not supported`, `% Error: Command not supported`, `% Error: Command is not supported on this platform` |
+| fixed | `% Error: Show version installed user-interface is not supported`, `%Error: lowmem gd is not supported in this platform` |
+| fixed | `% Missing filename in URL.` (a file system with no file name) |
+| fixed | `% Linecard information not found` (a fixed-configuration switch has no linecards) |
+
+| State message | Prints where the configuration has no |
+|---|---|
+| `% LISP is not running.` | `router lisp` |
+| `%No active Subscriber Sessions`, `%No active services` | subscriber session: always, as vswitch holds none |
+| `%SNMP agent not enabled` | `snmp-server` line other than `location` and `contact` |
+| `%%SNMP manager not enabled` | `snmp-server manager` |
+| `% MPLS Fault-OAM is not initialized.` | `mpls traffic-eng fault-oam` or `mpls tp` |
+| `%AS <n> specified not configured`, `%AS(<n>) specified not configured` | EIGRP AS `<n>` (`router eigrp <n>`, `autonomous-system <n>` under a named process, `ipv6 router eigrp <n>`), where some `router eigrp` runs; on a BGP line, `router bgp <n>` where some `router bgp` runs |
+| `% IP routing table topology <name> does not exist` | `topology <name>` line anywhere; `base` always exists |
+| `%Topology <name> specified does not exist.` | `topology <name>` under a `router eigrp`, where one runs; `base` always exists |
+| `%OSPF: Specified topology not found for any OSPF process` | `topology <name>` under a `router ospf`, where one runs; the unicast `base` always exists |
+| `%OSPF: OSPF not enabled on <interface>` | OSPF on the interface, where a `router ospf` runs: `ip ospf <n> area` on it, or a `network` of a process in its VRF covering one of its addresses; an address vswitch cannot read (DHCP, negotiated, pool, unnumbered) prints nothing where such a `network` exists |
+| `% No VRF named <name>`, `% vrf <name> does not exist`, `% VRF <name> does not exist`, `%Error, VRF <name> does not exist`, `% Unknown VRF` | `vrf definition <name>` or `ip vrf <name>`; `Mgmt-vrf` exists where the stack has a management port |
+| `% Config Logger disabled.` | `logging enable` under `archive` |
+| `%XMCP server is not enabled` | `service-routing xmcp` line |
+| `% Switch is not in mst mode` | `spanning-tree mode mst` |
+| `% No matching EVPN ethernet segment` | `evpn ethernet-segment` on the interface named |
+| `% dampening not enabled for base` | `bgp dampening`, where a `router bgp` runs |
+| `% No such peer-group` | `neighbor <name> peer-group` for the group named, where a `router bgp` runs |
+| `%No Tlv-list exists. `, `%Tlv-list name does not exists.` | `cdp tlv-list` (for `*`), `cdp tlv-list <name>` (for a name) |
+
 ## Padding and unmodelled commands
 
 - Every platform keeps IOS's trailing spaces (`act/unsup `, the VTP digest, a padded last column), as every family's show tech prints them. A terminal log loses them.

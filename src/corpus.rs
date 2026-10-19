@@ -221,11 +221,16 @@ pub struct HeldTable {
     /// it; absent from a corpus without one
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "interned")]
     pub crawl: Vec<CrawlRow>,
-    /// (license level, form or refused line, how the switch took it: `swept::Taken::write`) from a
+    /// (license level, form or refused line, how the switch took it: `swept::Taken::write`, the
+    /// `%` lines an answered form printed before any output, one per line: `swept::said`) from a
     /// sweep's Enter log at that level, read against the crawl's answers at the same level
     /// (`swept::derive`); absent from a corpus without one
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub swept: Vec<(String, String, String)>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "swept_rows"
+    )]
+    pub swept: Vec<SweptRow>,
     /// (license level, why, lines) of each sweep's lines with no row: the build reports them
     #[serde(skip)]
     pub swept_left: Vec<(String, String, usize)>,
@@ -235,6 +240,26 @@ pub struct HeldTable {
 
 /// A crawl's answer as the corpus holds it: (level, mode, context, key, answer).
 pub type CrawlRow = (String, String, String, String, Vec<String>);
+
+/// A sweep row as the corpus holds it: (level, form or refused line, taken, `%` lines).
+pub type SweptRow = (String, String, String, String);
+
+/// Sweep rows as a file holds them; one written before rows held their `%` lines has three fields.
+fn swept_rows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<SweptRow>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Row {
+        Said(String, String, String, String),
+        Plain(String, String, String),
+    }
+    Ok(Vec::<Row>::deserialize(d)?
+        .into_iter()
+        .map(|r| match r {
+            Row::Said(l, f, t, s) => (l, f, t, s),
+            Row::Plain(l, f, t) => (l, f, t, String::new()),
+        })
+        .collect())
+}
 
 /// Crawl rows as the file holds them: each distinct answer once, each row naming its answer by
 /// number. A crawl repeats its answers about five times over, and parsing the repeats cost every
@@ -415,6 +440,7 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
         }
     }
     let mut swept: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut answered: BTreeMap<String, Vec<crate::swept::Answer>> = BTreeMap::new();
     let mut swept_left: BTreeMap<(String, String), usize> = BTreeMap::new();
     for f in src
         .sweeps
@@ -435,8 +461,9 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
             .map(at)
             .collect();
         let tiers: Vec<&crate::swept::Answers<'_>> = tiers.iter().collect();
-        let (rows, left) = crate::swept::derive(&f.text, &tiers);
+        let (rows, left, answers) = crate::swept::derive(&f.text, &tiers);
         swept.extend(rows.into_iter().map(|(l, t)| (f.level.clone(), l, t)));
+        answered.entry(f.level.clone()).or_default().extend(answers);
         for (why, n) in left {
             *swept_left
                 .entry((f.level.clone(), format!("{why:?}")))
@@ -453,7 +480,22 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
             .into_iter()
             .map(|((l, m, c, k), a)| (l, m, c, k, a))
             .collect(),
-        swept: swept.into_iter().collect(),
+        swept: {
+            let said = crate::swept::said(&answered);
+            swept
+                .into_iter()
+                .map(|(level, form, taken)| {
+                    let lines = if taken.is_empty() {
+                        said.get(&(level.clone(), form.clone()))
+                            .map(|l| l.join("\n"))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    (level, form, taken, lines)
+                })
+                .collect()
+        },
         swept_left: swept_left
             .into_iter()
             .map(|((l, w), n)| (l, w, n))
@@ -1443,7 +1485,8 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
                 && !a.iter().any(|r| deny.hits(r))
         });
         // a measured line naming the site goes whole: its words are the line the switch read
-        t.swept.retain(|(_, l, _)| !deny.hits(l));
+        t.swept
+            .retain(|(_, l, _, s)| !deny.hits(l) && !deny.hits(s));
         // the lines that gave no row are the corpus command's report, not the corpus
         t.swept_left.clear();
         let n = t.captures.len();
