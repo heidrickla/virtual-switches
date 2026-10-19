@@ -28,20 +28,24 @@ pub enum Rule {
     SnmpManager,
     /// `mpls traffic-eng fault-oam` or `mpls tp`
     FaultOam,
-    /// the EIGRP or BGP autonomous system the line names, a `router eigrp` or `router bgp` running
+    /// the EIGRP autonomous system the line names in the line's family and VRF, an EIGRP process
+    /// running; the BGP one, a `router bgp` running
     As,
-    /// a `topology <name>` line anywhere for the topology the line names; `base` always exists
+    /// a `topology <name>` line in the line's family (IPv4, unicast or multicast) and VRF for the
+    /// topology the line names; `base` always exists
     Topology,
-    /// a `topology <name>` line under a `router eigrp`, one running; `base` always exists
+    /// a `topology <name>` line in a running `router eigrp`'s address family of the line's family,
+    /// VRF and autonomous system; `base` always exists
     EigrpTopology,
-    /// a `topology <name>` line under a `router ospf`, one running; unicast `base` always exists
+    /// a `topology <name>` line in a running `router ospf`, in its multicast address family for a
+    /// multicast line and outside it for a unicast one; unicast `base` always exists
     OspfTopology,
     /// OSPF on the interface the line names: `ip ospf <n> area`, or a `network` of a process in
     /// the interface's VRF covering one of its addresses
     OspfInterface,
     /// the VRF the line names
     Vrf,
-    /// `logging enable` under `archive`
+    /// `logging enable` under `archive`'s `log config`
     ConfigLogger,
     /// `service-routing xmcp listen`
     Xmcp,
@@ -49,9 +53,11 @@ pub enum Rule {
     Mst,
     /// `evpn ethernet-segment` on the interface the line names
     EthernetSegment,
-    /// `bgp dampening` in a running `router bgp`
+    /// `bgp dampening` for the base table, in a running `router bgp`: directly under it or in its
+    /// global IPv4 unicast address family
     Dampening,
-    /// the BGP peer group the line names, in a running `router bgp`
+    /// the BGP peer group the line names, in a running `router bgp`: defined outside any VRF
+    /// address family, or in the VRF's the line names
     PeerGroup,
     /// `cdp tlv-list`, or the one the line names
     TlvList,
@@ -294,24 +300,77 @@ fn print_by(
     (said, false)
 }
 
+/// A line printed under a top-level line, with the submode lines it stands in below that one,
+/// outermost first (` address-family ipv4 vrf V` for `  bgp dampening` under `router bgp 1`).
+struct Line {
+    text: String,
+    within: Vec<String>,
+}
+
 /// The running configuration's top-level lines, each with the lines printed under it, and whether
 /// the switch has a management port (its `Mgmt-vrf`).
 struct Config {
-    sections: Vec<(String, Vec<String>)>,
+    sections: Vec<(String, Vec<Line>)>,
     management: bool,
+}
+
+/// What a submode chain names: its address family (`ipv6` where a line of it says so, else
+/// `ipv4`), whether it is multicast, a service family, and its VRF.
+struct Family<'a> {
+    ipv6: bool,
+    multicast: bool,
+    service: bool,
+    vrf: Option<&'a str>,
+}
+
+impl<'a> Family<'a> {
+    fn of(chain: impl IntoIterator<Item = &'a str>) -> Family<'a> {
+        let mut f = Family {
+            ipv6: false,
+            multicast: false,
+            service: false,
+            vrf: None,
+        };
+        for l in chain {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            f.ipv6 |= w.contains(&"ipv6");
+            f.multicast |= w.contains(&"multicast");
+            f.service |= w.first() == Some(&"service-family");
+            if let Some(i) = w.iter().position(|x| *x == "vrf") {
+                f.vrf = w.get(i + 1).copied().or(f.vrf);
+            }
+        }
+        f
+    }
 }
 
 impl Config {
     fn read(config: &[String], management: bool) -> Config {
-        let mut sections: Vec<(String, Vec<String>)> = vec![];
+        let mut sections: Vec<(String, Vec<Line>)> = vec![];
+        // the submode lines open in the section, by indentation
+        let mut open: Vec<(usize, String)> = vec![];
         for l in config {
             let t = l.trim();
             if t.is_empty() || t.starts_with('!') {
                 continue;
             }
             match sections.last_mut() {
-                Some(s) if l.starts_with(' ') => s.1.push(t.to_string()),
-                _ => sections.push((t.to_string(), vec![])),
+                Some(s) if l.starts_with(' ') => {
+                    let indent = l.len() - l.trim_start_matches(' ').len();
+                    while open.last().is_some_and(|(i, _)| *i >= indent) {
+                        open.pop();
+                    }
+                    let within = open.iter().map(|(_, o)| o.clone()).collect();
+                    s.1.push(Line {
+                        text: t.to_string(),
+                        within,
+                    });
+                    open.push((indent, t.to_string()));
+                }
+                _ => {
+                    sections.push((t.to_string(), vec![]));
+                    open.clear();
+                }
             }
         }
         Config {
@@ -329,20 +388,41 @@ impl Config {
     }
 
     /// The sections whose header begins `prefix`.
-    fn under<'c>(&'c self, prefix: &'c str) -> impl Iterator<Item = &'c (String, Vec<String>)> {
+    fn under<'c>(&'c self, prefix: &'c str) -> impl Iterator<Item = &'c (String, Vec<Line>)> {
         self.sections
             .iter()
             .filter(move |(h, _)| h.starts_with(prefix))
     }
 
-    /// Whether a `topology <name>` line stands in the sections whose header begins `prefix`.
-    fn topology(&self, prefix: &str, name: &str) -> bool {
+    /// Each line under the sections whose header begins `prefix`, with its chain: the header, then
+    /// the submode lines it stands in.
+    fn lines_under<'c>(&'c self, prefix: &'c str) -> impl Iterator<Item = (&'c str, Vec<&'c str>)> {
+        self.under(prefix).flat_map(|(h, lines)| {
+            lines.iter().map(move |l| {
+                let chain = std::iter::once(h.as_str())
+                    .chain(l.within.iter().map(String::as_str))
+                    .collect();
+                (l.text.as_str(), chain)
+            })
+        })
+    }
+
+    /// The family of each `topology <name>` line under the sections whose header begins `prefix`,
+    /// the header itself too where it is one.
+    fn topologies<'c>(&'c self, prefix: &'c str, name: &'c str) -> Vec<Family<'c>> {
         let defines = |l: &str| {
             let mut w = l.split_whitespace();
             w.next() == Some("topology") && w.next() == Some(name)
         };
-        self.under(prefix)
-            .any(|(h, lines)| defines(h) || lines.iter().any(|l| defines(l)))
+        let headers = self
+            .under(prefix)
+            .filter(|(h, _)| defines(h))
+            .map(|(h, _)| Family::of([h.as_str()]));
+        let lines = self
+            .lines_under(prefix)
+            .filter(|(l, _)| defines(l))
+            .map(|(_, chain)| Family::of(chain));
+        headers.chain(lines).collect()
     }
 
     /// Whether the configuration lacks what rule `r` names for a line: its parse `items`, their
@@ -375,37 +455,82 @@ impl Config {
             Rule::As => {
                 let Some(n) = value else { return false };
                 if has_kw("eigrp") {
-                    // the AS in any form IOS runs EIGRP by: classic, named, IPv6
-                    let numbered = |h: &str, lines: &[String]| {
-                        h.split_whitespace().nth(2) == Some(n)
-                            || lines.iter().any(|l| {
-                                let w: Vec<&str> = l.split_whitespace().collect();
-                                w.windows(2)
-                                    .any(|p| p[0] == "autonomous-system" && p[1] == n)
-                            })
-                    };
-                    self.top("router eigrp ")
-                        && !self
-                            .under("router eigrp ")
-                            .chain(self.under("ipv6 router eigrp "))
-                            .any(|(h, lines)| numbered(h.trim_start_matches("ipv6 "), lines))
+                    // the AS in the line's family and VRF: a classic process (`router eigrp <n>`,
+                    // `ipv6 router eigrp <n>`), or a named one's address or service family
+                    let ipv6 = has_kw("ipv6");
+                    let service = has_kw("service-family");
+                    let vrf = after("vrf");
+                    let classic = !service
+                        && vrf.is_none()
+                        && self.has(&format!(
+                            "{}router eigrp {n}",
+                            if ipv6 { "ipv6 " } else { "" }
+                        ));
+                    let family = self.lines_under("router eigrp ").any(|(l, chain)| {
+                        let w: Vec<&str> = l.split_whitespace().collect();
+                        let f = Family::of(chain.into_iter().chain([l]));
+                        matches!(w.first(), Some(&"address-family" | &"service-family"))
+                            && w.windows(2)
+                                .any(|p| p[0] == "autonomous-system" && p[1] == n)
+                            && f.ipv6 == ipv6
+                            && f.service == service
+                            && f.vrf == vrf
+                    });
+                    (self.top("router eigrp ") || self.top("ipv6 router eigrp "))
+                        && !classic
+                        && !family
                 } else if has_kw("bgp") {
                     self.top("router bgp ") && !self.has(&format!("router bgp {n}"))
                 } else {
                     false
                 }
             }
-            Rule::Topology => {
-                named("topology").is_some_and(|name| name != "base" && !self.topology("", name))
-            }
-            Rule::EigrpTopology => named("topology").is_some_and(|name| {
-                name != "base" && self.top("router eigrp ") && !self.topology("router eigrp ", name)
+            // an IPv4 routing table: unicast or multicast as the line, in its VRF or none
+            Rule::Topology => named("topology").is_some_and(|name| {
+                let (multicast, vrf) = (has_kw("multicast"), after("vrf"));
+                name != "base"
+                    && !self
+                        .topologies("", name)
+                        .iter()
+                        .any(|f| !f.ipv6 && f.multicast == multicast && f.vrf == vrf)
             }),
-            // the unicast base topology runs with the process; the multicast one is configured
+            Rule::EigrpTopology => named("topology").is_some_and(|name| {
+                let ipv6 = has_kw("ipv6");
+                let vrf = after("vrf");
+                let asn = eigrp_as(items, values);
+                name != "base"
+                    && self.top("router eigrp ")
+                    && !self.lines_under("router eigrp ").any(|(l, chain)| {
+                        let mut w = l.split_whitespace();
+                        let family = chain
+                            .iter()
+                            .rev()
+                            .find(|c| c.starts_with("address-family "));
+                        w.next() == Some("topology")
+                            && w.next() == Some(name)
+                            && family.is_some_and(|a| {
+                                let f = Family::of([*a]);
+                                let words: Vec<&str> = a.split_whitespace().collect();
+                                f.ipv6 == ipv6
+                                    && f.vrf == vrf
+                                    && asn.is_none_or(|n| {
+                                        words
+                                            .windows(2)
+                                            .any(|p| p[0] == "autonomous-system" && p[1] == n)
+                                    })
+                            })
+                    })
+            }),
+            // the unicast base topology runs with the process; the multicast one is configured in
+            // its multicast address family, any process's
             Rule::OspfTopology => named("topology").is_some_and(|name| {
-                (name != "base" || has_kw("multicast"))
+                let multicast = has_kw("multicast");
+                (name != "base" || multicast)
                     && self.top("router ospf ")
-                    && !self.topology("router ospf ", name)
+                    && !self
+                        .topologies("router ospf ", name)
+                        .iter()
+                        .any(|f| !f.ipv6 && f.multicast == multicast)
             }),
             Rule::OspfInterface => value.is_some_and(|name| self.ospf_off(name)),
             Rule::Vrf => named("vrf").is_some_and(|name| {
@@ -416,9 +541,9 @@ impl Config {
                             || h.strip_prefix("ip vrf ") == Some(name)
                     })
             }),
-            Rule::ConfigLogger => !self
-                .under("archive")
-                .any(|(_, lines)| lines.iter().any(|l| l == "logging enable")),
+            Rule::ConfigLogger => !self.lines_under("archive").any(|(l, chain)| {
+                l == "logging enable" && chain.last().is_some_and(|c| *c == "log config")
+            }),
             Rule::Xmcp => !self.top("service-routing xmcp"),
             Rule::Mst => !self.top("spanning-tree mode mst"),
             Rule::EthernetSegment => items
@@ -432,21 +557,28 @@ impl Config {
                 .is_some_and(|p| {
                     !self
                         .interface(p)
-                        .iter()
                         .any(|l| l.starts_with("evpn ethernet-segment"))
                 }),
+            // the base table's: directly under `router bgp` or in its global IPv4 unicast family
             Rule::Dampening => {
+                let base = |chain: &[&str]| match chain {
+                    [_] => true,
+                    [_, af] => matches!(*af, "address-family ipv4" | "address-family ipv4 unicast"),
+                    _ => false,
+                };
                 self.top("router bgp ")
                     && !self
-                        .under("router bgp ")
-                        .any(|(_, lines)| lines.iter().any(|l| l.starts_with("bgp dampening")))
+                        .lines_under("router bgp ")
+                        .any(|(l, chain)| l.starts_with("bgp dampening") && base(&chain))
             }
+            // a peer group of the VRF the line names, else one outside every VRF
             Rule::PeerGroup => after("peer-group").is_some_and(|g| {
                 let defined = format!("neighbor {g} peer-group");
+                let vrf = after("vrf");
                 self.top("router bgp ")
                     && !self
-                        .under("router bgp ")
-                        .any(|(_, lines)| lines.contains(&defined))
+                        .lines_under("router bgp ")
+                        .any(|(l, chain)| l == defined && Family::of(chain).vrf == vrf)
             }),
             Rule::TlvList => match after("tlv-list") {
                 Some(name) if name != "*" => !self.has(&format!("cdp tlv-list {name}")),
@@ -455,20 +587,22 @@ impl Config {
         }
     }
 
-    /// An interface's lines, none where it has no block.
-    fn interface(&self, name: &str) -> &[String] {
+    /// An interface's own lines, not a submode's, none where it has no block.
+    fn interface(&self, name: &str) -> impl Iterator<Item = &str> {
         let header = format!("interface {name}");
         self.sections
             .iter()
-            .find(|(h, _)| *h == header)
-            .map_or(&[], |(_, lines)| lines.as_slice())
+            .filter(move |(h, _)| *h == header)
+            .flat_map(|(_, lines)| lines.iter())
+            .filter(|l| l.within.is_empty())
+            .map(|l| l.text.as_str())
     }
 
     /// Whether OSPF is off on an interface: an OSPF process runs, the interface has no `ip ospf <n>
     /// area` line, and no `network` of a process in its VRF covers an address it holds. An address
     /// vswitch cannot read (DHCP, unnumbered) leaves it unknown where such a `network` exists.
     fn ospf_off(&self, name: &str) -> bool {
-        let lines = self.interface(name);
+        let lines: Vec<&str> = self.interface(name).collect();
         if !self.top("router ospf ")
             || lines
                 .iter()
@@ -492,9 +626,9 @@ impl Config {
                 };
                 theirs == vrf
             })
-            .flat_map(|(_, lines)| lines.iter())
+            .flat_map(|(_, lines)| lines.iter().filter(|l| l.within.is_empty()))
             .filter_map(|l| {
-                let w: Vec<&str> = l.split_whitespace().collect();
+                let w: Vec<&str> = l.text.split_whitespace().collect();
                 match w[..] {
                     ["network", a, m, "area", _] => Some((v4(a)?, v4(m)?)),
                     _ => None,
@@ -531,6 +665,24 @@ impl Config {
             .iter()
             .any(|a| networks.iter().any(|(n, w)| a & !w == n & !w))
     }
+}
+
+/// The autonomous system a `show eigrp address-family` line names: the number between its family
+/// (and VRF) and `topology`.
+fn eigrp_as<'v>(items: &[Item], values: &[&'v str]) -> Option<&'v str> {
+    let family = items
+        .iter()
+        .position(|i| matches!(i, Item::Kw { kw, .. } if kw == "ipv4" || kw == "ipv6"))?;
+    let end = items
+        .iter()
+        .position(|i| matches!(i, Item::Kw { kw, .. } if kw == "topology"))?;
+    let between = values.get(family + 1..end)?;
+    let mut skip = false;
+    between.iter().copied().find(|v| {
+        let vrf = *v == "vrf";
+        let named = std::mem::replace(&mut skip, vrf);
+        !vrf && !named && v.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 #[cfg(test)]
@@ -683,7 +835,6 @@ mod tests {
                 &[
                     "router eigrp 7",
                     "router eigrp NAMED\n address-family ipv4 unicast autonomous-system 7",
-                    "router eigrp 9\nipv6 router eigrp 7",
                     // no EIGRP at all: what the switch prints there is unmeasured
                     "",
                 ],
@@ -843,6 +994,116 @@ mod tests {
         assert!(!print_by(&held, &parse(&form, &words), &with, out()).1);
         let without = Config::read(&[], false);
         assert!(print_by(&held, &parse(&form, &words), &without, out()).1);
+    }
+
+    /// A state message reads the context it names: the address family, VRF, autonomous system and
+    /// submode a line holds, never a like line in another.
+    #[test]
+    fn a_state_message_reads_the_configuration_context_it_names() {
+        // (switch's lines, form, line, configurations lacking it, configurations holding it)
+        type Case<'a> = (&'a str, &'a str, &'a str, &'a [&'a str], &'a [&'a str]);
+        let cases: &[Case] = &[
+            (
+                &format!("{NOTICE}\n% dampening not enabled for base"),
+                "show bgp dampening parameters",
+                "show bgp dampening parameters",
+                &[
+                    "router bgp 1\n address-family ipv4 vrf V\n  bgp dampening",
+                    "router bgp 1\n address-family ipv6\n  bgp dampening",
+                ],
+                &[
+                    "router bgp 1\n address-family ipv4\n  bgp dampening",
+                    "router bgp 1\n address-family ipv4 unicast\n  bgp dampening",
+                ],
+            ),
+            (
+                "%AS 7 specified not configured",
+                "show ip eigrp <number:1-65535> timers",
+                "show ip eigrp 7 timers",
+                &[
+                    "router eigrp 9\nipv6 router eigrp 7",
+                    "router eigrp N\n address-family ipv6 unicast autonomous-system 7",
+                    "router eigrp N\n address-family ipv4 unicast vrf V autonomous-system 7",
+                    "router eigrp N\n service-family ipv4 autonomous-system 7",
+                ],
+                &["router eigrp 9\n address-family ipv4 vrf V autonomous-system 3\nrouter eigrp 7"],
+            ),
+            (
+                "%AS 7 specified not configured",
+                "show ipv6 eigrp <number:1-65535> timers",
+                "show ipv6 eigrp 7 timers",
+                &["router eigrp 7"],
+                &[
+                    "router eigrp 9\nipv6 router eigrp 7",
+                    "router eigrp N\n address-family ipv6 unicast autonomous-system 7",
+                ],
+            ),
+            (
+                "%AS 7 specified not configured",
+                "show eigrp service-family ipv4 <number:1-65535> clients",
+                "show eigrp service-family ipv4 7 clients",
+                &["router eigrp N\n address-family ipv4 unicast autonomous-system 7"],
+                &["router eigrp N\n service-family ipv4 autonomous-system 7"],
+            ),
+            (
+                "% IP routing table topology BLUE does not exist",
+                "show ip route topology <word>",
+                "show ip route topology BLUE",
+                &[
+                    "global-address-family ipv6\n topology BLUE",
+                    "global-address-family ipv4 multicast\n topology BLUE",
+                ],
+                &["global-address-family ipv4\n topology BLUE"],
+            ),
+            (
+                "%Topology BLUE specified does not exist.",
+                "show eigrp address-family ipv4 topology <word>",
+                "show eigrp address-family ipv4 topology BLUE",
+                &[
+                    "router eigrp N\n address-family ipv6 unicast autonomous-system 2\n  topology BLUE tid 10",
+                    "router eigrp N\n service-family ipv4 autonomous-system 2\n  topology BLUE tid 10",
+                ],
+                &[
+                    "router eigrp N\n address-family ipv4 unicast autonomous-system 2\n  topology BLUE tid 10",
+                ],
+            ),
+            (
+                "%OSPF: Specified topology not found for any OSPF process",
+                "show ip ospf rib topology <word>",
+                "show ip ospf rib topology BLUE",
+                &["router ospf 1\n address-family ipv4 multicast\n  topology BLUE"],
+                &["router ospf 1\n address-family ipv4 unicast\n  topology BLUE"],
+            ),
+            (
+                "%OSPF: Specified topology not found for any OSPF process",
+                "show ip ospf rib multicast topology <word>",
+                "show ip ospf rib multicast topology base",
+                &["router ospf 1\n topology base"],
+                &["router ospf 2\nrouter ospf 1\n address-family ipv4 multicast\n  topology base"],
+            ),
+            (
+                &format!("{NOTICE}\n% No such peer-group"),
+                "show bgp peer-group <word>",
+                "show bgp peer-group PG",
+                &["router bgp 1\n address-family ipv4 vrf V\n  neighbor PG peer-group"],
+                &["router bgp 1\n neighbor PG peer-group"],
+            ),
+            (
+                "% Config Logger disabled.",
+                "show archive log config all",
+                "show archive log config all",
+                &["archive\n logging enable\n log config\n  notify syslog"],
+                &["archive\n path flash:saved\n log config\n  notify syslog\n  logging enable"],
+            ),
+        ];
+        for (said, form, line, lacking, holding) in cases {
+            for config in *lacking {
+                assert!(stands(said, form, line, config), "{line} on {config:?}");
+            }
+            for config in *holding {
+                assert!(!stands(said, form, line, config), "{line} on {config:?}");
+            }
+        }
     }
 
     #[test]

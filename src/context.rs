@@ -229,60 +229,108 @@ pub enum Caret {
     After(usize),
 }
 
-/// Lines the lab C9300-24T (17.6.4) refused that its crawl's answers offer: a mode, the line's words
-/// (`<word>` any one word), the configured line under which it refused them (`""` in any state) and
-/// the caret it printed. It refused `class <name>` at global configuration past `class` and took
-/// `class-map <name>`; under `ptp profile dot1as` it refused `ptp mode` and `ptp transport` at their
-/// second word and took `ptp priority1`.
-pub const REFUSED: &[(&str, &[&str], &str, Caret)] = &[
-    ("config", &["class", "<word>"], "", Caret::After(0)),
-    (
-        "config",
-        &["ptp", "mode", "boundary", "delay-req"],
-        "ptp profile dot1as",
-        Caret::At(1),
-    ),
-    (
-        "config",
-        &["ptp", "mode", "boundary", "pdelay-req"],
-        "ptp profile dot1as",
-        Caret::At(1),
-    ),
-    (
-        "config",
-        &["ptp", "mode", "e2etransparent"],
-        "ptp profile dot1as",
-        Caret::At(1),
-    ),
-    (
-        "config",
-        &["ptp", "mode", "p2ptransparent"],
-        "ptp profile dot1as",
-        Caret::At(1),
-    ),
-    (
-        "config",
-        &["ptp", "transport", "ipv4", "udp"],
-        "ptp profile dot1as",
-        Caret::At(1),
-    ),
+/// A line a switch refused that its crawl's answers offer (`REFUSED`).
+pub struct Refusal {
+    /// the image it was measured on, by book and release, and the licence levels
+    pub book: &'static str,
+    pub release: &'static str,
+    pub levels: &'static [&'static str],
+    pub mode: &'static str,
+    /// the line's words, `<word>` any one word
+    pub words: &'static [&'static str],
+    /// the configured line under which it was refused, `""` in any state
+    pub state: &'static str,
+    pub caret: Caret,
+}
+
+const C9300_17_6: (&str, &str) = ("c9300", "17.6");
+const BOTH: &[&str] = &["network-advantage", "network-essentials"];
+const ADVANTAGE: &[&str] = &["network-advantage"];
+
+/// A `REFUSED` entry under `ptp profile dot1as`, refused at its second word.
+const fn dot1as(words: &'static [&'static str]) -> Refusal {
+    Refusal {
+        book: C9300_17_6.0,
+        release: C9300_17_6.1,
+        levels: ADVANTAGE,
+        mode: "config",
+        words,
+        state: "ptp profile dot1as",
+        caret: Caret::At(1),
+    }
+}
+
+/// Lines the lab C9300-24T (17.6.4) refused that its crawl's answers offer. It refused
+/// `class <name>` at global configuration past `class` at both levels and took `class-map <name>`;
+/// at network-advantage under `ptp profile dot1as` it refused `ptp mode` and `ptp transport` at
+/// their second word and took `ptp priority1`.
+pub const REFUSED: &[Refusal] = &[
+    Refusal {
+        book: C9300_17_6.0,
+        release: C9300_17_6.1,
+        levels: BOTH,
+        mode: "config",
+        words: &["class", "<word>"],
+        state: "",
+        caret: Caret::After(0),
+    },
+    dot1as(&["ptp", "mode", "boundary", "delay-req"]),
+    dot1as(&["ptp", "mode", "boundary", "pdelay-req"]),
+    dot1as(&["ptp", "mode", "e2etransparent"]),
+    dot1as(&["ptp", "mode", "p2ptransparent"]),
+    dot1as(&["ptp", "transport", "ipv4", "udp"]),
 ];
 
-/// The byte of `line` under which the caret of a `REFUSED` line stands, where `line` in `mode` is
-/// one in the state `configured` describes: its words as the entry's, in any case.
-pub fn refused(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> Option<usize> {
+/// How a `REFUSED` line is answered: refused with the caret under this byte, or ambiguous.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    At(usize),
+    Ambiguous,
+}
+
+/// The answer `REFUSED` holds for `line` typed in `mode` on `image` (book, release) at `level`, in
+/// the state `configured` describes. Each word is the entry's or a unique start of it among the
+/// keywords offered before it (`keywords`, by the text before the word) and the entry's own word,
+/// which the measured caret shows the switch read there; a start of the entry's word and another
+/// keyword, up to the caret's word, answers ambiguous. The caret stands under the measured word.
+pub fn refused(
+    image: (&str, &str),
+    level: &str,
+    mode: &str,
+    line: &str,
+    configured: impl Fn(&str) -> bool,
+    keywords: impl Fn(&str) -> Vec<String>,
+) -> Option<Refused> {
     let toks = crate::cli::tokens(line);
-    REFUSED.iter().find_map(|(m, words, state, caret)| {
-        let same = *m == mode
-            && toks.len() == words.len()
-            && toks
-                .iter()
-                .zip(words.iter())
-                .all(|(t, w)| *w == "<word>" || t.text.eq_ignore_ascii_case(w))
-            && (state.is_empty() || configured(state));
-        same.then(|| match *caret {
-            Caret::At(k) => toks[k].at,
-            Caret::After(k) => toks[k].at + toks[k].text.len(),
+    REFUSED.iter().find_map(|e| {
+        if (e.book, e.release) != image
+            || !e.levels.contains(&level)
+            || e.mode != mode
+            || toks.len() != e.words.len()
+            || !(e.state.is_empty() || configured(e.state))
+        {
+            return None;
+        }
+        let (Caret::At(caret) | Caret::After(caret)) = e.caret;
+        let mut ambiguous = false;
+        for (i, (t, w)) in toks.iter().zip(e.words).enumerate() {
+            if *w == "<word>" || t.text.eq_ignore_ascii_case(w) {
+                continue;
+            }
+            match stands_for(&t.text, w, &keywords(&line[..t.at])) {
+                Some(false) => {}
+                // the switch read no word past the caret's: there only a unique start stands
+                Some(true) if i <= caret => ambiguous = true,
+                _ => return None,
+            }
+        }
+        Some(if ambiguous {
+            Refused::Ambiguous
+        } else {
+            match e.caret {
+                Caret::At(k) => Refused::At(toks[k].at),
+                Caret::After(k) => Refused::At(toks[k].at + toks[k].text.len()),
+            }
         })
     })
 }
@@ -421,6 +469,23 @@ pub fn global_block(line: &str) -> bool {
 /// frame stack and the crawl's `Stack` decide it here alike.
 pub fn reopens(outer: &str, line: &str) -> bool {
     global_block(outer) && global_block(line)
+}
+
+/// How `typed` stands for the measured keyword `word` where `offered` are the keywords offered:
+/// `Some(false)` where it is the word or a unique start of it among them and the word, which the
+/// measurement shows the switch read there; `Some(true)` where it begins the word and another, an
+/// ambiguous abbreviation; else `None`.
+pub fn stands_for(typed: &str, word: &str, offered: &[String]) -> Option<bool> {
+    if typed.eq_ignore_ascii_case(word) {
+        return Some(false);
+    }
+    let mut known: Vec<&str> = offered.iter().map(String::as_str).collect();
+    known.push(word);
+    match reads(typed, &known) {
+        Reads::One(k) if k.eq_ignore_ascii_case(word) => Some(false),
+        Reads::Several if word.to_lowercase().starts_with(&typed.to_lowercase()) => Some(true),
+        _ => None,
+    }
 }
 
 /// How a typed word reads against the keywords offered where it is typed, case ignored.

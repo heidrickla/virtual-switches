@@ -980,7 +980,8 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// Every word of Cisco's own text in the grammars and help tables: names, syntax lines, example
-/// lines and their output, and `?` descriptions. A word there names nothing of a site.
+/// lines and their output, and `?` descriptions; and the names of the access lists IOS XE makes
+/// itself (`acl::SYSTEM_V4`, `SYSTEM_V6`). A word there names nothing of a site.
 fn public_words() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for (book, release, _) in crate::grammars::GRAMMARS {
@@ -1008,6 +1009,10 @@ fn public_words() -> BTreeSet<String> {
         for tr in &g.transitions {
             out.extend(words(&tr.line));
         }
+    }
+    // the access lists IOS XE makes itself are IOS's names as the books' are
+    for (name, _) in crate::acl::SYSTEM_V4.iter().chain(crate::acl::SYSTEM_V6) {
+        out.extend(words(name));
     }
     // and the parts of each between `-`, `.`, `/`, `@` and `_`
     let parts: Vec<String> = out
@@ -1069,30 +1074,54 @@ fn names_a_thing(w: &str) -> bool {
     !(plain.is_match(w) || port.is_match(w) || model.is_match(w))
 }
 
+/// The rows of a `?` answer a keyword or a value heads: a lowercase keyword (`ewlc_oper` too) or a
+/// `<range>` two spaces in, and its description.
+fn keyword_row(row: &str) -> Option<(&str, &str)> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE
+        .get_or_init(|| regex::Regex::new(r"^  ([a-z][a-z0-9_-]*:?|<[^<>\s]+>)\s+(.*)$").unwrap());
+    let c = re.captures(row)?;
+    Some((
+        c.get(1)?.as_str().trim_end_matches(':'),
+        c.get(2)?.as_str().trim(),
+    ))
+}
+
+/// The mode an answer is held under for `Deny`: user and privileged EXEC read one command tree.
+fn exec_as_privileged(mode: &str) -> &str {
+    match mode {
+        "exec" => "privileged",
+        m => m,
+    }
+}
+
+/// Where the `?` answers of an image's crawls and session logs offered a keyword holding a site
+/// word: by (mode, context, `context::key` of the line before `?`), the keywords, lowercase.
+type Offers = BTreeMap<(String, String, String), BTreeSet<String>>;
+
+/// Which images' answers a line is read against: one image's, or every image's of a family
+/// (classic IOS or IOS XE).
+#[derive(Clone, Copy)]
+pub enum Images<'a> {
+    One(&'a str, &'a str),
+    Family(bool),
+}
+
 pub struct Deny {
     tokens: BTreeSet<String>,
     // the words of six characters or more, looked for inside longer words
     long: std::collections::HashSet<String>,
     longest: usize,
-    // the keywords a crawl offers, which pass whole whatever their parts
-    offered: std::collections::HashSet<String>,
+    // by (book, release): where its answers offered a keyword holding a site word, which passes
+    // there and nowhere else
+    offers: BTreeMap<(String, String), Offers>,
 }
 
 impl Deny {
     pub fn of(src: &Source) -> Deny {
         let mut public = public_words();
-        // the keywords IOS lists for `?` with its descriptions of them, and its `<cr>`: the rows
-        // whose first column is a lowercase keyword-shaped word, which a site also uses in free text
-        let keyword = regex::Regex::new(r"^  ([a-z][a-z0-9-]*:?)\s+(.*)$").unwrap();
+        // `?`'s own `<cr>` row
         public.insert("cr".into());
-        for f in &src.logs {
-            for l in f.text.lines() {
-                if let Some(c) = keyword.captures(l) {
-                    public.extend(words(&c[1]));
-                    public.extend(words(&c[2]));
-                }
-            }
-        }
         let mut raw: BTreeSet<String> = BTreeSet::new();
         let ip = regex::Regex::new(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b").unwrap();
         let mac = regex::Regex::new(r"\b[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\b").unwrap();
@@ -1120,7 +1149,7 @@ impl Deny {
             })
             .collect();
         // the names the captures' configurations give hosts and objects: the word after the kind
-        // (`logging discriminator <name> msg-body ...`); free text names no object
+        // (`logging discriminator <name>`, not the keywords after it); free text names no object
         let free = |kind: &str| {
             ["description", "snmp-server location", "snmp-server contact"].contains(&kind)
                 || kind.starts_with("banner ")
@@ -1131,26 +1160,6 @@ impl Deny {
                 if !free(&c[1]) {
                     configured.extend(words(&c[2]).take(1));
                 }
-            }
-        }
-        // the crawls' rows, at every level, the same way; their keywords also pass whole where a part
-        // is a site word (`denied`). A row naming an object a configuration made (`User defined`, a
-        // VRF's `VRF Name`, a name the captures' configurations give) is the switch's, not IOS's
-        let mut offered = std::collections::HashSet::new();
-        for f in &src.crawls {
-            for l in f.text.lines() {
-                let Some(c) = keyword.captures(l) else {
-                    continue;
-                };
-                let word = c[1].trim_end_matches(':');
-                if crate::swept::made(word, c[2].trim())
-                    || words(word).any(|w| configured.contains(&w))
-                {
-                    continue;
-                }
-                public.extend(words(&c[1]));
-                public.extend(words(&c[2]));
-                offered.extend(words(word));
             }
         }
         raw.extend(hosts);
@@ -1294,10 +1303,57 @@ impl Deny {
             })
             .filter(|w| w.len() >= 2 && !public.contains(w) && names_a_thing(w))
             .collect();
-        Deny {
-            offered,
-            ..Deny::from_tokens(tokens)
+        let plain = Deny::from_tokens(tokens);
+        // where each image's `?` answers, a crawl's at every level and a session log's, offered a
+        // row holding a site word. A row naming an object a configuration made (`User defined`, a
+        // VRF's `VRF Name`, a name the captures' configurations give) offers nothing of IOS's
+        let mut offers: BTreeMap<(String, String), Offers> = BTreeMap::new();
+        let mut offer =
+            |f: (&str, &str), mode: &str, context: &str, key: String, answer: &[String]| {
+                for row in answer {
+                    let Some((word, what)) = keyword_row(row) else {
+                        continue;
+                    };
+                    if !plain.hits(row)
+                        || crate::swept::made(word, what)
+                        || words(word).any(|w| configured.contains(&w))
+                    {
+                        continue;
+                    }
+                    offers
+                        .entry((f.0.to_string(), f.1.to_string()))
+                        .or_default()
+                        .entry((
+                            exec_as_privileged(mode).to_string(),
+                            context.to_string(),
+                            key.clone(),
+                        ))
+                        .or_default()
+                        .insert(word.to_lowercase());
+                }
+            };
+        for f in &src.crawls {
+            for (mode, context, key, answer) in crawled_help(&f.text) {
+                offer((&f.book, &f.release), &mode, &context, key, &answer);
+            }
         }
+        for f in &src.logs {
+            let Some((_, ex)) = crate::capture::exchanges(&f.text) else {
+                continue;
+            };
+            for e in ex {
+                let Some(before) = e.command.strip_suffix('?') else {
+                    continue;
+                };
+                if e.output.iter().any(|l| l.starts_with('%')) {
+                    continue;
+                }
+                let context = e.context.as_deref().unwrap_or("");
+                let key = crate::context::key(before);
+                offer((&f.book, &f.release), &e.mode, context, key, &e.output);
+            }
+        }
+        Deny { offers, ..plain }
     }
 
     /// The list a published file is scanned with: IOS XE's own control-plane class maps and their
@@ -1312,7 +1368,7 @@ impl Deny {
             }
         }
         Deny {
-            offered: self.offered,
+            offers: self.offers,
             ..Deny::from_tokens(
                 self.tokens
                     .into_iter()
@@ -1330,12 +1386,14 @@ impl Deny {
             tokens,
             long,
             longest,
-            offered: Default::default(),
+            offers: BTreeMap::new(),
         }
     }
 
     /// Whether `text` holds a word the site is named by: a word, a part of one between `-`, `.`,
-    /// `/`, `@` or `_`, or a word of six characters or more inside another.
+    /// `/`, `@` or `_`, or a word of six characters or more inside another. A keyword a `?` answer
+    /// offered counts as any other word: it passes only where it stands offered (`line_hits`,
+    /// `row_hits`).
     pub fn hits(&self, text: &str) -> bool {
         words(text).any(|w| self.denied(&w))
     }
@@ -1345,11 +1403,116 @@ impl Deny {
     }
 
     fn denied(&self, w: &str) -> bool {
-        !self.offered.contains(w)
-            && (self.tokens.contains(w)
-                || w.split(['-', '.', '/', '@', '_'])
-                    .any(|part| part.len() >= 4 && self.tokens.contains(part))
-                || self.inside(w))
+        self.tokens.contains(w)
+            || w.split(['-', '.', '/', '@', '_'])
+                .any(|part| part.len() >= 4 && self.tokens.contains(part))
+            || self.inside(w)
+    }
+
+    /// The keywords offered after the line `before` (its words, as typed or as a form holds them) in
+    /// `mode` and `context` (any, where `None`), by an answer of `images`. A form's value token
+    /// (`<number:1-100000>`) stands for any word the answer was asked after.
+    fn offered_after(
+        &self,
+        images: Images<'_>,
+        mode: &str,
+        context: Option<&str>,
+        before: &[&str],
+    ) -> BTreeSet<&str> {
+        let key = match before {
+            [] => String::new(),
+            b => crate::context::key(&format!("{} ", b.join(" "))),
+        };
+        self.offered_at(images, mode, context, &key, before)
+    }
+
+    /// The keywords the answer to `key` offered (`offered_after`); `before` is its words.
+    fn offered_at(
+        &self,
+        images: Images<'_>,
+        mode: &str,
+        context: Option<&str>,
+        key: &str,
+        before: &[&str],
+    ) -> BTreeSet<&str> {
+        let mode = exec_as_privileged(mode);
+        let value = |w: &str| w.starts_with('<') && w.ends_with('>');
+        let mut out = BTreeSet::new();
+        let tables = self.offers.iter().filter(|((b, r), _)| match images {
+            Images::One(book, release) => b == book && r == release,
+            Images::Family(classic_family) => classic(r) == classic_family,
+        });
+        for (_, offers) in tables {
+            for ((m, c, k), offered) in offers {
+                if m != mode || context.is_some_and(|x| x != c) {
+                    continue;
+                }
+                let same = *k == key
+                    || before.iter().any(|w| value(w)) && {
+                        let held: Vec<&str> = k.split_whitespace().collect();
+                        held.len() == before.len()
+                            && held.iter().zip(before).all(|(h, w)| {
+                                value(w) || crate::context::values(&w.to_lowercase()) == *h
+                            })
+                    };
+                if same {
+                    out.extend(offered.iter().map(String::as_str));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a line typed in `mode` and `context` names the site: a word other than a keyword an
+    /// answer of `images` offered where it stands, which passes whole.
+    pub fn line_hits(
+        &self,
+        images: Images<'_>,
+        mode: &str,
+        context: Option<&str>,
+        line: &str,
+    ) -> bool {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        toks.iter().enumerate().any(|(i, t)| {
+            self.hits(t)
+                && !self
+                    .offered_after(images, mode, context, &toks[..i])
+                    .contains(t.to_lowercase().as_str())
+        })
+    }
+
+    /// Whether a row of the answer to `key` names the site: a keyword row whose keyword the answer
+    /// offered there passes whole, its help text being IOS's own, whose words pass there and
+    /// nowhere else; any other row names the site where a word of it is denied.
+    pub fn row_hits(
+        &self,
+        images: Images<'_>,
+        mode: &str,
+        context: Option<&str>,
+        key: &str,
+        row: &str,
+    ) -> bool {
+        self.row_hit(images, mode, context, key, row).is_some()
+    }
+
+    /// The word that makes a row name the site (`row_hits`), for `vswitch corpus --why`.
+    pub fn row_hit(
+        &self,
+        images: Images<'_>,
+        mode: &str,
+        context: Option<&str>,
+        key: &str,
+        row: &str,
+    ) -> Option<String> {
+        let hit = self.hit(row)?;
+        let Some((word, _)) = keyword_row(row) else {
+            return Some(hit);
+        };
+        let before: Vec<&str> = key.split_whitespace().collect();
+        let offered = self
+            .offered_at(images, mode, context, &crate::context::key(key), &before)
+            .contains(word.to_lowercase().as_str());
+        (!offered).then_some(hit)
     }
 
     fn inside(&self, w: &str) -> bool {
@@ -1369,19 +1532,17 @@ impl Deny {
     /// does not look for inside a longer word: for a person to review (`vswitch corpus --loose`).
     pub fn hit_loose(&self, text: &str) -> Option<String> {
         self.hit(text).or_else(|| {
-            words(text)
-                .filter(|w| !self.offered.contains(w))
-                .find_map(|w| {
-                    let b = w.as_bytes();
-                    (0..b.len()).find_map(|i| {
-                        (4..=5.min(b.len() - i)).find_map(|n| {
-                            std::str::from_utf8(&b[i..i + n])
-                                .ok()
-                                .filter(|s| s.len() < w.len() && self.tokens.contains(*s))
-                                .map(|s| format!("{w} ({s})"))
-                        })
+            words(text).find_map(|w| {
+                let b = w.as_bytes();
+                (0..b.len()).find_map(|i| {
+                    (4..=5.min(b.len() - i)).find_map(|n| {
+                        std::str::from_utf8(&b[i..i + n])
+                            .ok()
+                            .filter(|s| s.len() < w.len() && self.tokens.contains(*s))
+                            .map(|s| format!("{w} ({s})"))
                     })
                 })
+            })
         })
     }
 }
@@ -1473,20 +1634,16 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
             after.entry(ch(l)).or_insert_with(|| ch(p));
         }
         t.after = after.into_iter().collect();
-        t.help
-            .retain(|(_, k, a)| !deny.hits(k) && !a.iter().any(|r| deny.hits(r)));
+        t.help.retain(|h| !help_names(deny, book, release, h));
         // a crawl's key and context hold no address however it was typed: one that does slipped
         // past `context::values` and goes, as a capture's site words do
-        t.crawl.retain(|(_, _, c, k, a)| {
-            !deny.hits(k)
-                && !deny.hits(c)
-                && !crate::context::holds_address(k)
-                && !crate::context::holds_address(c)
-                && !a.iter().any(|r| deny.hits(r))
+        t.crawl.retain(|r| {
+            !crawl_names(deny, book, release, r)
+                && !crate::context::holds_address(&r.3)
+                && !crate::context::holds_address(&r.2)
         });
         // a measured line naming the site goes whole: its words are the line the switch read
-        t.swept
-            .retain(|(_, l, _, s)| !deny.hits(l) && !deny.hits(s));
+        t.swept.retain(|s| !swept_names(deny, book, release, s));
         // the lines that gave no row are the corpus command's report, not the corpus
         t.swept_left.clear();
         let n = t.captures.len();
@@ -1496,8 +1653,7 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
     }
     c.word_indent
         .retain(|(_, b, l, _)| !deny.hits(b) && !deny.hits(l));
-    c.described
-        .retain(|(_, _, k, w, what)| !deny.hits(k) && !deny.hits(w) && !deny.hits(what));
+    c.described.retain(|d| !described_names(deny, d));
     for cmd in c.numbers.iter_mut() {
         *cmd = ch(cmd);
     }
@@ -1517,10 +1673,54 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
     c
 }
 
+/// Whether a crawl row of an image names the site: its line before `?` (`Deny::line_hits`) and its
+/// answer's rows (`Deny::row_hits`) read where they stand, its context as configuration text.
+fn crawl_names(deny: &Deny, book: &str, release: &str, row: &CrawlRow) -> bool {
+    let (_, mode, context, key, answer) = row;
+    let images = Images::One(book, release);
+    deny.line_hits(images, mode, Some(context), key)
+        || deny.hits(context)
+        || answer
+            .iter()
+            .any(|r| deny.row_hits(images, mode, Some(context), key, r))
+}
+
+/// Whether a session log's `?` answer names the site, read as a crawl's is.
+fn help_names(
+    deny: &Deny,
+    book: &str,
+    release: &str,
+    help: &(String, String, Vec<String>),
+) -> bool {
+    let (mode, key, answer) = help;
+    let images = Images::One(book, release);
+    deny.line_hits(images, mode, None, key)
+        || answer
+            .iter()
+            .any(|r| deny.row_hits(images, mode, None, key, r))
+}
+
+/// Whether a sweep row names the site: its line read where its words stand at the privileged
+/// prompt, its `%` lines whole.
+fn swept_names(deny: &Deny, book: &str, release: &str, row: &SweptRow) -> bool {
+    let (_, line, _, said) = row;
+    deny.line_hits(Images::One(book, release), "privileged", Some(""), line) || deny.hits(said)
+}
+
+/// Whether a family's keyword description names the site, read as the `?` row it came from.
+fn described_names(deny: &Deny, d: &(bool, String, String, String, String)) -> bool {
+    let (classic_family, mode, key, word, what) = d;
+    let images = Images::Family(*classic_family);
+    deny.line_hits(images, mode, None, key)
+        || deny.row_hits(images, mode, None, key, &format!("  {word}  {what}"))
+}
+
 /// Every string in the corpus that still holds a site word, and every crawl key or context that
-/// holds an address (none, for a corpus `filtered` wrote).
+/// holds an address (none, for a corpus `filtered` wrote). `?` answers, the lines before them and
+/// sweep lines are read where their words stand (`crawl_names`, `help_names`, `swept_names`,
+/// `described_names`); every other string whole.
 pub fn leaks(c: &Corpus, deny: &Deny) -> Vec<String> {
-    let json = serde_json::to_value(c).expect("the corpus serializes");
+    let mut json = serde_json::to_value(c).expect("the corpus serializes");
     let mut out: Vec<String> = c
         .held
         .iter()
@@ -1529,6 +1729,40 @@ pub fn leaks(c: &Corpus, deny: &Deny) -> Vec<String> {
         .filter(|s| crate::context::holds_address(s))
         .cloned()
         .collect();
+    for (book, release, t) in &c.held {
+        for r in t
+            .crawl
+            .iter()
+            .filter(|r| crawl_names(deny, book, release, r))
+        {
+            out.push(format!("{} {}", r.2, r.3));
+        }
+        for h in t.help.iter().filter(|h| help_names(deny, book, release, h)) {
+            out.push(h.1.clone());
+        }
+        for s in t
+            .swept
+            .iter()
+            .filter(|s| swept_names(deny, book, release, s))
+        {
+            out.push(s.1.clone());
+        }
+    }
+    for d in c.described.iter().filter(|d| described_names(deny, d)) {
+        out.push(d.2.clone());
+    }
+    if let Some(held) = json.get_mut("held").and_then(|h| h.as_array_mut()) {
+        for table in held.iter_mut().filter_map(|h| h.get_mut(2)) {
+            if let Some(t) = table.as_object_mut() {
+                for field in ["crawl", "help", "swept"] {
+                    t.remove(field);
+                }
+            }
+        }
+    }
+    if let Some(o) = json.as_object_mut() {
+        o.remove("described");
+    }
     fn walk(v: &serde_json::Value, deny: &Deny, out: &mut Vec<String>) {
         match v {
             serde_json::Value::String(s) if deny.hits(s) => out.push(s.clone()),
@@ -1593,6 +1827,16 @@ pub fn scan_tree(root: &Path, deny: &Deny, loose: bool) -> Vec<(String, usize, S
                 .display()
                 .to_string()
                 .replace('\\', "/");
+            // a corpus is read as its build reads it (`leaks`): a keyword passes only where an
+            // answer offered it; the number is the leak's place in that list
+            if name.ends_with(".json.gz")
+                && let Ok(c) = serde_json::from_str::<Corpus>(&text)
+            {
+                for (i, s) in leaks(&c, deny).iter().enumerate() {
+                    out.push((rel.clone(), i + 1, deny.hit(s).unwrap_or_else(|| s.clone())));
+                }
+                continue;
+            }
             for (i, line) in text.lines().enumerate() {
                 let hit = if loose {
                     deny.hit_loose(line)
@@ -1688,8 +1932,10 @@ mod tests {
         assert!(!deny.hits("show ip route"));
     }
 
+    /// A keyword a crawl offers passes where it stands offered: in the row offering it and in a line
+    /// typed there. A `User defined` row and a name the configuration gave offer nothing.
     #[test]
-    fn a_keyword_a_crawl_offers_is_public_and_a_name_the_configuration_made_is_not() {
+    fn a_keyword_a_crawl_offers_passes_where_offered_and_a_name_the_configuration_made_does_not() {
         let running = File {
             book: "c9300".into(),
             release: "17.6".into(),
@@ -1720,18 +1966,109 @@ mod tests {
             crawls: vec![crawl],
             ..src
         });
+        let here = Images::One("c9300", "17.6");
+        let at = |line: &str| deny.line_hits(here, "privileged", Some(""), line);
         // the crawl's keyword, and a keyword holding a site word as a part, whole
-        assert!(!deny.hits("show ip nbar link-age quoxa"));
-        assert!(!deny.hits("show ip nbar link-age quoxa-vornel"));
+        assert!(!at("show ip nbar link-age quoxa"));
+        assert!(!at("show ip nbar link-age quoxa-vornel"));
+        assert!(at("show ip nbar quoxa"));
         assert!(deny.hits("description vornel"));
         assert!(deny.hits("description quoxa-vornel-2"));
         // a `User defined` row and a row naming the configuration's access list stay the site's
-        assert!(deny.hits("show ip nbar link-age tavik"));
-        assert!(deny.hits("show ip nbar link-age zembla"));
+        assert!(at("show ip nbar link-age tavik"));
+        assert!(at("show ip nbar link-age zembla"));
         assert!(deny.hits("hostname plantsw01"));
         let published = deny.published();
-        assert!(!published.hits("show ip nbar link-age quoxa-vornel"));
-        assert!(published.hits("show ip nbar link-age zembla"));
+        let at = |line: &str| published.line_hits(here, "privileged", Some(""), line);
+        assert!(!at("show ip nbar link-age quoxa-vornel"));
+        assert!(at("show ip nbar link-age zembla"));
+    }
+
+    /// A site word a crawl offers as a keyword stays the site's in every other field: the corpus
+    /// keeps the offering answer and an offered row's help text, characterizes the word in
+    /// configuration text and drops an answer whose row names it where no keyword is offered.
+    #[test]
+    fn a_site_word_a_crawl_offers_stays_denied_outside_the_place_it_is_offered() {
+        let running = File {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            name: "plantsw01-running-config.txt".into(),
+            text: "version 17.6\nhostname plantsw01\ninterface GigabitEthernet1/0/1\n description quoxa\n\
+                   ip host quoxa 172.31.207.77\nend\n"
+                .into(),
+        };
+        let log = File {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            name: "plantsw01-show.log".into(),
+            text: "plantsw01#show ip nbar ?\n  link-age  Quoxa link age\n\nplantsw01#".into(),
+        };
+        let crawl = CrawlLog {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            folder: "crawl".into(),
+            level: "network-advantage".into(),
+            text: "Switch#show ip nbar link-age ?\n  quoxa  Quoxa transfer protocol\n\n\
+                   Switch#show ip nbar protocol-id ?\n  QUOXA  Quoxa database\n\nSwitch#"
+                .into(),
+        };
+        let src = Source {
+            running: vec![running],
+            logs: vec![log],
+            crawls: vec![crawl],
+            ..Default::default()
+        };
+        let deny = Deny::of(&src);
+        let c = filtered(build(&src), &deny);
+        let t = &c
+            .held
+            .iter()
+            .find(|(b, r, _)| b == "c9300" && r == "17.6")
+            .unwrap()
+            .2;
+        let answer = |key: &str| t.crawl.iter().find(|r| r.3 == key).map(|r| &r.4);
+        let offered = answer("show ip nbar link-age ").expect("the offering answer is kept");
+        assert!(
+            offered
+                .iter()
+                .any(|row| row.trim_start().starts_with("quoxa "))
+        );
+        assert_eq!(answer("show ip nbar protocol-id "), None);
+        let host: Vec<&str> = t
+            .lines
+            .iter()
+            .map(|(_, l)| l.as_str())
+            .filter(|l| l.starts_with("ip host"))
+            .collect();
+        assert_eq!(host, ["ip host «word» «ipv4»"]);
+        assert!(
+            t.help.iter().any(|(_, k, _)| k == "show ip nbar "),
+            "{:?}",
+            t.help
+        );
+        assert!(leaks(&c, &deny).is_empty());
+    }
+
+    /// The access lists IOS XE makes itself are IOS's names: a word of one is no site word, as a
+    /// word of the books is not.
+    #[test]
+    fn a_word_of_a_list_ios_makes_itself_is_no_site_word() {
+        let running = File {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            name: "plantsw01-running-config.txt".into(),
+            text: "hostname plantsw01\ninterface GigabitEthernet1/0/1\n description meraki tavik\n"
+                .into(),
+        };
+        let deny = Deny::of(&Source {
+            running: vec![running],
+            ..Default::default()
+        });
+        assert!(deny.hits("description tavik"));
+        assert!(!deny.hits("description meraki"));
+        for (name, _) in crate::acl::SYSTEM_V4.iter().chain(crate::acl::SYSTEM_V6) {
+            assert!(!deny.hits(name), "{name}");
+        }
     }
 
     /// A build that names a captures folder checks the embedded corpus against it: the corpus is what

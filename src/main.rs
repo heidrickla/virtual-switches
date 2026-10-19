@@ -1950,15 +1950,19 @@ fn run(args: &[String]) -> Result<bool, String> {
             if args.iter().any(|a| a == "--why") {
                 // which denied word took out each `?` answer row
                 let mut seen = std::collections::BTreeMap::new();
-                for (_, _, t) in &corpus::build(&src).held {
-                    let answers = t
+                for (b, r, t) in &corpus::build(&src).held {
+                    let images = corpus::Images::One(b, r);
+                    let help = t
                         .help
                         .iter()
-                        .map(|(_, _, a)| a)
-                        .chain(t.crawl.iter().map(|(.., a)| a));
-                    for a in answers {
-                        for r in a {
-                            if let Some(w) = deny.hit(r) {
+                        .map(|(m, k, a)| (m.as_str(), None, k.as_str(), a));
+                    let crawl = t
+                        .crawl
+                        .iter()
+                        .map(|(_, m, c, k, a)| (m.as_str(), Some(c.as_str()), k.as_str(), a));
+                    for (mode, context, key, a) in help.chain(crawl) {
+                        for row in a {
+                            if let Some(w) = deny.row_hit(images, mode, context, key, row) {
                                 *seen.entry(w).or_insert(0) += 1;
                             }
                         }

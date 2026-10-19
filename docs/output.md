@@ -610,7 +610,7 @@ A single C9300 at IOS XE 17.6 prints them as the lab C9300-24T at 17.6.4 did. Ot
 
 ## Measured show messages
 
-A privileged line a form of the session's level takes prints the `%` lines the switch printed for it, where the form holds them (Messages in `captures.md`). `src/messages.rs` holds the messages and their rules. A notice prints before the command's output. A fixed message is all the line prints. A state message is all the line prints where the running configuration lacks what it names; otherwise the line prints what it prints without it. A value a message names is the line's word as typed, an interface by its full name. A line printing messages alone is refused, as a message the configuration gives is, and those messages (Messages the configuration gives) print first. A line the shell warns of before it runs prints that warning and its output: the switch printed `% Switch is not in mst mode` before the MST region's configuration and digest.
+A privileged line a form of the session's level takes prints the `%` lines the switch printed for it, where the form holds them (Messages in `captures.md`). `src/messages.rs` holds the messages and their rules. A notice prints before the command's output. A fixed message is all the line prints. A state message is all the line prints where the running configuration lacks what it names; otherwise the line prints what it prints without it. It reads the context it names: each line under a block with the submode lines it stands in (an address family, its VRF, a process), and an interface's own lines apart from a submode's. A value a message names is the line's word as typed, an interface by its full name. A line printing messages alone is refused, as a message the configuration gives is, and those messages (Messages the configuration gives) print first. A line the shell warns of before it runs prints that warning and its output: the switch printed `% Switch is not in mst mode` before the MST region's configuration and digest.
 
 | Kind | Message |
 |---|---|
@@ -630,18 +630,18 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 | `%SNMP agent not enabled` | `snmp-server` line other than `location` and `contact` |
 | `%%SNMP manager not enabled` | `snmp-server manager` |
 | `% MPLS Fault-OAM is not initialized.` | `mpls traffic-eng fault-oam` or `mpls tp` |
-| `%AS <n> specified not configured`, `%AS(<n>) specified not configured` | EIGRP AS `<n>` (`router eigrp <n>`, `autonomous-system <n>` under a named process, `ipv6 router eigrp <n>`), where some `router eigrp` runs; on a BGP line, `router bgp <n>` where some `router bgp` runs |
-| `% IP routing table topology <name> does not exist` | `topology <name>` line anywhere; `base` always exists |
-| `%Topology <name> specified does not exist.` | `topology <name>` under a `router eigrp`, where one runs; `base` always exists |
-| `%OSPF: Specified topology not found for any OSPF process` | `topology <name>` under a `router ospf`, where one runs; the unicast `base` always exists |
-| `%OSPF: OSPF not enabled on <interface>` | OSPF on the interface, where a `router ospf` runs: `ip ospf <n> area` on it, or a `network` of a process in its VRF covering one of its addresses; an address vswitch cannot read (DHCP, negotiated, pool, unnumbered) prints nothing where such a `network` exists |
+| `%AS <n> specified not configured`, `%AS(<n>) specified not configured` | EIGRP AS `<n>` in the line's family and VRF, where an EIGRP process runs: `router eigrp <n>` (`ip eigrp`, `eigrp address-family ipv4`), `ipv6 router eigrp <n>` (`ipv6 eigrp`, `eigrp address-family ipv6`), or a named process's `address-family` (`service-family` for an `eigrp service-family` line) of that family and VRF with `autonomous-system <n>`; on a BGP line, `router bgp <n>` where some `router bgp` runs |
+| `% IP routing table topology <name> does not exist` | `topology <name>` in an IPv4 context, multicast for a multicast line and unicast otherwise, in the line's VRF or none; `base` always exists |
+| `%Topology <name> specified does not exist.` | `topology <name>` under a named `router eigrp`'s `address-family` of the line's family, VRF and autonomous system where it names them, where an EIGRP process runs; `base` always exists |
+| `%OSPF: Specified topology not found for any OSPF process` | `topology <name>` under any `router ospf`, in its `address-family ipv4 multicast` for a multicast line and outside it otherwise, where one runs; the unicast `base` always exists |
+| `%OSPF: OSPF not enabled on <interface>` | OSPF on the interface, where a `router ospf` runs: `ip ospf <n> area` among its own lines, or a `network` of a process in its VRF covering one of its addresses; an address vswitch cannot read (DHCP, negotiated, pool, unnumbered) prints nothing where such a `network` exists |
 | `% No VRF named <name>`, `% vrf <name> does not exist`, `% VRF <name> does not exist`, `%Error, VRF <name> does not exist`, `% Unknown VRF` | `vrf definition <name>` or `ip vrf <name>`; `Mgmt-vrf` exists where the stack has a management port |
-| `% Config Logger disabled.` | `logging enable` under `archive` |
+| `% Config Logger disabled.` | `logging enable` under `archive`'s `log config` |
 | `%XMCP server is not enabled` | `service-routing xmcp` line |
 | `% Switch is not in mst mode` | `spanning-tree mode mst` |
-| `% No matching EVPN ethernet segment` | `evpn ethernet-segment` on the interface named |
-| `% dampening not enabled for base` | `bgp dampening`, where a `router bgp` runs |
-| `% No such peer-group` | `neighbor <name> peer-group` for the group named, where a `router bgp` runs |
+| `% No matching EVPN ethernet segment` | `evpn ethernet-segment` among the named interface's own lines |
+| `% dampening not enabled for base` | `bgp dampening` directly under `router bgp` or in its `address-family ipv4 [unicast]`, a VRF's not counting, where a `router bgp` runs |
+| `% No such peer-group` | `neighbor <name> peer-group` for the group named, in the VRF's address family where the line names a VRF and outside every VRF's otherwise, where a `router bgp` runs |
 | `%No Tlv-list exists. `, `%Tlv-list name does not exists.` | `cdp tlv-list` (for `*`), `cdp tlv-list <name>` (for a name) |
 
 ## Padding and unmodelled commands

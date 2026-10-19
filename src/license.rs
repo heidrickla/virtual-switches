@@ -102,23 +102,50 @@ pub const UNLISTED: &[(&str, &str, &str)] = &[("network-essentials", "config", "
 /// (only `l2protocol-tunnel`), and refused `l2 vfi`.
 pub const TAKEN: &[(&str, &str, &str)] = &[("network-essentials", "config", "l2 traceroute")];
 
-/// Whether `level` takes `line` in `mode` though its crawl offers no such line (`TAKEN`).
-pub fn taken(level: &str, mode: &str, line: &str) -> bool {
-    let words: Vec<String> = line.split_whitespace().map(str::to_lowercase).collect();
+/// Whether `level` takes `line` in `mode` though its crawl offers no such line (`TAKEN`): each word
+/// of its start as measured or a unique start of it among the keywords offered before it
+/// (`keywords`, by the text before the word; `context::stands_for`).
+pub fn taken(level: &str, mode: &str, line: &str, keywords: impl Fn(&str) -> Vec<String>) -> bool {
+    let toks = crate::cli::tokens(line);
     TAKEN.iter().any(|(l, m, start)| {
         *l == level && *m == mode && {
             let want: Vec<&str> = start.split_whitespace().collect();
-            words.len() >= want.len() && words.iter().zip(&want).all(|(w, s)| w == s)
+            toks.len() >= want.len()
+                && toks.iter().zip(&want).all(|(t, w)| {
+                    t.text.eq_ignore_ascii_case(w)
+                        || crate::context::stands_for(&t.text, w, &keywords(&line[..t.at]))
+                            == Some(false)
+                })
         }
     })
 }
 
-/// Whether `level` takes `word` first on a line in `mode` though its `?` lists it nowhere
-/// (`UNLISTED`).
-pub fn unlisted(level: &str, mode: &str, word: &str) -> bool {
-    UNLISTED
+/// How `word`, first on a line in `mode`, stands for one `level` takes though its `?` lists it
+/// nowhere (`UNLISTED`), `offered` the keywords offered there (`context::stands_for`).
+pub fn unlisted(
+    level: &str,
+    mode: &str,
+    word: &str,
+    offered: impl Fn() -> Vec<String>,
+) -> Option<bool> {
+    first_word(UNLISTED, level, mode, word, offered)
+}
+
+/// How `word` stands for a measured first word of `table` at `level` in `mode`.
+fn first_word(
+    table: &[(&str, &str, &str)],
+    level: &str,
+    mode: &str,
+    word: &str,
+    offered: impl Fn() -> Vec<String>,
+) -> Option<bool> {
+    let mut entries = table
         .iter()
-        .any(|(l, m, w)| *l == level && *m == mode && w.eq_ignore_ascii_case(word))
+        .filter(|(l, m, _)| *l == level && *m == mode)
+        .peekable();
+    entries.peek()?;
+    let offered = offered();
+    entries.find_map(|(_, _, w)| crate::context::stands_for(word, w, &offered))
 }
 
 /// First words a gated level refuses in a mode where its crawl's `?` answers judge nothing: the lab
@@ -126,11 +153,15 @@ pub fn unlisted(level: &str, mode: &str, word: &str) -> bool {
 /// under the word; its crawled sub-interface's `?` listed it at neither level.
 pub const LEFT_OUT: &[(&str, &str, &str)] = &[("network-essentials", "config-subif", "xconnect")];
 
-/// Whether `level` refuses `word` first on a line in `mode` (`LEFT_OUT`).
-pub fn left_out(level: &str, mode: &str, word: &str) -> bool {
-    LEFT_OUT
-        .iter()
-        .any(|(l, m, w)| *l == level && *m == mode && w.eq_ignore_ascii_case(word))
+/// How `word`, first on a line in `mode`, stands for one `level` refuses there (`LEFT_OUT`),
+/// `offered` the keywords offered there (`context::stands_for`).
+pub fn left_out(
+    level: &str,
+    mode: &str,
+    word: &str,
+    offered: impl Fn() -> Vec<String>,
+) -> Option<bool> {
+    first_word(LEFT_OUT, level, mode, word, offered)
 }
 
 /// The donor `DONORS` names for a switch, none where that is the switch's own crawl.
@@ -242,25 +273,50 @@ mod tests {
         for level in ["network-advantage", "lanbase", "ipservices", ""] {
             assert_eq!(gated_by(level), None, "{level}");
             assert!(refused_types(level).is_empty(), "{level}");
-            assert!(!unlisted(level, "config", "net"), "{level}");
+            assert_eq!(unlisted(level, "config", "net", Vec::new), None, "{level}");
         }
         assert_eq!(
             refused_types("network-essentials"),
             ["pseudowire", "Auto-Template"]
         );
-        assert!(unlisted("network-essentials", "config", "NET"));
-        assert!(!unlisted("network-essentials", "config-router", "net"));
-        assert!(!unlisted("network-essentials", "config", "network"));
-        assert!(left_out("network-essentials", "config-subif", "XCONNECT"));
-        assert!(!left_out("network-essentials", "config-if", "xconnect"));
-        assert!(!left_out("network-advantage", "config-subif", "xconnect"));
-        assert!(taken("network-essentials", "config", "l2  Traceroute"));
+        let none = Vec::new;
+        let ess = "network-essentials";
+        assert_eq!(unlisted(ess, "config", "NET", none), Some(false));
+        assert_eq!(unlisted(ess, "config-router", "net", none), None);
+        assert_eq!(unlisted(ess, "config", "network", none), None);
+        assert_eq!(left_out(ess, "config-subif", "XCONNECT", none), Some(false));
+        assert_eq!(left_out(ess, "config-if", "xconnect", none), None);
+        assert_eq!(
+            left_out("network-advantage", "config-subif", "xconnect", none),
+            None
+        );
+        assert!(taken(ess, "config", "l2  Traceroute", |_| vec![]));
+        assert!(!taken(ess, "config", "l2 vfi customerA manual", |_| vec![]));
         assert!(!taken(
-            "network-essentials",
+            "network-advantage",
             "config",
-            "l2 vfi customerA manual"
+            "l2 traceroute",
+            |_| vec![]
         ));
-        assert!(!taken("network-advantage", "config", "l2 traceroute"));
-        assert!(!taken("network-essentials", "config-if", "l2 traceroute"));
+        assert!(!taken(ess, "config-if", "l2 traceroute", |_| vec![]));
+    }
+
+    /// A measured first word or line start stands for its unique abbreviations among the keywords
+    /// offered where it is typed; one that begins another keyword too is ambiguous.
+    #[test]
+    fn a_measured_word_stands_for_its_unique_abbreviations() {
+        let ess = "network-essentials";
+        let offered = || vec!["exit".to_string(), "encapsulation".to_string()];
+        assert_eq!(left_out(ess, "config-subif", "xconn", offered), Some(false));
+        assert_eq!(left_out(ess, "config-subif", "e", offered), None);
+        let config = || vec!["netconf-yang".to_string(), "ntp".to_string()];
+        assert_eq!(unlisted(ess, "config", "ne", config), Some(true));
+        assert_eq!(unlisted(ess, "config", "nt", config), None);
+        let after = |text: &str| match text {
+            "" => vec!["l2protocol-tunnel".to_string()],
+            _ => vec!["vfi".to_string(), "traceroute".to_string()],
+        };
+        assert!(taken(ess, "config", "l2 trace", after));
+        assert!(!taken(ess, "config", "l2 v", after));
     }
 }

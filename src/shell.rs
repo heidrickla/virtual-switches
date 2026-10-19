@@ -3331,7 +3331,7 @@ impl<'a> Session<'a> {
     /// held refusals.
     fn read_unmeasured(&self, i: usize, mode: &str, line: &str) -> Outcome {
         // a word the level takes though no book or answer lists it: its refusal stands
-        if let Some(o) = self.unlisted_refusal(mode, line) {
+        if let Some(o) = self.unlisted_refusal(i, mode, line) {
             return o;
         }
         let mut o = self.books(mode, line);
@@ -3370,10 +3370,12 @@ impl<'a> Session<'a> {
         if !self.engine.held.gated(level.as_deref()) {
             return None;
         }
-        if let Some(o) = self.unlisted_refusal(mode, line) {
+        if let Some(o) = self.unlisted_refusal(i, mode, line) {
             return Some(o);
         }
-        if crate::license::taken(level.as_deref().unwrap_or(""), mode, line) {
+        if let Some(l) = level.as_deref()
+            && crate::license::taken(l, mode, line, |text| self.keywords_before(i, l, mode, text))
+        {
             return None;
         }
         let refused_types = crate::license::refused_types(level.as_deref().unwrap_or(""));
@@ -3411,24 +3413,51 @@ impl<'a> Session<'a> {
         None
     }
 
+    /// The keywords offered after `text` in `mode` and the context of frame `i` at `level`: the held
+    /// answer's, else the books'.
+    fn keywords_before(&self, i: usize, level: &str, mode: &str, text: &str) -> Vec<String> {
+        let held = self.context_at(i).and_then(|context| {
+            self.engine
+                .held
+                .help_for(Some(level), mode, Some(&context), text, |l| {
+                    self.running_has(l)
+                })
+                .filter(|a| !crate::live::is_refusal(a))
+        });
+        if let Some(a) = held {
+            return crate::live::keywords(a);
+        }
+        let (next, _) = self.engine.next_at(mode, &cli::tokens(text), Some(level));
+        next.into_iter()
+            .filter_map(|n| match n {
+                Next::Kw { kw, .. } => Some(kw),
+                Next::Arg { .. } => None,
+            })
+            .collect()
+    }
+
     /// A line whose first word the session's level takes in `mode` though no `?` lists it
     /// (`license::unlisted`), refused at the word after it; one whose first word the level refuses
     /// where its crawl judges nothing (`license::left_out`), refused at that word.
-    fn unlisted_refusal(&self, mode: &str, line: &str) -> Option<Outcome> {
+    fn unlisted_refusal(&self, i: usize, mode: &str, line: &str) -> Option<Outcome> {
         let level = self.level()?;
+        if !self.engine.held.gated(Some(&level)) {
+            return None;
+        }
         let toks = cli::tokens(line);
         let first = toks.first()?;
-        let at = if crate::license::unlisted(&level, mode, &first.text) {
-            toks.get(1)?.at
-        } else if crate::license::left_out(&level, mode, &first.text) {
-            first.at
-        } else {
-            return None;
-        };
-        self.engine
-            .held
-            .gated(Some(&level))
-            .then_some(Outcome::Invalid(at))
+        let offered = || self.keywords_before(i, &level, mode, "");
+        // a unique abbreviation of the measured word stands for it; one beginning another word too
+        // is ambiguous
+        match crate::license::unlisted(&level, mode, &first.text, offered) {
+            Some(false) => return Some(Outcome::Invalid(toks.get(1)?.at)),
+            Some(true) => return Some(Outcome::Ambiguous),
+            None => {}
+        }
+        match crate::license::left_out(&level, mode, &first.text, offered)? {
+            false => Some(Outcome::Invalid(first.at)),
+            true => Some(Outcome::Ambiguous),
+        }
     }
 
     /// Where a configuration or privileged EXEC line was refused by a real switch of this image,
@@ -3440,9 +3469,10 @@ impl<'a> Session<'a> {
     /// crawl's value; reading stops at a refusal held for the line so far and at a `LINE` row,
     /// which takes the rest. A privileged line is read past its first word. An interface type is left to the stack (`on_stack`), and on a routed port only the
     /// objects an answer offers are read: a physical port's context holds the crawled switchport's
-    /// answers. A line the image's switch refused where its crawl offers the words
-    /// (`context::REFUSED`) is refused where it printed the caret. The flag says the refusal is a
-    /// held `% Unrecognized command`.
+    /// answers. A line this image's switch refused at the session's level where its crawl offers the
+    /// words (`context::REFUSED`), or a unique abbreviation of it, is refused where it printed the
+    /// caret; an ambiguous abbreviation is ambiguous. The flag says the refusal is a held
+    /// `% Unrecognized command`.
     fn held_refusal(&self, i: usize, mode: &str, line: &str) -> Option<(Outcome, bool)> {
         if !cli::is_config(mode) && mode != "privileged" {
             return None;
@@ -3471,18 +3501,31 @@ impl<'a> Session<'a> {
         }
         let level = self.level();
         let configured = |l: &str| self.running_has(l);
-        if level
-            .as_deref()
-            .is_some_and(|l| self.engine.held.crawls.contains_key(l))
-            && let Some(at) = crate::context::refused(mode, line, configured)
+        if let Some(l) = level.as_deref()
+            && self.engine.held.crawls.contains_key(l)
+            && let Some(book) = crate::grammars::book_of(&self.engine.grammar.platform)
+            && let Some(r) = crate::context::refused(
+                (book, &self.engine.grammar.release),
+                l,
+                mode,
+                line,
+                configured,
+                |text| self.keywords_before(i, l, mode, text),
+            )
         {
-            return Some((Outcome::Invalid(at), false));
+            let o = match r {
+                crate::context::Refused::At(at) => Outcome::Invalid(at),
+                crate::context::Refused::Ambiguous => Outcome::Ambiguous,
+            };
+            return Some((o, false));
         }
         // `do` runs an exec line from any mode and `end` leaves any, and no submode's answer
         // need list them
         if ["do", "end"].contains(&first.as_str())
             || crate::context::unjudged(mode, line, configured)
-            || crate::license::taken(level.as_deref().unwrap_or(""), mode, line)
+            || level.as_deref().is_some_and(|l| {
+                crate::license::taken(l, mode, line, |text| self.keywords_before(i, l, mode, text))
+            })
         {
             return None;
         }
@@ -8264,6 +8307,11 @@ mod tests {
 
     /// A C9300 at 17.6 holding what the crawl `steps` print, at network-advantage.
     fn held_engine(steps: &[(&str, &[&str])]) -> Engine {
+        held_engine_of("c9300", "17.6", ADVANTAGE, steps)
+    }
+
+    /// An engine of `book` at `release` holding what the crawl `steps` print, at `level`.
+    fn held_engine_of(book: &str, release: &str, level: &str, steps: &[(&str, &[&str])]) -> Engine {
         // a probe is complete once the prompt follows it
         let last = steps
             .last()
@@ -8277,14 +8325,14 @@ mod tests {
         let table = crate::corpus::HeldTable {
             crawl: crate::corpus::crawled_help(&transcript(&steps))
                 .into_iter()
-                .map(|(m, c, k, a)| (ADVANTAGE.to_string(), m, c, k, a))
+                .map(|(m, c, k, a)| (level.to_string(), m, c, k, a))
                 .collect(),
             ..Default::default()
         };
-        let r = crate::release::Release::parse("17.6").unwrap();
-        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let r = crate::release::Release::parse(release).unwrap();
+        let grammar = crate::grammars::grammar(book, r).unwrap();
         let c = crate::corpus::Corpus {
-            held: vec![("c9300".into(), "17.6".into(), table)],
+            held: vec![(book.into(), release.into(), table)],
             ..Default::default()
         };
         let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
@@ -8706,6 +8754,141 @@ mod tests {
             assert_eq!(caret_at(&out), "Switch(config)#ptp ".len(), "{line}");
         }
         assert_eq!(s.type_line("ptp priority1 120").1, Result::Ok);
+    }
+
+    /// The crawl steps the dot1as `ptp` refusals are read against.
+    const PTP: &[(&str, &[&str])] = &[
+        ("Switch#configure terminal", ENTERED),
+        (
+            "Switch(config)# ?",
+            &[
+                "Configure commands:",
+                "  license  Configure license features",
+                "  ptp      Precision Time Protocol",
+                "",
+            ],
+        ),
+        (
+            "Switch(config)#ptp ?",
+            &[
+                "  mode       Change PTP clock mode",
+                "  priority1  Set priority1 for the clock",
+                "  profile    Change PTP clock profile",
+                "  transport  Underlying Network Transport protocol",
+                "",
+            ],
+        ),
+        (
+            "Switch(config)#ptp mode ?",
+            &[
+                "  boundary        Boundary Clock mode",
+                "  e2etransparent  End to End Transparent Clock mode",
+                "  p2ptransparent  Peer to Peer Transparent Clock mode",
+                "",
+            ],
+        ),
+    ];
+
+    /// A measured refusal holds on the image and at the levels it was measured on: elsewhere a line
+    /// reads as the image's books and crawl read it.
+    #[test]
+    fn a_measured_refusal_holds_only_on_the_image_and_levels_it_was_measured_on() {
+        // a C2960 at 15.0(2)SE with its own crawl at lanbase, against the same image with none
+        let classic = held_engine_of(
+            "c2960",
+            "15.0(2)SE",
+            "lanbase",
+            &[
+                ("Switch#configure terminal", ENTERED),
+                (
+                    "Switch(config)# ?",
+                    &[
+                        "Configure commands:",
+                        "  class-map  Configure Class Map",
+                        "  clock      Configure time-of-day clock",
+                        "",
+                    ],
+                ),
+            ],
+        );
+        let r = crate::release::Release::parse("15.0(2)SE").unwrap();
+        let grammar = crate::grammars::grammar("c2960", r).unwrap();
+        let held = crate::live::Held::from_corpus(
+            &crate::corpus::Corpus::default(),
+            &grammar.platform,
+            &grammar.release,
+        );
+        let books = Engine::with_held(grammar, held);
+        let typed = |e: &Engine, line: &str| {
+            let stack = crate::platform::parse_stack("WS-C2960G-24TC-L").unwrap();
+            let mut s = Session::new(e, Device::new(stack));
+            s.type_line("enable");
+            s.type_line("configure terminal");
+            let out = s.type_line(line);
+            (out, s.mode().to_string())
+        };
+        assert_eq!(typed(&classic, "class C1"), typed(&books, "class C1"));
+        // the dot1as `ptp` lines were measured at network-advantage alone
+        let essentials = held_engine_of("c9300", "17.6", "network-essentials", PTP);
+        let books = books_17_6();
+        let at_essentials = |e| {
+            let mut s = configured(e, &[]);
+            s.boot_level = Some("network-essentials".into());
+            assert_eq!(s.type_line("ptp profile dot1as").1, Result::Ok);
+            s
+        };
+        let mut s = at_essentials(&essentials);
+        let mut plain = at_essentials(&books);
+        for line in ["ptp mode e2etransparent", "ptp transport ipv4 udp"] {
+            assert_eq!(s.type_line(line), plain.type_line(line), "{line}");
+        }
+        let advantage = held_engine(PTP);
+        let mut s = configured(&advantage, &["ptp profile dot1as"]);
+        assert_eq!(s.type_line("ptp mode e2etransparent").1, Result::Error);
+    }
+
+    /// A measured refusal holds for the line's unique abbreviations, each word read against the
+    /// keywords offered before it and the refused line's own; an abbreviation that begins two is
+    /// ambiguous.
+    #[test]
+    fn a_measured_refusal_holds_for_a_unique_abbreviation_and_an_ambiguous_one_is_ambiguous() {
+        let ptp = held_engine(PTP);
+        let mut s = configured(&ptp, &["ptp profile dot1as"]);
+        for line in [
+            "ptp m e2etransparent",
+            "pt mo e2e",
+            "PTP MODE E2ETRANSPARENT",
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            let at = line.find(' ').unwrap() + 1 + "Switch(config)#".len();
+            assert_eq!(caret_at(&out), at, "{line}: {out:?}");
+        }
+        assert_eq!(s.type_line("ptp mode p2ptransparent").1, Result::Error);
+        assert_eq!(s.type_line("ptp priority1 120").1, Result::Ok);
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)# ?",
+                &[
+                    "Configure commands:",
+                    "  class-map  Configure CPL Class Map",
+                    "  clock      Configure time-of-day clock",
+                    "",
+                ],
+            ),
+        ]);
+        let mut s = configured(&e, &[]);
+        // `clas` begins the refused `class` and `class-map`
+        assert_eq!(
+            s.type_line("clas C1"),
+            (
+                vec!["% Ambiguous command:  \"clas C1\"".to_string()],
+                Result::Error
+            )
+        );
+        assert_eq!(s.type_line("class-m C1").1, Result::Ok);
+        assert_eq!(s.mode(), "config-cmap");
     }
 
     #[test]

@@ -68,17 +68,21 @@ The command reads `<captures dir>/../designs` for the names it gives and nothing
 
 ### Site words
 
-A site word is a word the captures name the site by and IOS does not: a word of the vocabulary below is never one.
+A site word is a word the captures name the site by and IOS does not. A word of IOS's vocabulary or a part of one is never one: names, syntax lines, example lines and their output and `?` descriptions, from the grammars and help tables, and the names of the access lists IOS XE makes itself (`acl::SYSTEM_V4`, `SYSTEM_V6`).
 
-| Vocabulary | From |
+A keyword an image's `?` answer offered, a crawl's at any level or a session log's, passes where it stands offered and nowhere else (`Deny::line_hits`, `Deny::row_hits`):
+
+| Field | A site word passes |
 |---|---|
-| names, syntax lines, example lines and their output, `?` descriptions | the books' grammars and help tables |
-| each `?` row's lowercase keyword and its description | the session logs |
-| each `?` row's lowercase keyword and its description, at every level, but a row naming an object a configuration made | the crawls |
+| a `?` answer's row | as the row's keyword, the answer offering it; the row's description with it |
+| the line before a `?` answer, a sweep line, a session log's line | as a keyword the image's answer for the words before it offered, whole, whichever of its parts the site uses; a form's value token stands for any word typed there |
+| a family's keyword description | read as the session log's `?` row it came from, against every image of the family |
+| configuration text, any other help text, a message | never |
 
-- A row naming an object a configuration made is a `User defined` row, a VRF's `VRF Name` row other than `Mgmt-vrf`, or a row whose keyword a capture names a host or an object by.
+- A row's keyword is a lowercase word (`-` and `_` within it) or a `<range>`. A row of another shape offers nothing, and a word of it that names the site leaves its answer out.
+- A row naming an object a configuration made offers nothing: a `User defined` row, a VRF's `VRF Name` row other than `Mgmt-vrf`, or a row whose keyword a capture names a host or an object by.
+- A help text is IOS's text about its row's keyword: its words pass in that description alone.
 - An object's name is the word after its kind (`ip access-list extended <name>`, `logging discriminator <name> ...`). A description, a location, a contact and a banner name no object.
-- A keyword a crawl offers is no site word whole, whichever of its parts the site uses.
 
 ### Use
 
@@ -280,13 +284,16 @@ A configuration or privileged EXEC line is read against the image's own answers 
 - On a routed port only the configured-object answers are read: every physical port shares one context, which holds the crawled switchport's answers. A PoE port's `power` lines are not read: the crawled ports had no PoE.
 - Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides.
 
-Lines the switch refused where its crawl offers the words (`context::REFUSED`), refused on an image with its own crawl at the session's level:
+Lines the switch refused where its crawl offers the words (`context::REFUSED`), refused on the image and at the levels they were measured on, where that image has its own crawl at the session's level:
 
-| Mode | Line | State | Caret |
-|---|---|---|---|
-| config | `class <name>` | any | after `class`; `class-map` is taken |
-| config | `ptp mode boundary delay-req`, `ptp mode boundary pdelay-req`, `ptp mode e2etransparent`, `ptp mode p2ptransparent` | `ptp profile dot1as` | at `mode` |
-| config | `ptp transport ipv4 udp` | `ptp profile dot1as` | at `transport` |
+| Image | Levels | Mode | Line | State | Caret |
+|---|---|---|---|---|---|
+| c9300 17.6 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
+| c9300 17.6 | network-advantage | config | `ptp mode boundary delay-req`, `ptp mode boundary pdelay-req`, `ptp mode e2etransparent`, `ptp mode p2ptransparent` | `ptp profile dot1as` | at `mode` |
+| c9300 17.6 | network-advantage | config | `ptp transport ipv4 udp` | `ptp profile dot1as` | at `transport` |
+
+- A unique abbreviation of a line stands for it (`ptp m e2etransparent`). Each word is read against the keywords offered before it, the held answer's else the books', and the line's own word, which the switch read there.
+- A word beginning the line's word and another, up to the caret's word, answers `% Ambiguous command:  "<line>"` (`clas C1`: `class` and `class-map`). Past the caret's word only a unique start stands.
 
 ### Licence gate
 
@@ -308,6 +315,8 @@ Measured exceptions, `src/license.rs`:
 | `UNLISTED` | `network-essentials` | config | `net` | `net` taken, the NET after it refused under its first character |
 | `TAKEN` | `network-essentials` | config | `l2 traceroute` | taken though `?` lists no `l2`; `l2 vfi` is refused |
 | `LEFT_OUT` | `network-essentials` | config-subif | `xconnect` | refused at the word |
+
+A table's word stands for its unique abbreviations among the keywords offered where it is typed, the held answer's else the books' (`context::stands_for`). A start of it and of another keyword answers `% Ambiguous command` for `UNLISTED` and `LEFT_OUT`, and is not taken for `TAKEN`.
 
 What the gated level prints for a line its image leaves out (`network-essentials`, IOS XE):
 
@@ -372,7 +381,7 @@ A refused line becomes a refusal, written `invalid <word> <offset>` (the caret's
 
 - Values are tokens and configured objects give no form, so a form names nothing of the site. A held message is a fixed text of `messages::MESSAGES` with each value written as its place in the form.
 - A word a row holds as typed is digits (a minus first), an interface name, a word some privileged EXEC `?` answer of the image's own crawls offers at any level, or such a word with a number after it. A row that would hold any other word is left out (`Unoffered`).
-- A form or refusal holding a denied word is left out whole, as crawl answers are. The denied words include each sweep's prompt name and the addresses, MAC addresses, serials and numbered names its lines and answers hold, and no word of IOS's vocabulary (Site words). The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
+- A form or refusal holding a denied word is left out whole, as crawl answers are; a keyword the image's answer offered where the word stands passes (Site words). The denied words include each sweep's prompt name and the addresses, MAC addresses, serials and numbered names its lines and answers hold, and no word of IOS's vocabulary. The leak check before the corpus is written, and `--scan` on the written corpus, read a sweep row's line as the build does and its messages as any other string.
 
 ### Enter, `?` and Tab
 
