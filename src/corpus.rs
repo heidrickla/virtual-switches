@@ -30,6 +30,9 @@ pub struct Source {
     pub crawls: Vec<CrawlLog>,
     /// each crawl folder, as `<book>-<release>/<folder>`, holding a `crawl.log` and no level: not read
     pub unleveled: Vec<String>,
+    /// each sweep folder's `enter.log`, the show lines a sweep typed at the privileged prompt and the
+    /// switch's parser answer to each on Enter, at the level its `level` file names
+    pub sweeps: Vec<CrawlLog>,
     /// the site's own designs and scripts, beside the captures folder (`../designs`): read only for
     /// the names they give
     pub designs: Vec<String>,
@@ -69,6 +72,7 @@ impl Source {
         }
         src.crawls = Source::read_crawls(dir);
         src.unleveled = Source::unleveled_crawls(dir);
+        src.sweeps = Source::read_sweeps(dir);
         if let Ok(designs) = std::fs::read_dir(dir.join("../designs")) {
             for f in designs.flatten() {
                 if let Ok(text) = std::fs::read_to_string(f.path()) {
@@ -87,12 +91,22 @@ impl Source {
     /// The `crawl.log` of every crawl folder under `dir` whose `level` file names its level, sorted
     /// by book, release and folder; no other file of a crawl's folder is read.
     pub fn read_crawls(dir: &Path) -> Vec<CrawlLog> {
+        Source::read_logs(dir, "crawl", "crawl.log")
+    }
+
+    /// The `enter.log` of every sweep folder (`sweep`, `sweep-<name>`) under `dir` whose `level` file
+    /// names its level, sorted as `read_crawls` sorts.
+    pub fn read_sweeps(dir: &Path) -> Vec<CrawlLog> {
+        Source::read_logs(dir, "sweep", "enter.log")
+    }
+
+    fn read_logs(dir: &Path, stem: &str, log: &str) -> Vec<CrawlLog> {
         let mut out = vec![];
-        for (book, release, folder, path) in crawl_folders(dir) {
+        for (book, release, folder, path) in image_folders(dir, stem) {
             let Some(level) = level_of(&path) else {
                 continue;
             };
-            if let Ok(text) = std::fs::read_to_string(path.join("crawl.log")) {
+            if let Ok(text) = std::fs::read_to_string(path.join(log)) {
                 out.push(CrawlLog {
                     book,
                     release,
@@ -108,7 +122,7 @@ impl Source {
     /// Every crawl folder under `dir` holding a `crawl.log` but no level, as
     /// `<book>-<release>/<folder>`.
     pub fn unleveled_crawls(dir: &Path) -> Vec<String> {
-        crawl_folders(dir)
+        image_folders(dir, "crawl")
             .into_iter()
             .filter(|(.., path)| path.join("crawl.log").is_file() && level_of(path).is_none())
             .map(|(book, release, folder, _)| format!("{book}-{release}/{folder}"))
@@ -135,6 +149,7 @@ impl Source {
             // a crawl's log is not embedded in the binary: read from the folder it was built against
             crawls: Source::read_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             unleveled: Source::unleveled_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
+            sweeps: Source::read_sweeps(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             designs: std::fs::read_dir(concat!(env!("VSWITCH_CAPTURES_DIR"), "/../designs"))
                 .into_iter()
                 .flatten()
@@ -145,20 +160,21 @@ impl Source {
     }
 }
 
-/// A crawl's log and the license level of the switch it crawled.
+/// A crawl's or a sweep's log and the license level of the switch it ran on.
 #[derive(Clone, Debug)]
 pub struct CrawlLog {
     pub book: String,
     pub release: String,
-    /// `crawl`, or `crawl-<name>` beside it for the same image at another level
+    /// `crawl`, or `crawl-<name>` beside it for the same image at another level; `sweep` and
+    /// `sweep-<name>` alike
     pub folder: String,
     pub level: String,
     pub text: String,
 }
 
-/// (book, release, folder name, path) of each folder named `crawl` or `crawl-<name>` under a
+/// (book, release, folder name, path) of each folder named `stem` or `<stem>-<name>` under a
 /// `<book>-<release>` folder of `dir`, sorted.
-fn crawl_folders(dir: &Path) -> Vec<(String, String, String, std::path::PathBuf)> {
+fn image_folders(dir: &Path, stem: &str) -> Vec<(String, String, String, std::path::PathBuf)> {
     let mut out = vec![];
     for d in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let image = d.file_name().to_string_lossy().to_string();
@@ -167,7 +183,7 @@ fn crawl_folders(dir: &Path) -> Vec<(String, String, String, std::path::PathBuf)
         };
         for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
             let folder = f.file_name().to_string_lossy().to_string();
-            if (folder == "crawl" || folder.starts_with("crawl-")) && f.path().is_dir() {
+            if (folder == stem || folder.starts_with(&format!("{stem}-"))) && f.path().is_dir() {
                 out.push((book.to_string(), release.to_string(), folder, f.path()));
             }
         }
@@ -205,6 +221,14 @@ pub struct HeldTable {
     /// it; absent from a corpus without one
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "interned")]
     pub crawl: Vec<CrawlRow>,
+    /// (license level, form or refused line, how the switch took it: `swept::Taken::write`) from a
+    /// sweep's Enter log at that level, read against the crawl's answers at the same level
+    /// (`swept::derive`); absent from a corpus without one
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swept: Vec<(String, String, String)>,
+    /// (license level, why, lines) of each sweep's lines with no row: the build reports them
+    #[serde(skip)]
+    pub swept_left: Vec<(String, String, usize)>,
     /// the captures read, by name
     pub captures: Vec<String>,
 }
@@ -390,6 +414,35 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
                 .or_insert(answer);
         }
     }
+    let mut swept: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut swept_left: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for f in src
+        .sweeps
+        .iter()
+        .filter(|f| f.book == book && f.release == release)
+    {
+        // the image's crawls read its words at the privileged prompt, its own level's first
+        let at = |level: &str| -> crate::swept::Answers<'_> {
+            crawl
+                .iter()
+                .filter(|((l, m, c, _), _)| l == level && m == "privileged" && c.is_empty())
+                .map(|((.., k), a)| (k.clone(), a))
+                .collect()
+        };
+        let levels: BTreeSet<&str> = crawl.keys().map(|(l, ..)| l.as_str()).collect();
+        let tiers: Vec<crate::swept::Answers<'_>> = std::iter::once(f.level.as_str())
+            .chain(levels.into_iter().filter(|l| *l != f.level))
+            .map(at)
+            .collect();
+        let tiers: Vec<&crate::swept::Answers<'_>> = tiers.iter().collect();
+        let (rows, left) = crate::swept::derive(&f.text, &tiers);
+        swept.extend(rows.into_iter().map(|(l, t)| (f.level.clone(), l, t)));
+        for (why, n) in left {
+            *swept_left
+                .entry((f.level.clone(), format!("{why:?}")))
+                .or_default() += n;
+        }
+    }
     HeldTable {
         lines: lines.into_iter().collect(),
         indent: indent.into_iter().map(|((k, l), i)| (k, l, i)).collect(),
@@ -399,6 +452,11 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
         crawl: crawl
             .into_iter()
             .map(|((l, m, c, k), a)| (l, m, c, k, a))
+            .collect(),
+        swept: swept.into_iter().collect(),
+        swept_left: swept_left
+            .into_iter()
+            .map(|((l, w), n)| (l, w, n))
             .collect(),
         captures,
     }
@@ -710,6 +768,7 @@ pub fn build(src: &Source) -> Corpus {
     keys.extend(
         src.crawls
             .iter()
+            .chain(&src.sweeps)
             .map(|f| (f.book.clone(), f.release.clone())),
     );
     for (book, release) in &keys {
@@ -1320,6 +1379,10 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
                 && !crate::context::holds_address(c)
                 && !a.iter().any(|r| deny.hits(r))
         });
+        // a measured line naming the site goes whole: its words are the line the switch read
+        t.swept.retain(|(_, l, _)| !deny.hits(l));
+        // the lines that gave no row are the corpus command's report, not the corpus
+        t.swept_left.clear();
         let n = t.captures.len();
         t.captures = (1..=n)
             .map(|i| format!("{book} {release} capture {i}"))

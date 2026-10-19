@@ -74,5 +74,5 @@ target/release/vswitch lab tests/example-lab.toml
 | [Output](docs/output.md) | error messages, `?` help, privilege levels, each show command |
 | [Checks](docs/checks.md) | lint, lab files and link checks, topology, design files |
 | [Grammars](docs/grammars.md) | sources, compile rules, overrides, matching |
-| [Captures](docs/captures.md) | the secret sweep, real switches, the corpus and crawls, capture, changes, probe |
+| [Captures](docs/captures.md) | the secret sweep, real switches, the corpus, crawls and sweeps, capture, changes, probe |
 | [Testing](docs/testing.md) | the test suite, CI, terminal tests |

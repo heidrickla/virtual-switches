@@ -812,13 +812,68 @@ impl<'a> Session<'a> {
         self.frames.last().map_or("exec", |f| f.mode.as_str())
     }
 
-    /// A line matched in `mode`, as a replayed configuration is when the session replays one.
+    /// A line matched in `mode`, as a replayed configuration is when the session replays one: as the
+    /// books read it, else as a form the switch answered at the session's level (`measured`).
     fn parse(&self, mode: &str, line: &str) -> Outcome {
+        let o = self.books(mode, line);
+        if matches!(o, Outcome::Ok(_)) {
+            return o;
+        }
+        self.measured(mode, line).map_or(o, Outcome::Ok)
+    }
+
+    /// `parse` against the books alone.
+    fn books(&self, mode: &str, line: &str) -> Outcome {
         if self.redacted {
             self.engine.parse_redacted(mode, line)
         } else {
             self.engine.parse(mode, line)
         }
+    }
+
+    /// The form a line reads as among those the switch of this image answered on Enter at the
+    /// session's level (`cli::Engine::parse_measured`).
+    fn measured(&self, mode: &str, line: &str) -> Option<Parse> {
+        if mode != "privileged" {
+            return None;
+        }
+        let level = self.level()?;
+        match self.engine.parse_measured(mode, line, &level) {
+            Outcome::Ok(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The refusal the switch of this image gave a line on Enter at the session's level, where it is
+    /// a measured one (`swept::Swept::refused`): its words read against the keywords the held answer
+    /// offers before each, else the books' and forms'.
+    fn measured_refusal(&self, mode: &str, line: &str) -> Option<Outcome> {
+        if mode != "privileged" {
+            return None;
+        }
+        let level = self.level()?;
+        let swept = self.engine.held.swept.get(&level)?;
+        let keywords = |text: &str| -> Option<Vec<String>> {
+            let held = self
+                .engine
+                .held
+                .help_for(Some(&level), mode, Some(""), text, |l| self.running_has(l))
+                .filter(|a| !crate::live::is_refusal(a));
+            if let Some(a) = held {
+                return Some(crate::live::keywords(a));
+            }
+            let toks = cli::tokens(text);
+            let (next, _) = self.engine.next_at(mode, &toks, Some(&level));
+            Some(
+                next.into_iter()
+                    .filter_map(|n| match n {
+                        Next::Kw { kw, .. } => Some(kw),
+                        Next::Arg { .. } => None,
+                    })
+                    .collect(),
+            )
+        };
+        swept.refused(line, &keywords)
     }
 
     /// Ctrl-C at a question (`copy`'s destination): the question is dropped and nothing is saved.
@@ -844,6 +899,10 @@ impl<'a> Session<'a> {
     /// stand is refused at its start.
     fn caret(&self, line: &str, at: usize) -> usize {
         let column = line.get(..at).map_or(at, |s| s.chars().count());
+        // a caret the switch drew for this very line stands where it drew it
+        if self.measured_refusal(self.mode(), line) == Some(Outcome::Invalid(at)) {
+            return column;
+        }
         let toks = cli::tokens(line);
         let Some(i) = toks.iter().position(|t| t.at == at) else {
             return column;
@@ -1314,10 +1373,11 @@ impl<'a> Session<'a> {
         let refused = p.items.iter().enumerate().find_map(|(n, it)| match it {
             Item::Arg {
                 name, value, tok, ..
-            } if matches!(
+            } if (matches!(
                 args.get(name),
                 Some(ArgKind::Interface | ArgKind::InterfaceRange)
-            ) && !on_stack(value, &self.device.stack) =>
+            ) || matches!(args.get(name), Some(ArgKind::InterfaceOf { of }) if modelled(of)))
+                && !on_stack(value, &self.device.stack) =>
             {
                 partial = n == last && starts_a_port(value, &self.device.stack);
                 Some(*tok)
@@ -3016,6 +3076,16 @@ impl<'a> Session<'a> {
                     ArgKind::Ipv6 => "X:X:X:X::X".into(),
                     ArgKind::Mac => "H.H.H".into(),
                     ArgKind::Text => "LINE".into(),
+                    ArgKind::Hex { min, max } => format!("<{min:X}-{max:X}>"),
+                    ArgKind::Ipv4Prefix => "A.B.C.D/nn".into(),
+                    ArgKind::Ipv6Prefix => "X:X:X:X::X/<0-128>".into(),
+                    ArgKind::InterfaceOf { of } => {
+                        return vec![Offer {
+                            shown: of.clone(),
+                            help: String::new(),
+                            kind: Offered::Type,
+                        }];
+                    }
                 };
                 vec![Offer {
                     shown,
@@ -3125,11 +3195,24 @@ impl<'a> Session<'a> {
     /// a word the session's licence level leaves out (`level_refusal`) or one a real switch of this
     /// image refused (`held_refusal`) before the books' own.
     fn read_at(&self, i: usize, mode: &str, line: &str) -> Outcome {
+        // what the switch of this image did with this line on Enter at the session's level: its
+        // refusal, else its answer, over the books and the level's inferred gate
+        if let Some(o) = self.measured_refusal(mode, line) {
+            return o;
+        }
+        if let Some(p) = self.measured(mode, line) {
+            let books = self.books(mode, line);
+            return if matches!(books, Outcome::Ok(_)) {
+                books
+            } else {
+                Outcome::Ok(p)
+            };
+        }
         // a word the level takes though no book or answer lists it: its refusal stands
         if let Some(o) = self.unlisted_refusal(mode, line) {
             return o;
         }
-        let mut o = self.parse(mode, line);
+        let mut o = self.books(mode, line);
         let level = self.level_refusal(i, mode, line);
         // the level's caret inside a word the books refuse at its start stands (`refused_type`)
         if let (Some(Outcome::Invalid(l)), Outcome::Invalid(b)) = (&level, &o)
@@ -3425,7 +3508,7 @@ impl<'a> Session<'a> {
     /// What may follow the whole tokens `done` at `mode`, and whether the line is complete there; at
     /// `>`, no command `privilege exec level` raised above it.
     fn offered_at(&self, mode: &str, done: &[cli::Tok]) -> (Vec<Offer>, bool) {
-        let (next, mut complete) = self.engine.next(mode, done);
+        let (next, mut complete) = self.engine.next_at(mode, done, self.level().as_deref());
         let mut offered = self.offered(&next);
         if mode == "exec" {
             let raised = self.raised();
@@ -4738,6 +4821,13 @@ fn span(seg: &str) -> Option<(&str, &str, u32, u32)> {
         }
     };
     Some((stem, sep, n.parse().ok()?, last.trim().parse().ok()?))
+}
+
+/// An interface type vswitch models, whose names the stack decides (`on_stack`).
+fn modelled(of: &str) -> bool {
+    cli::interface_types()
+        .iter()
+        .any(|(full, _)| full.eq_ignore_ascii_case(of))
 }
 
 /// Whether the stack has every interface a value names: a range's ends first, so a mistyped end
@@ -6854,6 +6944,140 @@ mod tests {
         };
         assert_eq!(in_ospf(&[]), in_ospf(&[LICENSE]));
         assert_ne!(in_ospf(&[essentials]), in_ospf(&[]));
+    }
+
+    /// A C9300 at 17.6 with no crawl, whose sweeps measured on Enter: `show widget` forms (the books
+    /// read `widget` as a word and nothing after it) and a `show clock` refusal at
+    /// network-advantage, an interface form at network-essentials.
+    fn measured() -> Engine {
+        let row = |level: &str, line: &str, taken: &str| {
+            (level.to_string(), line.to_string(), taken.to_string())
+        };
+        let essentials = "network-essentials";
+        let table = crate::corpus::HeldTable {
+            swept: vec![
+                row(ADVANTAGE, "show widget gadget", ""),
+                row(ADVANTAGE, "show widget gadgetry", ""),
+                row(ADVANTAGE, "show widget <number:1-10> detail", ""),
+                row(ADVANTAGE, "show widget knob extra", ""),
+                row(ADVANTAGE, "show widget knobs", ""),
+                row(ADVANTAGE, "show clock", "invalid 1 2"),
+                row(essentials, "show widget <interface:Vlan>", ""),
+            ],
+            ..Default::default()
+        };
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let c = crate::corpus::Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        Engine::with_held(grammar, held)
+    }
+
+    fn no_model(out: &[String]) -> bool {
+        out.first()
+            .is_some_and(|l| l.starts_with("% vswitch has no output model for '"))
+    }
+
+    #[test]
+    fn a_form_the_switch_answered_is_taken_at_its_level_alone() {
+        let e = measured();
+        let mut adv = configured(&e, &["end"]);
+        let mut ess = configured(&e, &[ESSENTIALS, "end"]);
+        for line in [
+            "show widget gadget",
+            "sh wid gadgetr",
+            "show widget 10 detail",
+            "show widget 1 det",
+        ] {
+            let (out, r) = adv.type_line(line);
+            assert!(r == Result::Ok && no_model(&out), "{line}: {out:?}");
+            let (out, r) = ess.type_line(line);
+            assert!(r == Result::Error && !no_model(&out), "{line}: {out:?}");
+        }
+        for line in ["show widget Vlan10", "show widget vl10"] {
+            let (out, r) = ess.type_line(line);
+            assert!(r == Result::Ok && no_model(&out), "{line}: {out:?}");
+            let (_, r) = adv.type_line(line);
+            assert_eq!(r, Result::Error, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_form_s_value_is_taken_in_its_range_alone() {
+        let e = measured();
+        let mut s = configured(&e, &["end"]);
+        let (out, r) = s.type_line("show widget 11 detail");
+        assert_eq!(r, Result::Error);
+        // past the digits the range's top allows, as for a book's range (`past_the_top`)
+        assert_eq!(caret_at(&out), "Switch#show widget 1".len());
+        let help = s.help("show widget ");
+        let first: Vec<&str> = help
+            .iter()
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        for w in ["<1-10>", "gadget", "gadgetry", "knob", "knobs"] {
+            assert!(first.contains(&w), "{w}: {help:?}");
+        }
+        assert!(!first.contains(&"Vlan"), "{help:?}");
+        assert!(
+            s.help("show widget 4 ")[0]
+                .trim_start()
+                .starts_with("detail")
+        );
+    }
+
+    #[test]
+    fn help_and_tab_offer_a_level_s_forms_where_no_answer_is_held() {
+        let e = measured();
+        let adv = configured(&e, &["end"]);
+        let ess = configured(&e, &[ESSENTIALS, "end"]);
+        // a whole keyword among the words begun rings the bell
+        assert_eq!(adv.complete("show widget gad"), None);
+        assert_eq!(
+            adv.complete("show widget gadgetr").as_deref(),
+            Some("show widget gadgetry ")
+        );
+        assert_eq!(ess.complete("show widget gadgetr"), None);
+        let help = ess.help("show widget ");
+        let first: Vec<&str> = help
+            .iter()
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        assert!(first.contains(&"Vlan"), "{help:?}");
+        assert!(!first.contains(&"gadget"), "{help:?}");
+    }
+
+    #[test]
+    fn a_refusal_the_switch_gave_stands_over_the_books_with_its_caret() {
+        let e = measured();
+        let mut adv = configured(&e, &["end"]);
+        let mut ess = configured(&e, &[ESSENTIALS, "end"]);
+        // the switch's caret two characters into `clock`, for the line and its abbreviations
+        for (line, at) in [("show clock", 7 + 5 + 2), ("sh clock", 7 + 3 + 2)] {
+            let (out, r) = adv.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            assert_eq!(caret_at(&out), at, "{line}");
+            assert_eq!(out[1], "% Invalid input detected at '^' marker.");
+            let (out, r) = ess.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+        }
+        // the line alone: a longer one is the books', refused at `detail`
+        let (out, _) = adv.type_line("show clock detail");
+        assert_eq!(caret_at(&out), "Switch#show clock ".len(), "{out:?}");
+    }
+
+    #[test]
+    fn a_whole_keyword_is_never_the_start_of_a_longer_form() {
+        let e = measured();
+        let mut s = configured(&e, &["end"]);
+        // `knob` is a keyword of `show widget knob extra`, so it is not read as `knobs`
+        let (out, _) = s.type_line("show widget knob");
+        assert!(!no_model(&out), "{out:?}");
+        let (out, r) = s.type_line("show widget knobs");
+        assert!(r == Result::Ok && no_model(&out), "{out:?}");
     }
 
     /// A C9200 at 17.15 whose donor is `crawl()`'s C9300 17.6 crawl at network-advantage, with that

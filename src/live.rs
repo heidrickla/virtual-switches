@@ -50,6 +50,9 @@ pub struct Held {
     pub described: Option<&'static Described>,
     /// `described` for the other family, asked after it
     pub described_other: Option<&'static Described>,
+    /// what this image's sweeps measured on Enter at the privileged prompt, by licence level: its
+    /// own, never a donor's
+    pub swept: BTreeMap<String, crate::swept::Swept>,
 }
 
 /// A crawl's answer and the context it was asked in.
@@ -450,6 +453,11 @@ impl Held {
                     .push((c.clone(), a.clone()));
             }
             h.captures = t.captures.clone();
+            for (level, line, taken) in &t.swept {
+                if let Some(taken) = crate::swept::Taken::read(taken) {
+                    h.swept.entry(level.clone()).or_default().add(line, taken);
+                }
+            }
         }
         for &(_, _, level) in enabled
             .iter()
@@ -951,7 +959,7 @@ fn rows(answer: &[String]) -> Vec<Row<'_>> {
 
 /// Whether a row's word is a keyword, as the crawler classes it: not `<cr>`, `|`, a range or other
 /// `<...>` form, nor a word in capitals (`WORD`, `LINE`, `A.B.C.D`, `X:X:X:X::X/<0-128>`).
-fn keyword(word: &str) -> bool {
+pub(crate) fn keyword(word: &str) -> bool {
     let caps = word.chars().any(|c| c.is_ascii_uppercase())
         && word
             .chars()

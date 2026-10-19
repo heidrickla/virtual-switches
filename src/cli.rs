@@ -317,7 +317,10 @@ fn take_arg(kind: &ArgKind, toks: &[Tok], i: usize, redacted: bool) -> Option<(u
     let t = toks.get(i)?;
     if redacted
         && t.text == crate::sweep::REMOVED
-        && !matches!(kind, ArgKind::Interface | ArgKind::InterfaceRange)
+        && !matches!(
+            kind,
+            ArgKind::Interface | ArgKind::InterfaceRange | ArgKind::InterfaceOf { .. }
+        )
     {
         return Some((1, t.text.clone()));
     }
@@ -379,6 +382,14 @@ fn take_arg(kind: &ArgKind, toks: &[Tok], i: usize, redacted: bool) -> Option<(u
         }
         ArgKind::Word => Some((1, t.text.clone())),
         ArgKind::Dscp => dscp(&t.text).then(|| (1, t.text.clone())),
+        ArgKind::Hex { .. } | ArgKind::Ipv4Prefix | ArgKind::Ipv6Prefix => {
+            crate::swept::takes(kind, &t.text).then(|| (1, t.text.clone()))
+        }
+        ArgKind::InterfaceOf { of } => {
+            let (name, n) =
+                crate::swept::interface_of(&t.text, toks.get(i + 1).map(|x| x.text.as_str()), of)?;
+            Some((n, name))
+        }
     }
 }
 
@@ -659,6 +670,20 @@ pub struct Engine {
     /// the mode a form of a command enters where its examples show one other than the command's
     /// (`ip access-list standard` beside `ip access-list extended`), by command and keywords
     forms: BTreeMap<(usize, Vec<String>), String>,
+    /// the books' commands come first in `grammar.commands`; those after them are the measured
+    /// forms of a licence level (`swept::commands`), by level
+    books: usize,
+    measured: BTreeMap<String, Vec<usize>>,
+    /// the measured forms' keywords, lowercase and sorted
+    measured_keywords: Vec<String>,
+}
+
+/// Which commands a line is read against: the books', a level's measured forms, or both.
+#[derive(Clone, Copy)]
+enum Sel<'l> {
+    Books,
+    Measured(&'l str),
+    Both(&'l str),
 }
 
 /// A parsed line's keywords, lowercase: its form, which modes are entered by.
@@ -734,12 +759,16 @@ impl Engine {
         }
         keywords.sort_unstable();
         keywords.dedup();
+        let books = grammar.commands.len();
         let mut e = Engine {
             grammar,
             by_mode,
             held,
             keywords,
             forms: BTreeMap::new(),
+            books,
+            measured: BTreeMap::new(),
+            measured_keywords: vec![],
         };
         // the mode each command enters, from the example lines that changed the prompt: seen at
         // least twice, into a mode some command runs in (one-off prompts like `(config-f)` are typos).
@@ -816,7 +845,36 @@ impl Engine {
                 e.forms.insert((ci, words), to);
             }
         }
+        // the measured forms last, read only where a session's level is given: every book-derived
+        // table above stays the books' alone
+        let built: Vec<(String, Command)> = e
+            .held
+            .swept
+            .iter()
+            .flat_map(|(l, s)| {
+                crate::swept::commands(l, &s.forms)
+                    .into_iter()
+                    .map(move |c| (l.clone(), c))
+            })
+            .collect();
+        for (level, c) in built {
+            for l in &c.lines {
+                keywords_in(&l.node, &mut e.measured_keywords);
+            }
+            e.measured
+                .entry(level)
+                .or_default()
+                .push(e.grammar.commands.len());
+            e.grammar.commands.push(c);
+        }
+        e.measured_keywords.sort_unstable();
+        e.measured_keywords.dedup();
         e
+    }
+
+    /// Whether a parse's command is a measured form (`swept::commands`), not a book's.
+    pub fn is_measured(&self, command: usize) -> bool {
+        command >= self.books
     }
 
     /// The mode a parsed line enters: its form's own where its examples show one (`forms`), else its
@@ -835,7 +893,21 @@ impl Engine {
                 && self.by_mode.contains_key("config-if"))
     }
 
-    fn candidates(&self, mode: &str) -> Vec<usize> {
+    fn candidates(&self, mode: &str, sel: Sel<'_>) -> Vec<usize> {
+        let mut out = match sel {
+            Sel::Measured(_) => vec![],
+            _ => self.books_for(mode),
+        };
+        // a level's measured forms, at the privileged prompt they were typed at
+        if let Sel::Measured(l) | Sel::Both(l) = sel
+            && mode == "privileged"
+        {
+            out.extend(self.measured.get(l).into_iter().flatten());
+        }
+        out
+    }
+
+    fn books_for(&self, mode: &str) -> Vec<usize> {
         let mut out = self.by_mode.get(mode).cloned().unwrap_or_default();
         // privileged EXEC runs every user EXEC command
         if mode == "privileged" {
@@ -857,12 +929,12 @@ impl Engine {
 
     /// The syntax lines a line typed in `mode` is read against, but those a whole keyword shadows
     /// (`shadow`).
-    fn tries(&self, mode: &str, toks: &[Tok]) -> Vec<Try<'_>> {
+    fn tries(&self, mode: &str, toks: &[Tok], sel: Sel<'_>) -> Vec<Try<'_>> {
         let negated_input = toks
             .first()
             .is_some_and(|t| t.text.eq_ignore_ascii_case("no"));
         let mut out = Vec::new();
-        for ci in self.candidates(mode) {
+        for ci in self.candidates(mode, sel) {
             let cmd = &self.grammar.commands[ci];
             for (li, l) in cmd.lines.iter().enumerate() {
                 // a `no` input matches the stated `no` form, or the command's own form after `no`,
@@ -891,9 +963,18 @@ impl Engine {
     /// What `?` lists after the whole tokens `toks` in `mode`: what may come next, and whether the
     /// line is complete as typed (`<cr>`).
     pub fn next(&self, mode: &str, toks: &[Tok]) -> (Vec<Next>, bool) {
+        self.next_in(mode, toks, Sel::Books)
+    }
+
+    /// `next` with the measured forms of a session's `level` beside the books'.
+    pub fn next_at(&self, mode: &str, toks: &[Tok], level: Option<&str>) -> (Vec<Next>, bool) {
+        self.next_in(mode, toks, level.map_or(Sel::Books, Sel::Both))
+    }
+
+    fn next_in(&self, mode: &str, toks: &[Tok], sel: Sel<'_>) -> (Vec<Next>, bool) {
         let mut out = Vec::new();
         let mut complete = false;
-        for t in self.tries(mode, toks) {
+        for t in self.tries(mode, toks, sel) {
             let cmd = &self.grammar.commands[t.command];
             let rest = &toks[t.offset.min(toks.len())..];
             let mut found = Vec::new();
@@ -919,16 +1000,53 @@ impl Engine {
 
     /// Matches `line` typed in `mode`.
     pub fn parse(&self, mode: &str, line: &str) -> Outcome {
-        self.parse_as(mode, line, false)
+        self.parse_as(mode, line, false, Sel::Books)
+    }
+
+    /// A line read against the forms measured at `level` alone, as the switch answered them on
+    /// Enter. IOS reads a token that is a keyword whole as that keyword, the books' or a form's: a
+    /// form reading it as the start of a longer one is refused there.
+    pub fn parse_measured(&self, mode: &str, line: &str, level: &str) -> Outcome {
+        let toks = tokens(line);
+        if mode != "privileged"
+            || !self.measured.contains_key(level)
+            || toks
+                .first()
+                .is_some_and(|t| t.text.eq_ignore_ascii_case("no"))
+        {
+            return Outcome::Invalid(0);
+        }
+        let o = self.parse_as(mode, line, false, Sel::Measured(level));
+        let Outcome::Ok(p) = o else { return o };
+        for it in &p.items {
+            if let Item::Kw {
+                exact: false, tok, ..
+            } = it
+            {
+                let (next, _) = self.next_in(mode, &toks[..*tok], Sel::Both(level));
+                let whole = next.iter().any(|n| {
+                    matches!(n, Next::Kw { kw, .. } if kw.eq_ignore_ascii_case(&toks[*tok].text))
+                });
+                if whole {
+                    return Outcome::Invalid(toks[*tok].at);
+                }
+            }
+        }
+        Outcome::Ok(p)
     }
 
     /// `parse` for a line of a configuration being replayed, which may hold the secret sweep's
     /// `<removed>` where a value was.
     pub fn parse_redacted(&self, mode: &str, line: &str) -> Outcome {
-        self.parse_as(mode, line, true)
+        self.parse_as(mode, line, true, Sel::Books)
     }
 
-    fn parse_as(&self, mode: &str, line: &str, redacted: bool) -> Outcome {
+    fn parse_as(&self, mode: &str, line: &str, redacted: bool, sel: Sel<'_>) -> Outcome {
+        // an abbreviation is ambiguous among everything offered where it stands
+        let around = match sel {
+            Sel::Measured(l) => Sel::Both(l),
+            s => s,
+        };
         let toks = tokens(line);
         if toks.is_empty() {
             return Outcome::Incomplete;
@@ -936,7 +1054,7 @@ impl Engine {
         let mut full: Vec<Parse> = Vec::new();
         let mut furthest = 0usize;
         let mut prefix_of_some = false;
-        for t in self.tries(mode, &toks) {
+        for t in self.tries(mode, &toks, sel) {
             let (ci, li, node, offset, negated) = (t.command, t.line, t.node, t.offset, t.negated);
             let cmd = &self.grammar.commands[ci];
             {
@@ -1006,7 +1124,8 @@ impl Engine {
         if full.is_empty() {
             // IOS reads left to right: an abbreviation two keywords fit is ambiguous before the
             // line is found incomplete or wrong further on (`co`: configure, connect, copy)
-            if (0..=furthest.min(toks.len() - 1)).any(|t| self.ambiguous_at(mode, &toks, t)) {
+            if (0..=furthest.min(toks.len() - 1)).any(|t| self.ambiguous_at(mode, &toks, t, around))
+            {
                 return Outcome::Ambiguous;
             }
             if prefix_of_some && furthest >= toks.len() {
@@ -1033,7 +1152,7 @@ impl Engine {
             // completes (`show vlan i`: id, ifindex)
             Outcome::Ok(p)
                 if p.items.iter().any(|i| {
-                    matches!(i, Item::Kw { exact: false, tok, .. } if self.ambiguous_at(mode, &toks, *tok))
+                    matches!(i, Item::Kw { exact: false, tok, .. } if self.ambiguous_at(mode, &toks, *tok, around))
                 }) =>
             {
                 Outcome::Ambiguous
@@ -1044,20 +1163,26 @@ impl Engine {
 
     /// Whether token `t` abbreviates two or more keywords that may follow the tokens before it, none
     /// of them whole, and no argument there takes it.
-    fn ambiguous_at(&self, mode: &str, toks: &[Tok], t: usize) -> bool {
+    fn ambiguous_at(&self, mode: &str, toks: &[Tok], t: usize, sel: Sel<'_>) -> bool {
         let typed = toks[t].text.to_lowercase();
         // two keywords anywhere in the grammar that the token abbreviates, before looking at its point
-        let from = self.keywords.partition_point(|k| *k < typed);
-        let longer = self.keywords[from..]
-            .iter()
-            .take_while(|k| k.starts_with(&typed))
-            .filter(|k| **k != typed)
-            .take(2)
-            .count();
-        if longer < 2 {
+        let longer = |keywords: &[String]| {
+            let from = keywords.partition_point(|k| *k < typed);
+            keywords[from..]
+                .iter()
+                .take_while(|k| k.starts_with(&typed))
+                .filter(|k| **k != typed)
+                .take(2)
+                .count()
+        };
+        let measured = match sel {
+            Sel::Books => 0,
+            _ => longer(&self.measured_keywords),
+        };
+        if longer(&self.keywords) + measured < 2 {
             return false;
         }
-        let (next, _) = self.next(mode, &toks[..t]);
+        let (next, _) = self.next_in(mode, &toks[..t], sel);
         let mut fits = BTreeSet::new();
         for n in &next {
             match n {

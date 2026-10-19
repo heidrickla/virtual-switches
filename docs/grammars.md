@@ -13,6 +13,7 @@ Each grammar is compiled from Cisco's documentation for a platform and release, 
 | Cisco IOS and IOS XE general command references, `reference/ios-xe-cr.json` | commands and syntax lines the platform's own evidence attests (General references, below) |
 | `data/overrides.json` | corrections and additions written against the 9300 17.15 books, each with its evidence (Overrides, below) |
 | `data/corpus.json.gz` | what real switches' captures teach, applied over the compiled grammar at their platform and release |
+| A sweep's forms, in `data/corpus.json.gz` | the lines a lab switch answered on Enter at a licence level, as commands beside the books' at that platform, release and level (Measured forms, below) |
 
 The general references are IOS, IOS XE, interfaces, IP addressing, IP routing, basic system management, LAN switching, security, configuration fundamentals, SNMP, quality of service, high availability, IP application services and programmability 17.15. Grammars that borrow from captures are compiled where the captures are: the folder `VSWITCH_CAPTURES` names, else `live` beside the grammars' folder.
 
@@ -234,6 +235,21 @@ A line typed at a prompt is read against the commands the mode runs.
 | Enclosing modes | a configuration submode hands a line it does not know to the nearest enclosing mode that takes it, global configuration last, and leaves the submode only when that line is accepted |
 | Abbreviated first word | a line a submode takes only as an abbreviation goes to an enclosing mode that takes it whole: `router ospf 1` typed in an interface goes to global configuration. Where the nearest mode that has the word whole refuses the line, its refusal stands in the submode unless a mode further out takes the line: `key rad123` in a key chain's key is refused under `rad123` as the key chain's `key` refuses it, and `key chain K2` goes to global configuration |
 | Removed values | a configuration typed from a file (a switch booting from the list, `check`, `lint`, `verify`, `changes`) takes the secret sweep's `<removed>` for any argument but an interface, where a value was; at a console it is the word it is |
+
+### Measured forms
+
+A sweep's forms (`captures.md`, Sweeps) join the grammar as commands after the books' own, one per first two words (`show ip (measured)`), in privileged EXEC, each held for its level. A session reads a level's forms only at that level, and its measured refusals before either.
+
+| Rule | Detail |
+|---|---|
+| Order | a line the books take runs as the books read it; a line only a form takes runs as the form, its output picked by the line as written, and a line with no model prints `% vswitch has no output model for '<line>' yet` |
+| Matching | a form is matched as a book's command, by unique starts; an abbreviation read through a form is ambiguous among the books' keywords and the level's forms' at its point |
+| Longer forms | a whole keyword is never read as the start of a longer keyword of a form: `knob` is refused where forms hold `knobs` and `knob extra` |
+| `no` | no form is read after `no` |
+| Arguments | `<number:lo-hi>` a decimal number in the range, `<hex:lo-hi>` a hexadecimal one, `<interface:Type>` the type and a number; addresses, prefixes and MAC addresses as the books' kinds |
+| Ports | a form's interface of a type vswitch models is refused where the session's stack lacks the port, as a book's is |
+| Book tables | the modes commands enter, the examples and the `enter` modes borrowed across releases are the books' alone: the forms join after they are built |
+| `show running-config` | a view a form takes and the books lack prints no output model, never the whole configuration |
 
 ## Access lists
 

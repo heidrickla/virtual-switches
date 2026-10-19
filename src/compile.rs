@@ -39,6 +39,19 @@ pub enum ArgKind {
     Word,
     /// a DSCP value, 0-63 or a name (`ef`, `af41`, `cs4`, `default`)
     Dscp,
+    /// a hexadecimal number, `0x` before it or not (`<0-FFFFFFFF>`)
+    Hex {
+        min: u64,
+        max: u64,
+    },
+    /// `A.B.C.D/nn`
+    Ipv4Prefix,
+    /// `X:X:X:X::X/<0-128>`
+    Ipv6Prefix,
+    /// an interface of this one type, a type vswitch models or not (`Lspvif0`)
+    InterfaceOf {
+        of: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

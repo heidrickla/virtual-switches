@@ -35,6 +35,7 @@ mod spanning;
 mod startup;
 mod stp;
 mod sweep;
+mod swept;
 mod syntax;
 mod target;
 mod topology;
@@ -611,7 +612,9 @@ fn borrow_enters(books: &mut [(Release, compile::Grammar)]) -> Vec<String> {
         let engine = cli::Engine::new(books[i].1.clone());
         let mut order: Vec<usize> = (0..books.len()).filter(|&j| j != i).collect();
         order.sort_by_key(|&j| (j.abs_diff(i), j < i));
-        for (ci, c) in engine.grammar.commands.iter().enumerate() {
+        // the books' commands, not the measured forms after them
+        let own = books[i].1.commands.len();
+        for (ci, c) in engine.grammar.commands.iter().enumerate().take(own) {
             if c.enters.is_some() {
                 continue;
             }
@@ -1971,7 +1974,33 @@ fn run(args: &[String]) -> Result<bool, String> {
             for f in &src.unleveled {
                 println!("{f}: no level file, not read");
             }
+            for f in &src.sweeps {
+                println!("{}-{}/{}: {}", f.book, f.release, f.folder, f.level);
+            }
             let built = corpus::with_forms(corpus::build(&src), &src)?;
+            for (b, r, t) in &built.held {
+                let levels: std::collections::BTreeSet<&str> =
+                    t.swept.iter().map(|(l, ..)| l.as_str()).collect();
+                for l in levels {
+                    let rows = t.swept.iter().filter(|(x, ..)| x == l);
+                    let forms = rows.clone().filter(|(.., k)| k.is_empty()).count();
+                    let refused = rows.count() - forms;
+                    let left: Vec<String> = t
+                        .swept_left
+                        .iter()
+                        .filter(|(x, ..)| x == l)
+                        .map(|(_, why, n)| format!("{n} {why}"))
+                        .collect();
+                    println!(
+                        "{b}-{r} swept at {l}: {forms} forms, {refused} refusals; no row: {}",
+                        if left.is_empty() {
+                            "none".to_string()
+                        } else {
+                            left.join(", ")
+                        }
+                    );
+                }
+            }
             let crawled = |c: &corpus::Corpus| c.held.iter().map(|(_, _, t)| t.crawl.len()).sum();
             let asked: usize = crawled(&built);
             let c = corpus::filtered(built, &deny);

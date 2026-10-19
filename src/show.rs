@@ -1315,7 +1315,10 @@ pub fn vlan_database(d: &Device) -> Vec<String> {
 /// What an EXEC command prints. The line as written out picks the output: the books list some forms
 /// as commands of their own (`show running-config interface`).
 pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
-    let running = p.canonical().starts_with("show running-config");
+    // a measured form the books lack has no model of its own: a running configuration's view the
+    // books do not list is not the whole configuration
+    let running =
+        p.canonical().starts_with("show running-config") && !s.engine.is_measured(p.command);
     match name {
         _ if running => {
             let all = running_config(&s.device);
@@ -1381,6 +1384,8 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
             // every platform keeps IOS's trailing spaces (`act/unsup `): every family's show tech
             // has them; only a terminal log loses them
             match c.as_str() {
+                // `show` alone (the lab C9300-24T, 17.6.4)
+                "show" => vec!["% Type \"show ?\" for a list of subcommands".into()],
                 "show interfaces status" => interfaces_status(d),
                 "show interfaces status err-disabled" => interfaces_status_errdisabled(d),
                 "show vlan brief" => vlan_brief(d, s.width),

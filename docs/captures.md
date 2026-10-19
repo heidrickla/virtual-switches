@@ -289,6 +289,64 @@ What the gated level prints for a line its image leaves out (`network-essentials
 | `redistribute isis` under a router | `% Failed to create routing protocol isis` |
 | `show running-config` of a named `router eigrp` | each IPv4 address family ends with `eigrp stub connected summary` and each IPv4 service family starts with `eigrp stub connected`, unless it states its own `eigrp stub` |
 
+## Sweeps
+
+A sweep is a transcript of lines typed on Enter at the privileged prompt of a lab switch, each followed by the switch's parser answer alone. `vswitch corpus` reads sweeps and the binary does not embed them. A sweep's forms and refusals are a grammar overlay for its own book, release and level (Matching in `grammars.md`).
+
+### Sweep folders
+
+- The log is `<book>-<release>/sweep/enter.log`, or `sweep-<name>/enter.log` beside it for the same image at another level, with a `level` file as a crawl folder has.
+- Each line is written after its prompt. After it stands nothing where the switch answered (output, nothing, or a state message), else the caret line and `% Invalid input detected at '^' marker.`, `% Incomplete command.`, or `% Ambiguous command:  "<line>"`.
+- The caret's column counts the prompt and the line as typed.
+- `vswitch corpus` prints each sweep folder with its level, then per level the forms and refusals held and the lines that gave neither, by reason.
+
+### Forms
+
+An answered line becomes a form: its words, each value a typed argument. Each word is read against the `?` answer for the line before it in privileged EXEC: the image's crawl at the sweep's level, else its crawl at another level, which types values only and grants no keyword.
+
+| Token | Takes | The answer's row |
+|---|---|---|
+| a keyword | the keyword, by any unique start | the keyword's row |
+| `<number:lo-hi>` | a decimal number in the range | `<lo-hi>` |
+| `<hex:lo-hi>` | a hexadecimal number in the range | `<0-FFFFFFFF>` and its kin |
+| `<interface:Type>` | that type and a number, by IOS's abbreviations where vswitch models the type; the session's stack decides which ports exist | an interface type's row (`GigabitEthernet`, `Vlan`, `nve`) |
+| `<ipv4>`, `<ipv4/len>` | an IPv4 address, a prefix | `A.B.C.D`, `Hostname`; `A.B.C.D/nn` |
+| `<ipv6>`, `<ipv6/len>` | an IPv6 address, a prefix | `X:X:X:X::X`; `X:X:X:X::X/<0-128>` |
+| `<mac>` | a MAC address | `H.H.H` |
+| `<word>`, `<line>` | any word, the rest of the line | `WORD`, `LINE` |
+
+- The rows are tried in that order, a keyword first.
+- A line gives no form where a word fits no row, or names an object the configuration made: a `User defined` row, or a VRF's `VRF Name` row other than `Mgmt-vrf`.
+- A form's value is never another keyword: one observed name stays that name.
+
+### Refusals
+
+A refused line becomes a refusal, written `invalid <word> <offset>` (the caret's word and its place in it), `incomplete` or `ambiguous`.
+
+- Its words before the caret are read as a form's are, numbers and interfaces kept as typed.
+- The caret's word is kept as typed where it is digits, an interface or a lowercase word. It is `<word>` where the answer before it holds no value row and the word starts no keyword there.
+- Words after the caret are kept as typed, an address as its token, else `<word>`.
+- A refusal is matched whole: the same number of words, each word before the caret its keyword or a unique start of it among the keywords offered there, numbers equal by value and interfaces by name, the caret's word and those after it as written.
+
+### Privacy
+
+- Values are tokens and configured objects give no form, so a form names nothing of the site.
+- A form or refusal holding a denied word is left out whole, as crawl answers are. The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
+
+### Enter, `?` and Tab
+
+At the privileged prompt of a session whose image and level a sweep covers:
+
+| Order | Rule |
+|---|---|
+| 1 | a refusal of that level stands over the books and the forms, with its caret where the switch drew it |
+| 2 | a line a form of that level takes is taken; where the books take it too, the books' command runs, else the form's (Measured forms in `grammars.md`) |
+| 3 | otherwise the books, held refusals and the licence gate read it |
+
+- A level reads its own sweep alone; another level's or a donor's sweep grants and refuses nothing.
+- `?` and Tab answer from the held crawl first. Where none is held, the books' keywords and the level's forms' together answer.
+- A switch-observed `?` row that Enter refused stays offered: `show ip route ?` lists `Hostname`, and `show ip route Hostname` is refused.
+
 ## capture
 
 `vswitch capture <user@host> [--key <file>] [--out <dir>] [--pending <dir>]` reads a switch over SSH with show commands only. `--out` defaults to the current folder.

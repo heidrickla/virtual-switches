@@ -27,9 +27,10 @@ fn gz(dir: &str) -> Vec<(String, String)> {
 }
 
 fn main() {
+    // statics, not consts: a const's bytes can be copied into every place that names it
     let mut out = String::from(
         "/// (platform, release, gzip-compressed grammar JSON) for every compiled release\n\
-         pub const GRAMMARS: &[(&str, &str, &[u8])] = &[\n",
+         pub static GRAMMARS: &[(&str, &str, &[u8])] = &[\n",
     );
     for (stem, path) in gz("data/grammars") {
         if let Some((platform, release)) = stem.split_once('-') {
@@ -40,7 +41,7 @@ fn main() {
     }
     out.push_str(
         "];\n\n/// (platform, gzip-compressed help JSON): command name to keyword to text\n\
-         pub const HELP: &[(&str, &[u8])] = &[\n",
+         pub static HELP: &[(&str, &[u8])] = &[\n",
     );
     for (platform, path) in gz("data/help") {
         out.push_str(&format!("    ({platform:?}, include_bytes!({path:?})),\n"));
@@ -50,10 +51,10 @@ fn main() {
     println!("cargo:rerun-if-changed=data/corpus.json.gz");
     match fs::canonicalize("data/corpus.json.gz") {
         Ok(path) => out.push_str(&format!(
-            "\n/// the corpus, gzip-compressed JSON\npub const CORPUS: &[u8] = include_bytes!({:?});\n",
+            "\n/// the corpus, gzip-compressed JSON\npub static CORPUS: &[u8] = include_bytes!({:?});\n",
             path.display().to_string()
         )),
-        Err(_) => out.push_str("\n/// the corpus, gzip-compressed JSON\npub const CORPUS: &[u8] = &[];\n"),
+        Err(_) => out.push_str("\n/// the corpus, gzip-compressed JSON\npub static CORPUS: &[u8] = &[];\n"),
     }
     // the captures themselves, only in a build that names a folder of them: VSWITCH_CAPTURES, else
     // the private repository's live/ beside this one
@@ -92,7 +93,7 @@ fn main() {
     // real switches' running configurations: <captures>/<platform>-<release>/<name>running-config.txt
     out.push_str(
         "\n/// (platform, release, file, text) of every running configuration a real switch printed\n\
-         pub const LIVE: &[(&str, &str, &str, &str)] = &[\n",
+         pub static LIVE: &[(&str, &str, &str, &str)] = &[\n",
     );
     println!("cargo:rerun-if-changed={captures}");
     let mut live: Vec<(String, String, String, String)> = vec![];
@@ -128,7 +129,7 @@ fn main() {
     // their session logs: show output and `?` answers
     out.push_str(
         "\n/// (platform, release, file, text) of every session log taken from a real switch\n\
-         pub const LIVE_LOGS: &[(&str, &str, &str, &str)] = &[\n",
+         pub static LIVE_LOGS: &[(&str, &str, &str, &str)] = &[\n",
     );
     logs.sort();
     for (platform, release, file, path) in logs {
@@ -140,7 +141,7 @@ fn main() {
     // the hardware of a switch whose session names none (the cores'), in `--stack` notation
     out.push_str(
         "\n/// (platform, release, file, text) of every `<host>-stack.txt` beside a capture\n\
-         pub const LIVE_STACKS: &[(&str, &str, &str, &str)] = &[\n",
+         pub static LIVE_STACKS: &[(&str, &str, &str, &str)] = &[\n",
     );
     stacks.sort();
     for (platform, release, file, path) in stacks {
