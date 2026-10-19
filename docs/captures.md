@@ -66,6 +66,20 @@ The command reads `<captures dir>/../designs` for the names it gives and nothing
 | `--loose` | with `--scan`, the wider match |
 | `--why` | counts which denied word took out each `?` answer row |
 
+### Site words
+
+A site word is a word the captures name the site by and IOS does not: a word of the vocabulary below is never one.
+
+| Vocabulary | From |
+|---|---|
+| names, syntax lines, example lines and their output, `?` descriptions | the books' grammars and help tables |
+| each `?` row's lowercase keyword and its description | the session logs |
+| each `?` row's lowercase keyword and its description, at every level, but a row naming an object a configuration made | the crawls |
+
+- A row naming an object a configuration made is a `User defined` row, a VRF's `VRF Name` row other than `Mgmt-vrf`, or a row whose keyword a capture names a host or an object by.
+- An object's name is the word after its kind (`ip access-list extended <name>`, `logging discriminator <name> ...`). A description, a location, a contact and a banner name no object.
+- A keyword a crawl offers is no site word whole, whichever of its parts the site uses.
+
 ### Use
 
 | Use | Effect |
@@ -128,6 +142,7 @@ A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswit
 - The log is `<book>-<release>/crawl/crawl.log`, or `crawl-<name>/crawl.log` beside it for the same image at another level.
 - The folder's `level` file names the license level the switch ran at on its first line: lowercase letters, digits and `-` (`network-advantage`, `network-essentials`, `lanbase`).
 - A crawl folder without a level is named by `vswitch corpus` as not read.
+- The log is read for its answers, and for the keywords it offers (Site words).
 - No other file of a crawl folder is read.
 - `vswitch corpus` prints each crawl folder it read with its level.
 - Answers are held by level, mode, context and the line before `?`. The first answer for a key is the one held.
@@ -334,7 +349,7 @@ A refused line becomes a refusal, written `invalid <word> <offset>` (the caret's
 
 - Values are tokens and configured objects give no form, so a form names nothing of the site.
 - A word a row holds as typed is digits (a minus first), an interface name, a word some privileged EXEC `?` answer of the image's own crawls offers at any level, or such a word with a number after it. A row that would hold any other word is left out (`Unoffered`).
-- A form or refusal holding a denied word is left out whole, as crawl answers are. The denied words include each sweep's prompt name and the addresses, MAC addresses, serials and numbered names its lines and answers hold. The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
+- A form or refusal holding a denied word is left out whole, as crawl answers are. The denied words include each sweep's prompt name and the addresses, MAC addresses, serials and numbered names its lines and answers hold, and no word of IOS's vocabulary (Site words). The leak check before the corpus is written, and `--scan` on the written corpus, read sweep rows as any other string.
 
 ### Enter, `?` and Tab
 

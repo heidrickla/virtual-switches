@@ -26,7 +26,7 @@ pub struct Source {
     pub logs: Vec<File>,
     pub stacks: Vec<File>,
     /// each crawl folder's `crawl.log`, the `?` probes of a crawl of the switch, at the level its
-    /// `level` file names: read for the help it held, and for nothing else
+    /// `level` file names: read for the help it held and the keywords it offers (`Deny::of`)
     pub crawls: Vec<CrawlLog>,
     /// each crawl folder, as `<book>-<release>/<folder>`, holding a `crawl.log` and no level: not read
     pub unleveled: Vec<String>,
@@ -1032,6 +1032,8 @@ pub struct Deny {
     // the words of six characters or more, looked for inside longer words
     long: std::collections::HashSet<String>,
     longest: usize,
+    // the keywords a crawl offers, which pass whole whatever their parts
+    offered: std::collections::HashSet<String>,
 }
 
 impl Deny {
@@ -1058,11 +1060,12 @@ impl Deny {
         .unwrap();
         let numbered =
             regex::Regex::new(r"\b(?:TP-self-signed|IOS-Self-Signed-Certificate)-\d+\b").unwrap();
+        // a name a configuration gives: (kind of line, the rest)
         let named = regex::Regex::new(
-            r"^\s*(?:hostname|username|ip domain[ -]name|ip domain list|vtp domain|snmp-server community|snmp-server location|snmp-server contact|description|name|alias \S+|banner \S+|ip access-list(?: standard| extended| resequence)?|ipv6 access-list|mac access-list extended|(?:class-map|policy-map)(?: type \S+)?(?: match-(?:any|all))?|route-map|key chain|crypto pki trustpoint|crypto pki certificate chain|vrf definition|ip vrf|object-group \S+|logging discriminator|time-range|ip prefix-list|aaa group server \S+|radius server|tacacs server|service-policy (?:input|output)|class|match access-group name)\s+(.+)$",
+            r"^\s*(hostname|username|ip domain[ -]name|ip domain list|vtp domain|snmp-server community|snmp-server location|snmp-server contact|description|name|alias \S+|banner \S+|ip access-list(?: standard| extended| resequence)?|ipv6 access-list|mac access-list extended|(?:class-map|policy-map)(?: type \S+)?(?: match-(?:any|all))?|route-map|key chain|crypto pki trustpoint|crypto pki certificate chain|vrf definition|ip vrf|object-group \S+|logging discriminator|time-range|ip prefix-list|aaa group server \S+|radius server|tacacs server|service-policy (?:input|output)|class|match access-group name)\s+(.+)$",
         )
         .unwrap();
-        let hosts = src
+        let hosts: Vec<String> = src
             .running
             .iter()
             .chain(&src.logs)
@@ -1072,7 +1075,42 @@ impl Deny {
                     .iter()
                     .find_map(|s| f.name.strip_suffix(s))
                     .map(|h| h.split("-session-").next().unwrap_or(h).to_string())
-            });
+            })
+            .collect();
+        // the names the captures' configurations give hosts and objects: the word after the kind
+        // (`logging discriminator <name> msg-body ...`); free text names no object
+        let free = |kind: &str| {
+            ["description", "snmp-server location", "snmp-server contact"].contains(&kind)
+                || kind.starts_with("banner ")
+        };
+        let mut configured: BTreeSet<String> = hosts.iter().flat_map(|h| words(h)).collect();
+        for f in src.running.iter().chain(&src.logs).chain(&src.stacks) {
+            for c in f.text.lines().filter_map(|l| named.captures(l)) {
+                if !free(&c[1]) {
+                    configured.extend(words(&c[2]).take(1));
+                }
+            }
+        }
+        // the crawls' rows, at every level, the same way; their keywords also pass whole where a part
+        // is a site word (`denied`). A row naming an object a configuration made (`User defined`, a
+        // VRF's `VRF Name`, a name the captures' configurations give) is the switch's, not IOS's
+        let mut offered = std::collections::HashSet::new();
+        for f in &src.crawls {
+            for l in f.text.lines() {
+                let Some(c) = keyword.captures(l) else {
+                    continue;
+                };
+                let word = c[1].trim_end_matches(':');
+                if crate::swept::made(word, c[2].trim())
+                    || words(word).any(|w| configured.contains(&w))
+                {
+                    continue;
+                }
+                public.extend(words(&c[1]));
+                public.extend(words(&c[2]));
+                offered.extend(words(word));
+            }
+        }
         raw.extend(hosts);
         for f in src.running.iter().chain(&src.logs).chain(&src.stacks) {
             for line in f.text.lines() {
@@ -1085,7 +1123,7 @@ impl Deny {
                 raw.extend(serial.captures_iter(line).map(|c| c[1].to_string()));
                 raw.extend(numbered.find_iter(line).map(|m| m.as_str().to_string()));
                 if let Some(c) = named.captures(line) {
-                    raw.extend(words(&c[1]).filter(|w| !w.chars().all(|c| c.is_ascii_digit())));
+                    raw.extend(words(&c[2]).filter(|w| !w.chars().all(|c| c.is_ascii_digit())));
                 }
             }
             // a banner's text, delimiter to delimiter (below)
@@ -1214,7 +1252,10 @@ impl Deny {
             })
             .filter(|w| w.len() >= 2 && !public.contains(w) && names_a_thing(w))
             .collect();
-        Deny::from_tokens(tokens)
+        Deny {
+            offered,
+            ..Deny::from_tokens(tokens)
+        }
     }
 
     /// The list a published file is scanned with: IOS XE's own control-plane class maps and their
@@ -1228,12 +1269,15 @@ impl Deny {
                 own.insert(w);
             }
         }
-        Deny::from_tokens(
-            self.tokens
-                .into_iter()
-                .filter(|t| !own.contains(t))
-                .collect(),
-        )
+        Deny {
+            offered: self.offered,
+            ..Deny::from_tokens(
+                self.tokens
+                    .into_iter()
+                    .filter(|t| !own.contains(t))
+                    .collect(),
+            )
+        }
     }
 
     fn from_tokens(tokens: BTreeSet<String>) -> Deny {
@@ -1244,6 +1288,7 @@ impl Deny {
             tokens,
             long,
             longest,
+            offered: Default::default(),
         }
     }
 
@@ -1258,10 +1303,11 @@ impl Deny {
     }
 
     fn denied(&self, w: &str) -> bool {
-        self.tokens.contains(w)
-            || w.split(['-', '.', '/', '@', '_'])
-                .any(|part| part.len() >= 4 && self.tokens.contains(part))
-            || self.inside(w)
+        !self.offered.contains(w)
+            && (self.tokens.contains(w)
+                || w.split(['-', '.', '/', '@', '_'])
+                    .any(|part| part.len() >= 4 && self.tokens.contains(part))
+                || self.inside(w))
     }
 
     fn inside(&self, w: &str) -> bool {
@@ -1281,17 +1327,19 @@ impl Deny {
     /// does not look for inside a longer word: for a person to review (`vswitch corpus --loose`).
     pub fn hit_loose(&self, text: &str) -> Option<String> {
         self.hit(text).or_else(|| {
-            words(text).find_map(|w| {
-                let b = w.as_bytes();
-                (0..b.len()).find_map(|i| {
-                    (4..=5.min(b.len() - i)).find_map(|n| {
-                        std::str::from_utf8(&b[i..i + n])
-                            .ok()
-                            .filter(|s| s.len() < w.len() && self.tokens.contains(*s))
-                            .map(|s| format!("{w} ({s})"))
+            words(text)
+                .filter(|w| !self.offered.contains(w))
+                .find_map(|w| {
+                    let b = w.as_bytes();
+                    (0..b.len()).find_map(|i| {
+                        (4..=5.min(b.len() - i)).find_map(|n| {
+                            std::str::from_utf8(&b[i..i + n])
+                                .ok()
+                                .filter(|s| s.len() < w.len() && self.tokens.contains(*s))
+                                .map(|s| format!("{w} ({s})"))
+                        })
                     })
                 })
-            })
         })
     }
 }
@@ -1595,6 +1643,52 @@ mod tests {
             assert!(deny.hits(&format!("show x {w}")), "{w}");
         }
         assert!(!deny.hits("show ip route"));
+    }
+
+    #[test]
+    fn a_keyword_a_crawl_offers_is_public_and_a_name_the_configuration_made_is_not() {
+        let running = File {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            name: "plantsw01-running-config.txt".into(),
+            text: "hostname plantsw01\ninterface GigabitEthernet1/0/1\n description quoxa feed tavik vornel\n\
+                   ip access-list extended zembla\n permit ip any any\n"
+                .into(),
+        };
+        let crawl = CrawlLog {
+            book: "c9300".into(),
+            release: "17.6".into(),
+            folder: "crawl".into(),
+            level: "network-advantage".into(),
+            text: "Switch#show ip nbar link-age ?\n  quoxa         Quoxa transfer protocol\n  \
+                   quoxa-vornel  Quoxa over its relay\n  tavik         User defined\n  \
+                   zembla        Zembla routing\n\nSwitch#"
+                .into(),
+        };
+        let src = Source {
+            running: vec![running],
+            ..Default::default()
+        };
+        let before = Deny::of(&src);
+        for w in ["quoxa", "quoxa-vornel", "tavik", "zembla", "vornel"] {
+            assert!(before.hits(&format!("show ip nbar link-age {w}")), "{w}");
+        }
+        let deny = Deny::of(&Source {
+            crawls: vec![crawl],
+            ..src
+        });
+        // the crawl's keyword, and a keyword holding a site word as a part, whole
+        assert!(!deny.hits("show ip nbar link-age quoxa"));
+        assert!(!deny.hits("show ip nbar link-age quoxa-vornel"));
+        assert!(deny.hits("description vornel"));
+        assert!(deny.hits("description quoxa-vornel-2"));
+        // a `User defined` row and a row naming the configuration's access list stay the site's
+        assert!(deny.hits("show ip nbar link-age tavik"));
+        assert!(deny.hits("show ip nbar link-age zembla"));
+        assert!(deny.hits("hostname plantsw01"));
+        let published = deny.published();
+        assert!(!published.hits("show ip nbar link-age quoxa-vornel"));
+        assert!(published.hits("show ip nbar link-age zembla"));
     }
 
     /// A build that names a captures folder checks the embedded corpus against it: the corpus is what

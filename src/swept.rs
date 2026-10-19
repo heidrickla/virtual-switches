@@ -770,6 +770,14 @@ fn shaped(w: &str) -> Option<String> {
     (digits(w) || cli::interface_name(w, None).is_some() || plain).then(|| w.to_string())
 }
 
+/// Whether a `?` row (word, description) is a name the switch's configuration made: `MON1  User
+/// defined`, a VRF's `VRF Name`, in capitals or not. The management port's `Mgmt-vrf` is every IOS
+/// XE switch's.
+pub(crate) fn made(word: &str, what: &str) -> bool {
+    ["user defined", "defined by user"].contains(&what.to_lowercase().as_str())
+        || what == "VRF Name" && word != "Mgmt-vrf"
+}
+
 /// The token a word typed after a `?` answer is: a keyword row it spells whole, as the row prints
 /// it; else the first value row it fits, in this order: an interface type with its number, a
 /// decimal range, a hexadecimal range, `A.B.C.D/nn`, an IPv4 address (`A.B.C.D`, `Hostname`),
@@ -787,12 +795,6 @@ fn fit(word: &str, answer: &[String]) -> Result<String, Left> {
     };
     let rows = crate::live::answer_rows(answer);
     let lw = w.to_lowercase();
-    // a name the switch's configuration made (`MON1  User defined`, a VRF's `VRF Name`), in
-    // capitals or not; the management port's `Mgmt-vrf` is every IOS XE switch's
-    let made = |r: &str, what: &str| {
-        ["user defined", "defined by user"].contains(&what.to_lowercase().as_str())
-            || what == "VRF Name" && r != "Mgmt-vrf"
-    };
     if rows
         .iter()
         .any(|(r, what)| r.to_lowercase() == lw && made(r, what))
