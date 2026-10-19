@@ -266,14 +266,27 @@ A donor answers for an image at a level only once that book, release and level i
 
 ### Lines refused on Enter
 
-A configuration line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line.
+A configuration or privileged EXEC line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line.
 
 - A word no row of the answer before it offers is invalid there. A line whose answer after its last word holds no `<cr>` is incomplete, unless that answer offers again what the one before it offered (a list, which ends anywhere).
 - A word with no answer held before it is not read. Reading stops at a held refusal for the line so far and at a `LINE` row.
+- A held `% Unrecognized command` after the line's last word, typed as the line types it, refuses the line at that word, the books' acceptance included.
+- A privileged line is read past its first word. The privileged prompt's answer is held as `do-exec ?`'s, which leaves out the commands that change mode.
 - A number range row takes a rate with its unit (`1m`) and a list of numbers and ranges (`31-35,41`).
-- An answer that lists the objects configured offers this session's: `No monitors configured` and its kin, and the crawl's own names, its `User defined` rows after `record`, `exporter`, `monitor` or `sampler`. A flow record counts once it holds a field, and a flow monitor named on an interface once it holds a record, as the lab C9300-24T (17.6.4) refused an empty record in a monitor and a monitor without one on a port. A keyword the answer offers beside the names is read as any other.
-- A routed port's lines and a PoE port's `power` lines are not read: the crawled ports were switchports without PoE.
+- A file system's row (`flash:`) fits a path after it and no other word.
+- A value the crawl typed otherwise reads the keyword after it as after the crawl's own value: `spanning-tree vlan 2-4 cost` as `spanning-tree vlan 10 cost`. The value fills the same `<lo-hi>` row as the crawl's, or the `WORD` the switch describes as a numbered range (`vlan range, example: 1,3-5,7,9-11`), and the crawl's values there were answered alike. A number after the value can be bounded by it (the switch took `mpls label range 100 1000 static 16 99`, where its crawl's `mpls label range 16 16 static ?` offered 17 and up), and answers further on can depend on it (MST 0 takes `root primary diameter`, instance 10 does not); neither is read this way.
+- An answer that lists the objects configured offers this session's: `No monitors configured` and its kin, and the crawl's own names, its `User defined` rows after `record`, `exporter`, `monitor` or `sampler`. A flow record counts once it holds a field, and a flow monitor named on an interface once it holds a record, as the lab C9300-24T (17.6.4) refused an empty record in a monitor and a monitor without one on a port. A keyword the answer offers beside the names is read as any other, and so is a word the switch answered `?` after where the answer said none was configured (`name` after `show flow exporter`).
+- A privileged line naming an object this session configured, of a kind `?` names (`live::NAMED_KINDS`: flow monitor, sampler, flow record, flow exporter), takes the name where the crawl, asked with none configured, listed none.
+- On a routed port only the configured-object answers are read: every physical port shares one context, which holds the crawled switchport's answers. A PoE port's `power` lines are not read: the crawled ports had no PoE.
 - Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides.
+
+Lines the switch refused where its crawl offers the words (`context::REFUSED`), refused on an image with its own crawl at the session's level:
+
+| Mode | Line | State | Caret |
+|---|---|---|---|
+| config | `class <name>` | any | after `class`; `class-map` is taken |
+| config | `ptp mode boundary delay-req`, `ptp mode boundary pdelay-req`, `ptp mode e2etransparent`, `ptp mode p2ptransparent` | `ptp profile dot1as` | at `mode` |
+| config | `ptp transport ipv4 udp` | `ptp profile dot1as` | at `transport` |
 
 ### Licence gate
 

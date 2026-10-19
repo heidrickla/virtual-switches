@@ -2480,6 +2480,31 @@
       "lines": ["ipv6 nd raguard attach-policy <policy-name>", "no ipv6 nd raguard attach-policy <policy-name>"],
       "args": {"policy-name": {"kind": "Word"}},
       "evidence": "the lab C9300-24T (17.6.4) answered '% Policy example_policy not defined for the feature' to 'ipv6 nd raguard attach-policy example_policy' at (config-vlan-config)#"
+    },
+    {
+      "name": "ipv6 mld ssm-map static",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["ipv6 mld [vrf <vrf-name>] ssm-map static <access-list> <source-address>", "no ipv6 mld [vrf <vrf-name>] ssm-map static <access-list> <source-address>"],
+      "args": {"vrf-name": {"kind": "Word"}, "access-list": {"kind": "Word"}, "source-address": {"kind": "Ipv6"}},
+      "evidence": "the guide types it under an interface; the lab C9300-24T (17.6.4) answered 'ipv6 mld ssm-map static SSM_MAP_ACL_2 2001:DB8:1::1' typed there at (config)#, and its crawl offers 'ssm-map' after 'ipv6 mld' and 'ipv6 mld vrf 10' at (config)# and not at (config-if)#"
+    },
+    {
+      "name": "location civic-location identifier",
+      "platform": "Catalyst 9300",
+      "modes": ["config"],
+      "lines": ["location civic-location identifier {host | <identifier>}"],
+      "args": {"identifier": {"kind": "Word"}},
+      "enters": "config-civic",
+      "evidence": "the lab C9300-24T (17.6.4) took 'location civic-location identifier 1' at (config)# and entered (config-civic)#; its crawl answers 'WORD' and 'host' after 'identifier'"
+    },
+    {
+      "name": "civic location attributes",
+      "platform": "Catalyst 9300",
+      "modes": ["config-civic"],
+      "lines": ["{additional-code | additional-location-information | branch-road-name | building | city | country | county | division | floor | landmark | leading-street-dir | name | neighborhood | number | post-office-box | postal-code | postal-community-name | primary-road-name | road-section | room | seat | state | street-group | street-name-postmodifier | street-name-premodifier | street-number-suffix | street-suffix | sub-branch-road-name | trailing-street-suffix | type-of-place | unit} <value>", "no {additional-code | additional-location-information | branch-road-name | building | city | country | county | division | floor | landmark | leading-street-dir | name | neighborhood | number | post-office-box | postal-code | postal-community-name | primary-road-name | road-section | room | seat | state | street-group | street-name-postmodifier | street-name-premodifier | street-number-suffix | street-suffix | sub-branch-road-name | trailing-street-suffix | type-of-place | unit}"],
+      "args": {"value": {"kind": "Word"}},
+      "evidence": "the lab C9300-24T (17.6.4)'s (config-civic)# lists these, each taking a WORD and then <cr>, and its 'no' form <cr>; the switch took 'number 3550', 'state CA', 'building 19', 'room C6' and 'country US' there"
     }
   ]
 }

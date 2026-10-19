@@ -222,6 +222,71 @@ pub fn unjudged(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> bo
     })
 }
 
+/// Where a refused line's caret stands: under a word, or past its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Caret {
+    At(usize),
+    After(usize),
+}
+
+/// Lines the lab C9300-24T (17.6.4) refused that its crawl's answers offer: a mode, the line's words
+/// (`<word>` any one word), the configured line under which it refused them (`""` in any state) and
+/// the caret it printed. It refused `class <name>` at global configuration past `class` and took
+/// `class-map <name>`; under `ptp profile dot1as` it refused `ptp mode` and `ptp transport` at their
+/// second word and took `ptp priority1`.
+pub const REFUSED: &[(&str, &[&str], &str, Caret)] = &[
+    ("config", &["class", "<word>"], "", Caret::After(0)),
+    (
+        "config",
+        &["ptp", "mode", "boundary", "delay-req"],
+        "ptp profile dot1as",
+        Caret::At(1),
+    ),
+    (
+        "config",
+        &["ptp", "mode", "boundary", "pdelay-req"],
+        "ptp profile dot1as",
+        Caret::At(1),
+    ),
+    (
+        "config",
+        &["ptp", "mode", "e2etransparent"],
+        "ptp profile dot1as",
+        Caret::At(1),
+    ),
+    (
+        "config",
+        &["ptp", "mode", "p2ptransparent"],
+        "ptp profile dot1as",
+        Caret::At(1),
+    ),
+    (
+        "config",
+        &["ptp", "transport", "ipv4", "udp"],
+        "ptp profile dot1as",
+        Caret::At(1),
+    ),
+];
+
+/// The byte of `line` under which the caret of a `REFUSED` line stands, where `line` in `mode` is
+/// one in the state `configured` describes: its words as the entry's, in any case.
+pub fn refused(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> Option<usize> {
+    let toks = crate::cli::tokens(line);
+    REFUSED.iter().find_map(|(m, words, state, caret)| {
+        let same = *m == mode
+            && toks.len() == words.len()
+            && toks
+                .iter()
+                .zip(words.iter())
+                .all(|(t, w)| *w == "<word>" || t.text.eq_ignore_ascii_case(w))
+            && (state.is_empty() || configured(state));
+        same.then(|| match *caret {
+            Caret::At(k) => toks[k].at,
+            Caret::After(k) => toks[k].at + toks[k].text.len(),
+        })
+    })
+}
+
 /// Whether a crawl answer for `key` no longer holds: a predicate names it and `configured` says the
 /// session has the line that changes the answer.
 pub fn stale(key: &str, configured: impl Fn(&str) -> bool) -> bool {

@@ -95,6 +95,14 @@ pub fn configured_kind(answer: &[String]) -> Option<&'static str> {
     })
 }
 
+/// The kinds of block whose names `?` answers offer (`configured_kind`, `defined_kind`).
+pub const NAMED_KINDS: &[&str] = &[
+    "flow monitor ",
+    "sampler ",
+    "flow record ",
+    "flow exporter ",
+];
+
 /// The blocks whose names an answer's `User defined` rows are, the crawl's own, by the keyword
 /// typed before them: `record` in a flow monitor offers the flow records configured.
 pub fn defined_kind(answer: &[String], keyword: &str) -> Option<&'static str> {
@@ -527,6 +535,40 @@ impl Held {
         self.own(level).help_for(mode, context, text, &configured)
     }
 
+    /// Whether the image's own answers hold `% Unrecognized command` after `text` with its last word
+    /// as typed, the words before it read as `help_for` reads them: the switch refused that word, not
+    /// a keyword the word begins.
+    pub fn unrecognized_after(
+        &self,
+        level: Option<&str>,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: impl Fn(&str) -> bool,
+    ) -> bool {
+        let configured: &dyn Fn(&str) -> bool = &configured;
+        let own = self.own(level);
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let Some((last, head)) = words.split_last() else {
+            return false;
+        };
+        let before = match head.is_empty() {
+            true => String::new(),
+            false => match read(
+                &[own],
+                mode,
+                context,
+                &format!("{} ", head.join(" ")),
+                configured,
+            ) {
+                Read::Line(line) => line,
+                Read::Ambiguous(_) => return false,
+            },
+        };
+        own.held_as_typed(mode, context, &format!("{before}{last} "), configured)
+            .is_some_and(|a| a.len() == 1 && a[0] == crate::corpus::UNRECOGNIZED)
+    }
+
     /// What the shell takes before the books: the image's own held answer, abbreviations read, else
     /// its derived answer; then the same from the donor crawl at the session's level, in the same
     /// mode and context. The line is read once across both (`read`), so a donor's answer never wins
@@ -640,6 +682,74 @@ impl Held {
         };
         let sibling = numbers_as_crawled(at, above, mode, context?, &crate::context::key(&line))?;
         both(&sibling)
+    }
+
+    /// The value the image's own crawl at `level` typed where `text` ends in a value, and answered
+    /// `?` after: a number of the same `<lo-hi>` row of the answer held after the words before it,
+    /// or a list of numbers where both fill its numbered-list row (`value_of_row`). The lab
+    /// C9300-24T (17.6.4) crawl asked `spanning-tree vlan 10 ?`, and the switch refused `cost`
+    /// after `spanning-tree vlan 2-4` as that answer left it out. None where the word is a keyword
+    /// there, or where the crawl's values there were answered unlike each other.
+    pub fn crawled_value(
+        &self,
+        level: Option<&str>,
+        mode: &str,
+        context: Option<&str>,
+        text: &str,
+        configured: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        let configured: &dyn Fn(&str) -> bool = &configured;
+        let own = self.own(level);
+        let (crawl, context) = (own.crawl?, context?);
+        if !text.ends_with(char::is_whitespace) {
+            return None;
+        }
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let (last, head) = words.split_last()?;
+        if head.is_empty() {
+            return None;
+        }
+        let Read::Line(line) = read(
+            &[own],
+            mode,
+            Some(context),
+            &format!("{} ", head.join(" ")),
+            configured,
+        ) else {
+            return None;
+        };
+        let before = own.held_as_typed(mode, Some(context), &line, configured)?;
+        let typed = last.to_lowercase();
+        let rows = answer_rows(before);
+        if rows
+            .iter()
+            .any(|(w, _)| keyword(w) && w.to_lowercase().starts_with(&typed))
+        {
+            return None;
+        }
+        let mut fits = rows
+            .iter()
+            .filter(|(w, what)| value_of_row(w, what, &typed));
+        let (row, what) = fits.next()?;
+        if fits.next().is_some() {
+            return None;
+        }
+        let prefix = crate::context::key(&line);
+        let siblings: Vec<(&str, &Vec<String>)> = crawl
+            .range((mode.to_string(), prefix.clone())..)
+            .take_while(|((m, k), _)| m == mode && k.starts_with(&prefix))
+            .filter_map(|((_, k), answers)| {
+                let w = k.strip_prefix(&prefix)?.strip_suffix(' ')?;
+                let (_, a) = answers.iter().find(|(c, _)| c == context)?;
+                (!w.contains(' ')
+                    && w != typed
+                    && value_of_row(row, what, w)
+                    && !crate::context::stale(k, configured))
+                .then_some((w, a))
+            })
+            .collect();
+        let (w, a) = siblings.first()?;
+        (!is_refusal(a) && siblings.iter().all(|(_, b)| b == a)).then(|| w.to_string())
     }
 
     /// Whether a real switch held `line` under a block of this kind ("" at the top level).
@@ -934,6 +1044,39 @@ fn numbers_as_crawled(
                 })
         })
         .cloned()
+}
+
+/// Whether `word` is a value of the `?` row `row` (described `what`): a number, or a list of
+/// numbers and ranges (`3-6,10`), in its `<lo-hi>` range; or such a list where the row is a `WORD`
+/// the switch describes as a numbered range (`vlan range, example: 1,3-5,7,9-11`). A name is none.
+fn value_of_row(row: &str, what: &str, word: &str) -> bool {
+    let list = |w: &str| {
+        !w.is_empty()
+            && w.bytes().any(|b| b.is_ascii_digit())
+            && w.bytes()
+                .all(|b| b.is_ascii_digit() || b == b',' || b == b'-')
+    };
+    if !list(word) {
+        return false;
+    }
+    if row == "WORD" {
+        return what
+            .split_once("range, example: ")
+            .is_some_and(|(_, e)| list(e.trim()));
+    }
+    let Some((lo, hi)) = row
+        .strip_prefix('<')
+        .and_then(|r| r.strip_suffix('>'))
+        .and_then(|r| r.split_once('-'))
+        .and_then(|(lo, hi)| Some((lo.parse::<u64>().ok()?, hi.parse::<u64>().ok()?)))
+    else {
+        return false;
+    };
+    let number = |v: &str| v.parse::<u64>().is_ok_and(|v| v >= lo && v <= hi);
+    word.split(',').all(|part| match part.split_once('-') {
+        Some((a, b)) => number(a) && number(b),
+        None => number(part),
+    })
 }
 
 /// The lookup keys of the words of a line read so far (`help_key` and `context::key` of the line,

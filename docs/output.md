@@ -11,7 +11,7 @@ Messages come from the command reference's CLI chapter, with ASCII quotes (the c
 | Message | When |
 |---|---|
 | `% Invalid input detected at '^' marker.` | a word or value IOS refuses |
-| `% Incomplete command.` | the line stops where more is required |
+| `% Incomplete command.` | the line stops where more is required; on IOS XE a port named last by the start of its number (`interface gigabitethernet1/1`, the network module holding Gi1/1/1), or by that start on a member the stack lacks, up to the family's member count (`interface TenGigabitEthernet 4/1` on one C9300-24T; `GigabitEthernet 6/2` and `gigabitethernet 0/1` are refused) |
 | `% Ambiguous command:  "<text>"` | a start that two or more keywords begin |
 | `% Unrecognized command` | `?` with nothing that can follow |
 
@@ -46,6 +46,7 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | a line naming a VRF (`vrf forwarding`, `ip multicast-routing vrf`, `ip mroute vrf`, `ntp server vrf`, `snmp-server host ... vrf`, a BGP or OSPFv3 address family; in EXEC `show ip route\|arp vrf`, `show ip vrf detail\|interfaces`, `show ip bgp vpnv4 vrf`, `show mpls forwarding-table vrf`, `show mpls static binding ipv4 vrf`) | no `vrf definition` or `ip vrf` of the name; `Mgmt-vrf` is in the factory default | the command family's own (`% VRF V1 not configured`, `% VPN Routing instance V1 does not exist.`) |
 | `route-target` in a VRF | no `rd` | `% VRF <name> does not have an RD configured, please configure the RD before configuring route-target` |
 | `<feature> attach-policy <name>`: IPv6 source guard and destination guard on an interface; device tracking, DHCPv6 guard, RA guard in a VLAN configuration | no `<feature> policy <name>` | `% Policy <name> not defined for the feature` and a blank line |
+| `ipv6 mld ssm-map static <acl> <source>`, in global configuration or an interface, which hands it there | no `ipv6 mld ssm-map enable` | `%ssm-map is not enabled!`, the mode global configuration |
 | `ip nat inside\|outside source list ... pool <name>` | no `ip nat pool <name>` | `%Pool <name> not configured ` and a blank line |
 | `ntp access-group ... <acl>` | no access list of the name | `%Access-list <n> is not defined`; a named list `%Access-list <name> not defined` |
 | `cts role-based permissions ... <acl> ...` | no role-based list of the name | `% ACL <acl> is not defined.` for each |
@@ -114,6 +115,7 @@ These lines are taken with a warning first:
 | `ipv6 mld static-group ...` on an interface | no `ipv6 multicast-routing` | `%Warning: Enable MLD router-side for this command to be effective` |
 | `ipv6 dhcp server automatic` on an interface | | `% Warning: Pool  not configured globally - configuring anyway.` |
 | `auto qos global compact` | | `%Warning: This command will reset all autoqos generated configurations` |
+| `location civic-location identifier <id>` | the location holds no attributes | `% 250 bytes available to configure civic address attributes`, then `(config-civic)#` |
 | `cts role-based sgt-map 0.0.0.0/0 ...` | no `ip route 0.0.0.0 0.0.0.0` | `%Please ensure default route is created using ip route 0.0.0.0 command` |
 | `spanning-tree portfast [trunk]` | PortFast changes | `%Warning: portfast should only be enabled on ports connected to a single`, ` host. Connecting hubs, concentrators, switches, bridges, etc... to this`, ` interface  when portfast is enabled, can cause temporary bridging loops.`, ` Use with CAUTION`, a blank line; without `trunk` then `%Portfast has been configured on <port> but will only` and ` have effect when the interface is in a non-trunking mode.` |
 | `authentication host-mode\|port-control\|control-direction\|open` on an interface, `authentication mac-move` | | `%Command deprecated (<line>) - use access-session instead` and a blank line |

@@ -1426,7 +1426,8 @@ impl<'a> Session<'a> {
         // Vlan10 uplink`)
         let args = &self.engine.grammar.commands[p.command].args;
         // a port named by the start of its number, last on the line, is incomplete (the lab C9300-24T,
-        // 17.6.4: `interface gigabitethernet1/1`, whose network module holds Gi1/1/1 to 1/1/4)
+        // 17.6.4: `interface gigabitethernet1/1`, whose network module holds Gi1/1/1 to 1/1/4), and
+        // so is the same start on a member the stack lacks
         let last = p.items.len().saturating_sub(1);
         let mut partial = false;
         let refused = p.items.iter().enumerate().find_map(|(n, it)| match it {
@@ -1438,7 +1439,9 @@ impl<'a> Session<'a> {
             ) || matches!(args.get(name), Some(ArgKind::InterfaceOf { of }) if modelled(of)))
                 && !on_stack(value, &self.device.stack) =>
             {
-                partial = n == last && starts_a_port(value, &self.device.stack);
+                partial = n == last
+                    && (starts_a_port(value, &self.device.stack)
+                        || short_of_a_port(value, &self.device.stack));
                 Some(*tok)
             }
             _ => None,
@@ -1729,7 +1732,8 @@ impl<'a> Session<'a> {
     /// registers through (`pim_tunnels`), an object a line names before it exists (a policy map, a
     /// first-hop security policy (`ATTACH`), a NAT pool, an access list, a trustpoint, a regex
     /// parameter map, a VFI's VPN ID), a classifier condition while the classifier runs, an IP
-    /// service on a LISP instance carrying Ethernet, a subnet another interface holds, a BGP
+    /// service on a LISP instance carrying Ethernet, an MLD SSM map's static entry before `ipv6 mld
+    /// ssm-map enable` (`%ssm-map is not enabled!`), a subnet another interface holds, a BGP
     /// neighbor line before the neighbor's remote AS, a link-local peer outside an address family,
     /// the switch's own address as a peer, a SPAN line its sessions refuse (`span_refusal`), an
     /// HSRP group's second address family, a setting already in force or one another excludes
@@ -1842,6 +1846,11 @@ impl<'a> Session<'a> {
             })
         };
         match (mode, words.as_slice()) {
+            ("config", ["ipv6", "mld", "ssm-map", "static", ..])
+                if !global("ipv6 mld ssm-map enable") =>
+            {
+                return Some("%ssm-map is not enabled!".into());
+            }
             (
                 "config",
                 [
@@ -2427,7 +2436,8 @@ impl<'a> Session<'a> {
     /// 17.6.4): an MKA policy or a control policy map opened again, an HSRP address outside the
     /// interface's subnets, a PortFast, OSPF reference bandwidth or MACsec cipher change, an MLD
     /// static group without multicast routing, an automatic DHCPv6 pool, `auto qos global compact`,
-    /// a default SGT mapping without a default route, and the MST region shown outside MST.
+    /// a default SGT mapping without a default route, a civic location holding no attributes, and
+    /// the MST region shown outside MST.
     fn taken_with_warning(&self, mode: &str, p: &Parse) -> Option<String> {
         if p.negated || self.device.stack.classic() {
             return None;
@@ -2505,6 +2515,16 @@ impl<'a> Session<'a> {
             ("config", ["auto", "qos", "global", "compact"]) => Some(
                 "%Warning: This command will reset all autoqos generated configurations".into(),
             ),
+            // the room left for a civic location's attributes: all of it while it holds none
+            ("config", ["location", "civic-location", "identifier", _])
+                if !self
+                    .device
+                    .blocks
+                    .iter()
+                    .any(|b| b.header == canonical && !b.lines.is_empty()) =>
+            {
+                Some("% 250 bytes available to configure civic address attributes".into())
+            }
             ("config", ["cts", "role-based", "sgt-map", "0.0.0.0/0", ..])
                 if !self
                     .device
@@ -3323,10 +3343,14 @@ impl<'a> Session<'a> {
         {
             o = Outcome::Invalid(*l);
         }
-        for refused in [level, self.held_refusal(i, mode, line)]
-            .into_iter()
-            .flatten()
-        {
+        // a held `% Unrecognized command` refuses a line the books take; a refusal of theirs keeps
+        // its caret
+        let taken = matches!(o, Outcome::Ok(_));
+        let held = self
+            .held_refusal(i, mode, line)
+            .filter(|(_, unrecognized)| taken || !unrecognized)
+            .map(|(o, _)| o);
+        for refused in [level, held].into_iter().flatten() {
             if reach(&refused, line) < reach(&o, line) {
                 o = refused;
             }
@@ -3407,29 +3431,30 @@ impl<'a> Session<'a> {
             .then_some(Outcome::Invalid(at))
     }
 
-    /// Where a configuration line was refused by a real switch of this image, read
-    /// against what it answered for `?` after each whole word in the mode and context of frame `i`
-    /// (its own answers, never a donor's): a word no row of the answer before it offers is invalid
-    /// there, and a line whose answer after its last word holds no `<cr>` is incomplete. A word
-    /// with no answer held before it is not read; reading stops at a refusal held for the line so
-    /// far and at a `LINE` row, which takes the rest. An interface type is left to the stack
-    /// (`on_stack`), and a routed port's lines are not read: a physical port's context holds the
-    /// crawled switchport's answers.
-    fn held_refusal(&self, i: usize, mode: &str, line: &str) -> Option<Outcome> {
-        if !cli::is_config(mode) {
+    /// Where a configuration or privileged EXEC line was refused by a real switch of this image,
+    /// read against what it answered for `?` after each whole word in the mode and context of frame
+    /// `i` (its own answers, never a donor's): a word no row of the answer before it offers is
+    /// invalid there, and a line whose answer after its last word holds no `<cr>` is incomplete. A
+    /// word with no answer held before it is not read, unless the word before it is a value the
+    /// crawl typed otherwise (`Held::crawled_value`), which reads the keyword after it as after the
+    /// crawl's value; reading stops at a refusal held for the line so far and at a `LINE` row,
+    /// which takes the rest. A privileged line is read past its first word. An interface type is left to the stack (`on_stack`), and on a routed port only the
+    /// objects an answer offers are read: a physical port's context holds the crawled switchport's
+    /// answers. A line the image's switch refused where its crawl offers the words
+    /// (`context::REFUSED`) is refused where it printed the caret. The flag says the refusal is a
+    /// held `% Unrecognized command`.
+    fn held_refusal(&self, i: usize, mode: &str, line: &str) -> Option<(Outcome, bool)> {
+        if !cli::is_config(mode) && mode != "privileged" {
             return None;
         }
         let frame = self.frames.get(i)?;
-        if mode.starts_with("config-if")
+        let routed = mode.starts_with("config-if")
             && frame.blocks.iter().any(|&b| {
                 self.device.blocks[b]
                     .lines
                     .iter()
                     .any(|e| e.text.trim() == "no switchport")
-            })
-        {
-            return None;
-        }
+            });
         // the crawled ports had no PoE (the lab C9300-24T's `power ?` lists only
         // efficient-ethernet), so a PoE port's `power` lines are left to the books
         let first = line.split_whitespace().next().unwrap_or("").to_lowercase();
@@ -3444,39 +3469,97 @@ impl<'a> Session<'a> {
         {
             return None;
         }
+        let level = self.level();
+        let configured = |l: &str| self.running_has(l);
+        if level
+            .as_deref()
+            .is_some_and(|l| self.engine.held.crawls.contains_key(l))
+            && let Some(at) = crate::context::refused(mode, line, configured)
+        {
+            return Some((Outcome::Invalid(at), false));
+        }
         // `do` runs an exec line from any mode and `end` leaves any, and no submode's answer
         // need list them
-        let level = self.level();
         if ["do", "end"].contains(&first.as_str())
-            || crate::context::unjudged(mode, line, |l| self.running_has(l))
+            || crate::context::unjudged(mode, line, configured)
             || crate::license::taken(level.as_deref().unwrap_or(""), mode, line)
         {
             return None;
         }
         let context = self.context_at(i)?;
+        let held = &self.engine.held;
         let toks = cli::tokens(line);
         let mut before: Vec<&str> = vec![];
-        for k in 0..=toks.len() {
+        // the privileged prompt's own `?` answer is held as `do-exec`'s, which leaves out the
+        // commands that change mode: its first word is the books'
+        let first = usize::from(mode == "privileged");
+        // a word the switch answered `?` after, where the answer before it said no object of the
+        // kind was configured, is a keyword it hides there (`name` after `show flow exporter`)
+        let answered_after = |k: usize| {
+            let through = format!("{} ", &line[..toks[k].at + toks[k].text.len()]);
+            held.help_for(level.as_deref(), mode, Some(&context), &through, configured)
+                .is_some_and(|a| !crate::live::is_refusal(a))
+        };
+        for k in first..=toks.len() {
             let text = match k {
                 0 => String::new(),
                 _ => format!("{} ", &line[..toks[k - 1].at + toks[k - 1].text.len()]),
             };
             let Some(answer) =
-                self.engine
-                    .held
-                    .help_for(level.as_deref(), mode, Some(&context), &text, |l| {
-                        self.running_has(l)
-                    })
+                held.help_for(level.as_deref(), mode, Some(&context), &text, configured)
             else {
+                // a value the crawl typed otherwise: the keyword after it is read as after the
+                // crawl's own (`spanning-tree vlan 2-4 cost` as `spanning-tree vlan 10 cost`);
+                // a number's bounds and the answers further on can depend on the value (`mpls
+                // label range 100 1000`; MST 0 takes `root primary diameter`, instance 10 not)
+                if k > first
+                    && let Some(next) = toks.get(k)
+                    && next.text.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && let Some(v) = held.crawled_value(
+                        level.as_deref(),
+                        mode,
+                        Some(&context),
+                        &text,
+                        configured,
+                    )
+                {
+                    let t = &toks[k - 1];
+                    let swapped = format!("{}{v}{}", &line[..t.at], &line[t.at + t.text.len()..]);
+                    let at = next.at - t.text.len() + v.len();
+                    if let Some((Outcome::Invalid(x), u)) = self.held_refusal(i, mode, &swapped)
+                        && x == at
+                    {
+                        return Some((Outcome::Invalid(next.at), u));
+                    }
+                    return None;
+                }
                 continue;
             };
             if crate::live::is_refusal(answer) {
-                return None;
+                // `% Unrecognized command` after the last word as typed (no address placeholder):
+                // the switch refused that word
+                let last = k.checked_sub(1).map(|k| &toks[k]);
+                let unrecognized = held.unrecognized_after(
+                    level.as_deref(),
+                    mode,
+                    Some(&context),
+                    &text,
+                    configured,
+                );
+                return last
+                    .filter(|t| {
+                        !routed
+                            && unrecognized
+                            && crate::context::values(&t.text.to_lowercase())
+                                == t.text.to_lowercase()
+                    })
+                    .map(|t| (Outcome::Invalid(t.at), true));
             }
             // `No monitors configured`, or the crawl's own `User defined` names: the answer offers
             // the objects configured, and this session's are its own; a keyword it offers beside
             // them (`netflow` after `record`) is read as any other
-            let kind = crate::live::configured_kind(answer).or_else(|| {
+            let none = crate::live::configured_kind(answer);
+            let kind = none.or_else(|| {
                 let keyword = &toks.get(k.checked_sub(1)?)?.text;
                 crate::live::defined_kind(answer, keyword)
             });
@@ -3489,12 +3572,16 @@ impl<'a> Session<'a> {
                         && w.to_lowercase().starts_with(&typed)
                 });
                 if !keyword {
-                    if !self.offers(kind, &t.text, mode) {
-                        return Some(Outcome::Invalid(t.at));
+                    if !(none.is_some() && answered_after(k)) && !self.offers(kind, &t.text, mode) {
+                        return Some((Outcome::Invalid(t.at), false));
                     }
                     before.clear();
                     continue;
                 }
+            }
+            if routed {
+                before.clear();
+                continue;
             }
             let rows = crate::live::answer_rows(answer);
             let Some(t) = toks.get(k) else {
@@ -3503,7 +3590,7 @@ impl<'a> Session<'a> {
                 let list =
                     !before.is_empty() && before.iter().all(|w| rows.iter().any(|(r, _)| r == w));
                 return (!list && !rows.iter().any(|(w, _)| *w == "<cr>"))
-                    .then_some(Outcome::Incomplete);
+                    .then_some((Outcome::Incomplete, false));
             };
             // an answer listing interface types by their names, as IOS capitalizes them
             let types = rows
@@ -3516,17 +3603,49 @@ impl<'a> Session<'a> {
                 })
                 .count()
                 >= 2;
+            // a file system's row fits a path after it, and no other word
+            let typed = t.text.to_lowercase();
             match rows
                 .iter()
-                .map(|&(w, what)| fits_row(w, what, &t.text, types))
+                .map(|&(w, what)| match file_system(w) {
+                    true => fit(w.starts_with(&typed) || typed.starts_with(w)),
+                    false => fits_row(w, what, &t.text, types),
+                })
                 .max()
             {
                 Some(Fit::Rest) => return None,
                 Some(Fit::Word) => before = rows.iter().map(|(w, _)| *w).collect(),
-                _ => return Some(Outcome::Invalid(t.at)),
+                _ if self.names_configured(mode, &toks[..=k]) => before.clear(),
+                _ => return Some((Outcome::Invalid(t.at), false)),
             }
         }
         None
+    }
+
+    /// Whether the last of a privileged line's words names an object this session configured of a
+    /// kind `?` answers name (`live::NAMED_KINDS`), the words between the command and it starting
+    /// the kind's keywords (`show flow record R` and a `flow record R`): a crawl asked with none
+    /// configured lists no names.
+    fn names_configured(&self, mode: &str, toks: &[cli::Tok]) -> bool {
+        let Some((name, words)) = toks.split_last() else {
+            return false;
+        };
+        let words = words.get(1..).unwrap_or_default();
+        mode == "privileged"
+            && !words.is_empty()
+            && self.device.blocks.iter().any(|b| {
+                let header: Vec<&str> = b.header.split_whitespace().collect();
+                let kind = header
+                    .split_last()
+                    .map(|(_, k)| format!("{} ", k.join(" ")));
+                kind.is_some_and(|k| crate::live::NAMED_KINDS.contains(&k.as_str()))
+                    && header.len() == words.len() + 1
+                    && header.last() == Some(&name.text.as_str())
+                    && words
+                        .iter()
+                        .zip(&header)
+                        .all(|(w, h)| h.to_lowercase().starts_with(&w.text.to_lowercase()))
+            })
     }
 
     /// Whether this session holds the block `kind name` where IOS offers it for `mode`: a flow
@@ -4787,18 +4906,20 @@ fn type_above_only(at: &[String], above: &[String], typed: &str) -> bool {
             .any(|w| is_type(w) && alpha.len() > w.len() && alpha.starts_with(&w.to_lowercase()))
 }
 
+/// Whether a `?` row names a file system (`flash:`, `usbflash0:`), which a path after it fits.
+fn file_system(row: &str) -> bool {
+    row.strip_suffix(':').is_some_and(|n| {
+        !n.is_empty()
+            && n.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    })
+}
+
 /// How `typed` fits a `?` answer, for the licence gate (`level_refusal`), whose two answers list
 /// what each level's image holds: an interface named by its type and number fits a row of that
 /// type, where the answer lists types; a file system's row (`flash:`) is the keyword it is, a path
 /// after it included; any other word fits as `fits_row` reads it.
 fn best_fit(answer: &[String], typed: &str) -> Fit {
-    let file_system = |w: &str| {
-        w.strip_suffix(':').is_some_and(|n| {
-            !n.is_empty()
-                && n.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        })
-    };
     let is_type = |w: &str| {
         cli::interface_types()
             .iter()
@@ -4981,6 +5102,34 @@ fn starts_a_port(value: &str, stack: &crate::platform::Stack) -> bool {
         .physical()
         .iter()
         .any(|p| p.strip_prefix(v).is_some_and(|rest| rest.starts_with('/')))
+}
+
+/// Whether `value` is the start of a port on a member the stack could hold: read on a member it
+/// has, it starts one of that member's ports. IOS XE waits for the rest (the lab C9300-24T, 17.6.4,
+/// one member: `TenGigabitEthernet 4/1`, `GigabitEthernet 6/1` incomplete; `GigabitEthernet 6/2`,
+/// `gigabitethernet 0/1` and every FastEthernet port refused).
+fn short_of_a_port(value: &str, stack: &crate::platform::Stack) -> bool {
+    let v = value.trim();
+    let Some(split) = v.find(|c: char| c.is_ascii_digit()) else {
+        return false;
+    };
+    let (ty, number) = v.split_at(split);
+    let Some((full, _)) = cli::PHYSICAL_TYPES
+        .iter()
+        .find(|(full, _)| full.eq_ignore_ascii_case(ty))
+    else {
+        return false;
+    };
+    let (member, rest) = number.split_at(number.find('/').unwrap_or(number.len()));
+    let most = stack.family().map_or(0, |f| f.max_members());
+    !stack.classic()
+        && member
+            .parse::<usize>()
+            .is_ok_and(|m| (1..=most).contains(&m))
+        && stack
+            .members
+            .iter()
+            .any(|m| starts_a_port(&format!("{full}{}{rest}", m.number), stack))
 }
 
 fn looks_like_interface(v: &str) -> bool {
@@ -8111,6 +8260,518 @@ mod tests {
             let x = line.find("trx").unwrap() + 2 + "Switch(config)#".len();
             assert_eq!(caret_at(&out), x, "{line}: {out:?}");
         }
+    }
+
+    /// A C9300 at 17.6 holding what the crawl `steps` print, at network-advantage.
+    fn held_engine(steps: &[(&str, &[&str])]) -> Engine {
+        // a probe is complete once the prompt follows it
+        let last = steps
+            .last()
+            .map_or("Switch#", |(t, _)| &t[..=t.find('#').unwrap()]);
+        let closed = format!("{last}end");
+        let steps: Vec<(&str, &[&str])> = steps
+            .iter()
+            .copied()
+            .chain([(closed.as_str(), &[][..])])
+            .collect();
+        let table = crate::corpus::HeldTable {
+            crawl: crate::corpus::crawled_help(&transcript(&steps))
+                .into_iter()
+                .map(|(m, c, k, a)| (ADVANTAGE.to_string(), m, c, k, a))
+                .collect(),
+            ..Default::default()
+        };
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let grammar = crate::grammars::grammar("c9300", r).unwrap();
+        let c = crate::corpus::Corpus {
+            held: vec![("c9300".into(), "17.6".into(), table)],
+            ..Default::default()
+        };
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        Engine::with_held(grammar, held)
+    }
+
+    const ENTERED: &[&str] = &["Enter configuration commands, one per line.  End with CNTL/Z."];
+
+    #[test]
+    fn a_privileged_line_is_judged_by_the_crawl_past_its_first_word() {
+        // the privileged prompt's own answer is held as `do-exec ?`'s, which lists no `configure`
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#do-exec ?",
+                &["  show  Show running system information", ""],
+            ),
+            (
+                "Switch(config)#do-exec show ?",
+                &["  vlan  VTP VLAN status", ""],
+            ),
+            (
+                "Switch(config)#do-exec show vlan ?",
+                &["  brief  VTP all VLAN status in brief", "  <cr>   <cr>", ""],
+            ),
+        ]);
+        let books = books_17_6();
+        let mut plain = configured(&books, &["end"]);
+        let mut s = configured(&e, &["end"]);
+        assert_eq!(s.mode(), "privileged");
+        // the books take `show clock`, which the crawl's `show ?` leaves out
+        assert_eq!(plain.type_line("show clock").1, Result::Ok);
+        let (out, r) = s.type_line("show clock");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show ".len());
+        assert_eq!(s.type_line("show vlan brief").1, Result::Ok);
+        assert_eq!(s.type_line("configure terminal").1, Result::Ok);
+        assert_eq!(s.mode(), "config");
+    }
+
+    #[test]
+    fn a_held_unrecognized_command_refuses_a_line_the_books_take_at_its_last_word() {
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#do-exec ?",
+                &["  show  Show running system information", ""],
+            ),
+            (
+                "Switch(config)#do-exec show ?",
+                &["  vlan  VTP VLAN status", ""],
+            ),
+            (
+                "Switch(config)#do-exec show vlan ?",
+                &["  id  VTP VLAN status by VLAN id", ""],
+            ),
+            (
+                "Switch(config)#do-exec show vlan id ?",
+                &["  WORD  VLAN id", ""],
+            ),
+            (
+                "Switch(config)#do-exec show vlan id 1 ?",
+                &["% Unrecognized command"],
+            ),
+        ]);
+        let books = books_17_6();
+        let line = "show vlan id 1";
+        assert_eq!(configured(&books, &["end"]).type_line(line).1, Result::Ok);
+        let mut s = configured(&e, &["end"]);
+        let (out, r) = s.type_line(line);
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show vlan id ".len());
+        // the words before it abbreviated
+        let (out, r) = s.type_line("sh vl id 1");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#sh vl id ".len());
+        // a value the crawl typed other than this line types it is not judged
+        assert_eq!(s.type_line("show vlan id 2").1, Result::Ok);
+    }
+
+    #[test]
+    fn a_file_system_row_fits_a_path_after_it_and_no_other_word() {
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#do-exec show ?",
+                &[
+                    "  flash:  display information about flash: file system",
+                    "  vlan    VTP VLAN status",
+                    "",
+                ],
+            ),
+        ]);
+        let mut s = configured(&e, &["end"]);
+        let (out, r) = s.type_line("show clock");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show ".len());
+        assert_eq!(s.type_line("show flash:").1, Result::Ok);
+    }
+
+    #[test]
+    fn an_object_the_session_configured_fits_where_the_crawl_listed_none() {
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#do-exec show ?",
+                &["  flow  Flow information", ""],
+            ),
+            (
+                "Switch(config)#do-exec show flow ?",
+                &["  record  Flow record", ""],
+            ),
+            (
+                "Switch(config)#do-exec show flow record ?",
+                &[
+                    "  netflow  Traditional NetFlow collection schemes",
+                    "  <cr>     <cr>",
+                    "",
+                ],
+            ),
+        ]);
+        let mut s = configured(&e, &["end"]);
+        let (out, r) = s.type_line("show flow record R1");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show flow record ".len());
+        let mut s = configured(&e, &["flow record R1", "match ipv4 source address", "end"]);
+        assert_eq!(s.type_line("show flow record R1").1, Result::Ok);
+    }
+
+    #[test]
+    fn a_keyword_answered_after_a_configured_objects_answer_is_read_on() {
+        // `?` after `show flow exporter` lists the exporters configured, none, and hides `name`
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#do-exec show ?",
+                &["  flow  Flow information", ""],
+            ),
+            (
+                "Switch(config)#do-exec show flow ?",
+                &["  exporter  Flow Exporter", ""],
+            ),
+            (
+                "Switch(config)#do-exec show flow exporter ?",
+                &["No exporters configured", "  <cr>  <cr>", ""],
+            ),
+            (
+                "Switch(config)#do-exec show flow exporter name ?",
+                &["No exporters configured", ""],
+            ),
+        ]);
+        let mut s = configured(&e, &["flow exporter E1", "end"]);
+        assert_eq!(s.type_line("show flow exporter name E1").1, Result::Ok);
+        let (out, r) = s.type_line("show flow exporter E2");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#show flow exporter ".len());
+    }
+
+    /// The crawl's `spanning-tree vlan` answers, asked after `10` and, where `others` is set, after
+    /// `20` with `cost` offered too.
+    fn spanning_crawl(others: bool) -> Engine {
+        let mut steps: Vec<(&str, &[&str])> = vec![
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)# ?",
+                &[
+                    "Configure commands:",
+                    "  mpls           Configure MPLS parameters",
+                    "  spanning-tree  Spanning Tree Subsystem",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#spanning-tree ?",
+                &["  vlan  VLAN Switch Spanning Tree", ""],
+            ),
+            (
+                "Switch(config)#spanning-tree vlan ?",
+                &["  WORD  vlan range, example: 1,3-5,7,9-11", ""],
+            ),
+            (
+                "Switch(config)#spanning-tree vlan 10 ?",
+                &[
+                    "  priority  Set the bridge priority for the spanning tree",
+                    "  root      Configure switch as root",
+                    "  <cr>      <cr>",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#spanning-tree vlan 10 priority ?",
+                &["  <0-61440>  bridge priority in increments of 4096", ""],
+            ),
+            (
+                "Switch(config)#spanning-tree vlan 10 root ?",
+                &[
+                    "  primary  Configure this switch as primary root for this spanning tree",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#mpls label range ?",
+                &[
+                    "  <16-1048575>  Minimum label value for dynamic label range",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#mpls label range 16 ?",
+                &[
+                    "  <16-1048575>  Maximum label value for dynamic label range",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#mpls label range 16 16 ?",
+                &[
+                    "  static  Specify block of labels for static bindings",
+                    "  <cr>    <cr>",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#mpls label range 16 16 static ?",
+                &["  <17-1048575>  Upper minimum static label value", ""],
+            ),
+            (
+                "Switch(config)#spanning-tree vlan 10 priority 4096 ?",
+                &["  <cr>  <cr>", ""],
+            ),
+        ];
+        if others {
+            steps.push((
+                "Switch(config)#spanning-tree vlan 20 ?",
+                &[
+                    "  cost      Change an interface's spanning tree path cost",
+                    "  priority  Set the bridge priority for the spanning tree",
+                    "  root      Configure switch as root",
+                    "  <cr>      <cr>",
+                    "",
+                ],
+            ));
+        }
+        held_engine(&steps)
+    }
+
+    #[test]
+    fn a_value_the_crawl_typed_otherwise_reads_the_keyword_after_it_as_after_the_crawl_s() {
+        let books = books_17_6();
+        let e = spanning_crawl(false);
+        let mut s = configured(&e, &[]);
+        for line in [
+            "spanning-tree vlan 2-4 cost 30",
+            "spanning-tree vlan 3,5-6 cost 30",
+            "span vlan 7 cost 30",
+        ] {
+            assert_eq!(
+                configured(&books, &[]).type_line(line).1,
+                Result::Ok,
+                "{line}"
+            );
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            let at = "Switch(config)#".len() + line.find("cost").unwrap();
+            assert_eq!(caret_at(&out), at, "{line}");
+        }
+        assert_eq!(
+            s.type_line("spanning-tree vlan 2-4 priority 4096").1,
+            Result::Ok
+        );
+        // only the word after the value: the answers further on can depend on it
+        let deeper = "spanning-tree vlan 2-4 root secondary";
+        assert_eq!(configured(&books, &[]).type_line(deeper).1, Result::Ok);
+        assert_eq!(s.type_line(deeper).1, Result::Ok);
+        let (out, r) = s.type_line("spanning-tree vlan 10 root secondary");
+        assert_eq!(r, Result::Error, "{out:?}");
+        // nor a number after it, whose bounds can follow the value (the crawl's `16 16 static`
+        // offers 17 and up)
+        let label = "mpls label range 100 1000 static 16 99";
+        assert_eq!(configured(&books, &[]).type_line(label).1, Result::Ok);
+        assert_eq!(s.type_line(label).1, Result::Ok);
+        // a number of a `<lo-hi>` row stands for another of the row
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            ("Switch(config)#interface GigabitEthernet1/0/1", &[]),
+            (
+                "Switch(config-if)#l2protocol-tunnel drop-threshold ?",
+                &[
+                    "  <1-4096>  Drop threshold in packets per second",
+                    "  cdp       Cisco Discovery Protocol",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config-if)#l2protocol-tunnel drop-threshold 1 ?",
+                &["  <cr>  <cr>", ""],
+            ),
+        ]);
+        let line = "l2protocol-tunnel drop-threshold 100 cdp";
+        let mut plain = configured(&books, &["interface GigabitEthernet1/0/1"]);
+        assert_eq!(plain.type_line(line).1, Result::Ok);
+        let mut s = configured(&e, &["interface GigabitEthernet1/0/1"]);
+        let (out, r) = s.type_line(line);
+        assert_eq!(r, Result::Error, "{out:?}");
+        let at = "Switch(config-if)#".len() + line.find("cdp").unwrap();
+        assert_eq!(caret_at(&out), at);
+        // the crawl's values answered unlike each other: no value stands for the others
+        let others = spanning_crawl(true);
+        let mut s = configured(&others, &[]);
+        assert_eq!(s.type_line("spanning-tree vlan 2-4 cost 30").1, Result::Ok);
+    }
+
+    #[test]
+    fn a_routed_port_reads_only_the_objects_an_answer_offers() {
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            ("Switch(config)#interface GigabitEthernet1/0/1", &[]),
+            (
+                "Switch(config-if)# ?",
+                &[
+                    "Interface configuration commands:",
+                    "  ip  Interface Internet Protocol config commands",
+                    "  no  Negate a command or set its defaults",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config-if)#ip ?",
+                &["  flow  NetFlow Related commands", ""],
+            ),
+            (
+                "Switch(config-if)#ip flow ?",
+                &["  monitor  Apply a Flow Monitor", ""],
+            ),
+            (
+                "Switch(config-if)#ip flow monitor ?",
+                &["No monitors configured", "  <cr>  <cr>", ""],
+            ),
+            ("Switch(config-if)#end", &[]),
+        ]);
+        let mut s = configured(
+            &e,
+            &[
+                "flow monitor M1",
+                "exit",
+                "interface GigabitEthernet1/0/1",
+                "no switchport",
+            ],
+        );
+        // `M1` holds no record: refused on a routed port as on a switchport
+        let (out, r) = s.type_line("ip flow monitor M1 input");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config-if)#ip flow monitor ".len());
+        // a word the switchport's answers leave out is the books' there
+        assert_eq!(
+            s.type_line("ip address 10.0.0.1 255.255.255.0").1,
+            Result::Ok
+        );
+    }
+
+    #[test]
+    fn class_does_not_begin_class_map_on_the_image_whose_switch_refused_it() {
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)# ?",
+                &[
+                    "Configure commands:",
+                    "  class-map  Configure CPL Class Map",
+                    "  clock      Configure time-of-day clock",
+                    "",
+                ],
+            ),
+        ]);
+        let mut s = configured(&e, &[]);
+        let (out, r) = s.type_line("class C1");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config)#class".len());
+        assert_eq!(s.mode(), "config");
+        assert_eq!(s.type_line("class-map C1").1, Result::Ok);
+        // typed in a class map, which hands it to global configuration
+        assert_eq!(s.type_line("class C2").1, Result::Error);
+        assert_eq!(s.mode(), "config-cmap");
+        // an image with no crawl reads it as the books do
+        let books = books_17_6();
+        let mut plain = configured(&books, &[]);
+        assert_eq!(plain.type_line("class C1").1, Result::Ok);
+        assert_eq!(plain.mode(), "config-cmap");
+    }
+
+    #[test]
+    fn ptp_mode_and_transport_are_refused_under_the_dot1as_profile() {
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)# ?",
+                &["Configure commands:", "  ptp  Precision Time Protocol", ""],
+            ),
+            (
+                "Switch(config)#ptp ?",
+                &[
+                    "  mode       Change PTP clock mode",
+                    "  priority1  Set priority1 for the clock",
+                    "  profile    Change PTP clock profile",
+                    "  transport  Underlying Network Transport protocol",
+                    "",
+                ],
+            ),
+        ]);
+        let lines = ["ptp mode e2etransparent", "ptp transport ipv4 udp"];
+        let mut s = configured(&e, &[]);
+        for line in lines {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let mut s = configured(&e, &["ptp profile dot1as"]);
+        for line in lines {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            assert_eq!(caret_at(&out), "Switch(config)#ptp ".len(), "{line}");
+        }
+        assert_eq!(s.type_line("ptp priority1 120").1, Result::Ok);
+    }
+
+    #[test]
+    fn an_mld_ssm_map_entry_is_global_and_wants_ssm_mapping_enabled() {
+        let books = books_17_6();
+        let line = "ipv6 mld ssm-map static SSM1 2001:DB8:1::1";
+        let mut s = configured(&books, &["interface Vlan30"]);
+        let (out, r) = s.type_line(line);
+        assert_eq!(
+            (out, r),
+            (vec!["%ssm-map is not enabled!".to_string()], Result::Error)
+        );
+        assert_eq!(s.mode(), "config");
+        assert_eq!(s.type_line("ipv6 mld ssm-map enable").1, Result::Ok);
+        assert_eq!(s.type_line(line), (vec![], Result::Ok));
+    }
+
+    #[test]
+    fn a_civic_location_enters_its_mode_with_the_room_it_has() {
+        let books = books_17_6();
+        let mut s = configured(&books, &[]);
+        let (out, r) = s.type_line("location civic-location identifier 1");
+        let room = "% 250 bytes available to configure civic address attributes";
+        assert_eq!((out, r), (vec![room.to_string()], Result::Ok));
+        assert_eq!(s.mode(), "config-civic");
+        for line in ["number 3550", "state CA", "country US", "no state"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        assert_eq!(s.type_line("number").1, Result::Error);
+        assert_eq!(s.mode(), "config-civic");
+        assert_eq!(s.type_line("exit").1, Result::Ok);
+        // a location holding attributes has less room, by a count not measured
+        let (out, _) = s.type_line("location civic-location identifier 1");
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(s.mode(), "config-civic");
+    }
+
+    #[test]
+    fn a_port_s_start_on_a_member_the_stack_lacks_is_incomplete() {
+        let books = books_17_6();
+        let mut s = configured(&books, &[]);
+        for line in [
+            "interface TenGigabitEthernet 4/1",
+            "interface GigabitEthernet 6/1",
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}");
+            assert_eq!(out, ["% Incomplete command.", ""], "{line}");
+        }
+        // refused: the whole number of a port on a member the stack lacks, a module no member's
+        // ports carry, member 0 past the management port's, and a type the stack lacks
+        for line in [
+            "interface GigabitEthernet4/0/1",
+            "interface GigabitEthernet 6/2",
+            "interface gigabitethernet 0/1",
+            "interface FastEthernet 2/1",
+        ] {
+            let (out, _) = s.type_line(line);
+            assert!(
+                out.iter().any(|l| l.starts_with("% Invalid input")),
+                "{line}: {out:?}"
+            );
+        }
+        let mut s = configured(&books, &["interface Vlan1"]);
+        let (out, _) = s.type_line("ip unnumbered gigabitethernet 3/1");
+        assert_eq!(out, ["% Incomplete command.", ""]);
     }
 
     /// The shell's contexts for `script` typed from privileged EXEC, and the corpus's for the session
