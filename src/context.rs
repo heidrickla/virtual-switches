@@ -243,7 +243,8 @@ pub struct Refusal {
     pub caret: Caret,
 }
 
-const C9300_17_6: (&str, &str) = ("c9300", "17.6");
+pub(crate) const C9300_17_6: (&str, &str) = ("c9300", "17.6");
+pub(crate) const C9200_17_6: (&str, &str) = ("c9200", "17.6");
 const BOTH: &[&str] = &["network-advantage", "network-essentials"];
 const ADVANTAGE: &[&str] = &["network-advantage"];
 

@@ -1446,6 +1446,33 @@ impl<'a> Session<'a> {
             }
             _ => None,
         });
+        // a sampler a port's flow monitor names before it exists, at its name (the lab
+        // C9200L-48T-4G, 17.6.4; the C9300 refused the monitor first, `offers`); a sampler is held
+        // as a global line, or as a block where its command enters a submode
+        let refused = refused.or_else(|| {
+            let flow = matches!(
+                p.items.get(..3),
+                Some([Item::Kw { kw: ip, .. }, Item::Kw { kw: flow, .. }, Item::Kw { kw: monitor, .. }])
+                    if (ip == "ip" || ip == "ipv6") && flow == "flow" && monitor == "monitor"
+            );
+            if !(flow && mode.starts_with("config-if") && self.runs(crate::context::C9200_17_6)) {
+                return None;
+            }
+            p.items.windows(2).find_map(|w| match w {
+                [Item::Kw { kw, .. }, Item::Arg { value, tok, .. }]
+                    if kw == "sampler"
+                        && !self.device.blocks.iter().any(|b| {
+                            b.header.strip_prefix("sampler ") == Some(value.as_str())
+                        })
+                        && !self.device.global.iter().any(|e| {
+                            e.text.trim().strip_prefix("sampler ") == Some(value.as_str())
+                        }) =>
+                {
+                    Some(*tok)
+                }
+                _ => None,
+            })
+        });
         // a block's interface written apart from its number (`interface vlan 5000`), at the number
         let refused = refused.or_else(|| {
             let opens = self.engine.enters(&p).is_some_and(cli::is_config);
@@ -1723,10 +1750,13 @@ impl<'a> Session<'a> {
     }
 
     /// What IOS says for a line the configuration so far does not let it take, on IOS XE (the lab
-    /// C9300-24T, 17.6.4): a second BGP process (`BGP is already running; AS is 65000`), a class a
-    /// policy map names before its class map exists (`class map class1 not configured`), a second
-    /// mDNS controller (`Only one Controller is allowed`, then a blank line), a VRF the switch does
-    /// not hold (`NO_VRF`), a BGP neighbor's policy outside an address family once the process has
+    /// C9300-24T, 17.6.4): a second BGP process (`BGP is already running; AS is 65000`), a named
+    /// EIGRP address family's second AS or one another named instance runs, on the C9200 image (the
+    /// lab C9200L-48T-4G, 17.6.4) a port's flow monitor holding no record and a monitor's second
+    /// record, a class a policy map
+    /// names before its class map exists (`class map class1 not configured`), a second mDNS
+    /// controller (`Only one Controller is allowed`, then a blank line), a VRF the switch does not
+    /// hold (`NO_VRF`), a BGP neighbor's policy outside an address family once the process has
     /// one, a template a neighbor inherits before it exists, a private VLAN association naming a
     /// VLAN the switch does not hold, a secondary type for a VLAN whose SVI is up, a tunnel PIM
     /// registers through (`pim_tunnels`), an object a line names before it exists (a policy map, a
@@ -2277,6 +2307,73 @@ impl<'a> Session<'a> {
                 if header.starts_with("router ospfv3 ") {
                     return Some(format!("% VRF {name} does not exist"));
                 }
+            }
+            // a named EIGRP instance keeps the AS its address family first took, and refuses one
+            // another named instance's family runs (the lab C9300-24T and C9200L-48T-4G, 17.6.4)
+            ("config-router", ["address-family", ..])
+                if header
+                    .strip_prefix("router eigrp ")
+                    .is_some_and(|n| n.parse::<u32>().is_err()) =>
+            {
+                if let Some((family, asn)) = eigrp_family(&words) {
+                    let held = |b: &crate::device::Block| {
+                        b.lines
+                            .iter()
+                            .filter_map(|e| {
+                                eigrp_family(&e.text.split_whitespace().collect::<Vec<_>>())
+                            })
+                            .find(|(f, _)| *f == family)
+                            .map(|(_, n)| n.to_string())
+                    };
+                    if let Some(old) = block.and_then(held).filter(|old| old != asn) {
+                        return Some(format!(
+                            "Changing from AS({old}) to AS({asn}) is not allowed"
+                        ));
+                    }
+                    let other = self.device.blocks.iter().find_map(|b| {
+                        let name = b.header.strip_prefix("router eigrp ")?;
+                        (b.header != header
+                            && name.parse::<u32>().is_err()
+                            && held(b).is_some_and(|n| n == asn))
+                        .then_some(name)
+                    });
+                    if let Some(name) = other {
+                        return Some(format!("%ERROR: AS({asn}) in use by VR({name})"));
+                    }
+                }
+            }
+            // a port's flow monitor holding no record, and a monitor's second record, on the C9200
+            // image (the lab C9200L-48T-4G, 17.6.4; the C9300 refused both names, `offers`)
+            (m, ["ip" | "ipv6", "flow", "monitor", name, ..])
+                if m.starts_with("config-if")
+                    && self.runs(crate::context::C9200_17_6)
+                    && self.device.blocks.iter().any(|b| {
+                        b.header.strip_prefix("flow monitor ") == Some(*name)
+                            && !b.lines.iter().any(|e| e.text.trim().starts_with("record "))
+                    }) =>
+            {
+                return Some(
+                    "% Flow Monitor: Failed to add monitor to interface: The monitor does not \
+                     have a valid record"
+                        .into(),
+                );
+            }
+            ("config-flow-monitor", ["record", name])
+                if self.runs(crate::context::C9200_17_6)
+                    && block.is_some_and(|b| {
+                        b.lines.iter().any(|e| {
+                            e.text
+                                .trim()
+                                .strip_prefix("record ")
+                                .is_some_and(|held| held != *name)
+                        })
+                    }) =>
+            {
+                return Some(
+                    "% Flow Monitor: Failed to set record: Already there is an existing record \
+                     configured for this monitor"
+                        .into(),
+                );
             }
             ("config-router", ["neighbor", _, "inherit", "peer-session", name])
                 if header.starts_with("router bgp ")
@@ -3222,9 +3319,13 @@ impl<'a> Session<'a> {
     /// What IOS prints for `?` typed after `text`: what a real switch of this platform and release
     /// printed for the same line in the same mode, where a capture holds it; else, after a space, what
     /// may come next with its help and `<cr>` when the line is complete, and right after a word, the
-    /// keywords that word begins.
+    /// keywords that word begins. `do-exec ?` is what the crawl held for it, which leaves out the
+    /// privileged prompt's commands that change mode.
     pub fn help(&self, text: &str) -> Vec<String> {
         let answer = match self.after_do(text) {
+            Some("") => self
+                .held_answer(self.mode(), self.context().as_deref(), "do-exec ")
+                .unwrap_or_else(|| self.help_in("privileged", Some(""), "")),
             Some(rest) => self.help_in("privileged", Some(""), rest),
             None => self.help_in(self.mode(), self.context().as_deref(), text),
         };
@@ -3533,8 +3634,8 @@ impl<'a> Session<'a> {
         let held = &self.engine.held;
         let toks = cli::tokens(line);
         let mut before: Vec<&str> = vec![];
-        // the privileged prompt's own `?` answer is held as `do-exec`'s, which leaves out the
-        // commands that change mode: its first word is the books'
+        // a privileged line's first word is the books': a crawl that asked `do-exec ?` and not the
+        // prompt's own `?` holds an answer that leaves out the commands that change mode
         let first = usize::from(mode == "privileged");
         // a word the switch answered `?` after, where the answer before it said no object of the
         // kind was configured, is a keyword it hides there (`name` after `show flow exporter`)
@@ -3543,7 +3644,11 @@ impl<'a> Session<'a> {
             held.help_for(level.as_deref(), mode, Some(&context), &through, configured)
                 .is_some_and(|a| !crate::live::is_refusal(a))
         };
+        // the kind of object the answer before the last word read listed, and whether that word was
+        // the keyword before a name (`name` after `clear flow monitor`) rather than a name
+        let mut listed: Option<(&str, bool)> = None;
         for k in first..=toks.len() {
+            let after_listed = listed.take();
             let text = match k {
                 0 => String::new(),
                 _ => format!("{} ", &line[..toks[k - 1].at + toks[k - 1].text.len()]),
@@ -3579,6 +3684,27 @@ impl<'a> Session<'a> {
                 continue;
             };
             if crate::live::is_refusal(answer) {
+                // a refusal after a name, or after the keyword before one, where the answer before
+                // listed the objects configured: the crawl's switch held none by that name, and
+                // this session's objects decide
+                match after_listed {
+                    Some((_, false)) => {
+                        before.clear();
+                        continue;
+                    }
+                    Some((kind, true)) if self.holds_kind(kind) => {
+                        let Some(t) = toks.get(k) else {
+                            return Some((Outcome::Incomplete, false));
+                        };
+                        if !self.offers(kind, &t.text, mode) {
+                            return Some((Outcome::Invalid(t.at), false));
+                        }
+                        listed = Some((kind, false));
+                        before.clear();
+                        continue;
+                    }
+                    _ => {}
+                }
                 // `% Unrecognized command` after the last word as typed (no address placeholder):
                 // the switch refused that word
                 let last = k.checked_sub(1).map(|k| &toks[k]);
@@ -3615,12 +3741,15 @@ impl<'a> Session<'a> {
                         && w.to_lowercase().starts_with(&typed)
                 });
                 if !keyword {
-                    if !(none.is_some() && answered_after(k)) && !self.offers(kind, &t.text, mode) {
+                    let named = self.offers(kind, &t.text, mode);
+                    if !(none.is_some() && answered_after(k)) && !named {
                         return Some((Outcome::Invalid(t.at), false));
                     }
+                    listed = Some((kind, !named));
                     before.clear();
                     continue;
                 }
+                listed = Some((kind, true));
             }
             if routed {
                 before.clear();
@@ -3691,10 +3820,26 @@ impl<'a> Session<'a> {
             })
     }
 
-    /// Whether this session holds the block `kind name` where IOS offers it for `mode`: a flow
-    /// record holding a field, a monitor named on an interface holding a record. The lab C9300
-    /// (17.6.4) refused an empty record in a flow monitor and a monitor with none on a port.
+    /// Whether the session runs the image (book, release).
+    fn runs(&self, image: (&str, &str)) -> bool {
+        crate::grammars::book_of(&self.engine.grammar.platform) == Some(image.0)
+            && self.engine.grammar.release == image.1
+    }
+
+    /// Whether this session holds a block of the kind (`flow monitor `).
+    fn holds_kind(&self, kind: &str) -> bool {
+        self.device
+            .blocks
+            .iter()
+            .any(|b| b.header.starts_with(kind))
+    }
+
+    /// Whether this session holds the block `kind name` where IOS offers it for `mode`. The lab
+    /// C9300 (17.6.4) refused an empty record in a flow monitor and a monitor with none on a port,
+    /// so on that image a flow record holds a field and a monitor named on an interface a record;
+    /// the lab C9200L (17.6.4) read both names and answered with a message.
     fn offers(&self, kind: &str, name: &str, mode: &str) -> bool {
+        let measured = self.runs(crate::context::C9300_17_6);
         self.device.blocks.iter().any(|b| {
             let holds = |p: &[&str]| {
                 b.lines
@@ -3703,8 +3848,10 @@ impl<'a> Session<'a> {
             };
             b.header.strip_prefix(kind) == Some(name)
                 && match kind {
-                    "flow record " => holds(&["match ", "collect "]),
-                    "flow monitor " if mode.starts_with("config-if") => holds(&["record "]),
+                    "flow record " if measured => holds(&["match ", "collect "]),
+                    "flow monitor " if measured && mode.starts_with("config-if") => {
+                        holds(&["record "])
+                    }
                     _ => true,
                 }
         })
@@ -4720,6 +4867,24 @@ fn ip_address(text: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// A named EIGRP address family's line (`address-family ipv4 [unicast] [vrf V] autonomous-system
+/// N`) as its family (address family, unicast or multicast, VRF) and AS.
+type EigrpFamily<'a> = ((&'a str, &'a str, Option<&'a str>), &'a str);
+fn eigrp_family<'a>(words: &[&'a str]) -> Option<EigrpFamily<'a>> {
+    let ["address-family", afi, rest @ ..] = words else {
+        return None;
+    };
+    let after = |k: &str| {
+        let i = rest.iter().position(|w| *w == k)?;
+        rest.get(i + 1).copied()
+    };
+    let cast = match rest.first() {
+        Some(&"multicast") => "multicast",
+        _ => "unicast",
+    };
+    Some(((afi, cast, after("vrf")), after("autonomous-system")?))
+}
+
 /// The tunnels IOS keeps for PIM registers once multicast routing is on: one for each RP the global
 /// configuration names and one more where the switch is an RP itself, numbered from the lowest no
 /// tunnel interface holds. The lab C9300-24T (17.6.4), its own RP with Tunnel0 configured, refused
@@ -5338,6 +5503,80 @@ mod tests {
                 .position(|l| l == "class-map match-any lab-class")
                 .unwrap_or_else(|| panic!("{release}: {shown:?}"));
             assert_eq!(shown[at + 1], format!("{indent}description lab traffic"));
+        }
+    }
+
+    #[test]
+    fn the_lines_a_c9200l_held_in_its_configuration_load_on_its_image() {
+        // the lab C9200L-48T-4G (17.6.4) held these where its books leave them out or place them
+        // in other modes (`data/overrides.json`, platform Catalyst 9200)
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.frames.push(Frame::top("config"));
+        for (line, mode) in [
+            ("ip rcmd rcp-enable", "config"),
+            ("ip rcmd rsh-enable", "config"),
+            ("ip http client source-interface Vlan1", "config"),
+            ("ipv6 nd cache expire 3600", "config"),
+            ("ipv6 mld ssm-map enable", "config"),
+            ("ipv6 mld ssm-map static ACLA 2001:db8::1", "config"),
+            ("fhrp version vrrp v3", "config"),
+            ("ip dhcp pool POOLA", "dhcp-config"),
+            ("network 192.0.2.0 255.255.255.0", "dhcp-config"),
+            ("default-router 192.0.2.1", "dhcp-config"),
+            ("dns-server 192.0.2.2 192.0.2.3", "dhcp-config"),
+            ("exit", "config"),
+            ("device-tracking policy POLA", "config-device-tracking"),
+            ("no protocol udp", "config-device-tracking"),
+            ("exit", "config"),
+            ("object-group network OGA", "config-network-group"),
+            ("192.0.2.0 255.255.255.0", "config-network-group"),
+            ("exit", "config"),
+            ("mac access-list extended MACA", "config-ext-macl"),
+            ("permit host 0000.5e00.5301 any", "config-ext-macl"),
+            ("exit", "config"),
+            ("ipv6 access-list V6A", "config-ipv6-acl"),
+            ("sequence 10 permit ipv6 any any", "config-ipv6-acl"),
+            ("exit", "config"),
+            ("ipv6 nd inspection policy NDA", "config-nd-inspection"),
+            ("exit", "config"),
+            (
+                "class-map type multicast-flows MFA",
+                "config-mcast-flows-cmap",
+            ),
+            ("exit", "config"),
+            ("policy-map PMA", "config-pmap"),
+            ("class class-default", "config-pmap-c"),
+            ("set precedence 2", "config-pmap-c"),
+            ("exit", "config-pmap"),
+            ("exit", "config"),
+            ("interface GigabitEthernet1/0/2", "config-if"),
+            ("ip dhcp snooping trust", "config-if"),
+            ("ip ospf 1 area 0", "config-if"),
+            ("ip dhcp client client-id ascii CLIENTA", "config-if"),
+            ("vrrp 1 address-family ipv4", "config-if-vrrp"),
+            ("exit-vrrp", "config-if"),
+            ("exit", "config"),
+            ("router ospf 1", "config-router"),
+            ("network 192.0.2.0 0.0.0.255 area 0", "config-router"),
+            ("exit", "config"),
+            ("router eigrp NAMEA", "config-router"),
+            (
+                "address-family ipv4 unicast autonomous-system 10",
+                "config-router-af",
+            ),
+            ("eigrp stub connected summary", "config-router-af"),
+            ("topology base", "config-router-af-topology"),
+            ("exit-af-topology", "config-router-af"),
+            ("exit-address-family", "config-router"),
+            ("exit", "config"),
+            ("router eigrp 30", "config-router"),
+            ("eigrp stub receive-only", "config-router"),
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+            assert_eq!(s.mode(), mode, "after {line}");
         }
     }
 
@@ -8343,7 +8582,8 @@ mod tests {
 
     #[test]
     fn a_privileged_line_is_judged_by_the_crawl_past_its_first_word() {
-        // the privileged prompt's own answer is held as `do-exec ?`'s, which lists no `configure`
+        // a crawl that asked `do-exec ?` alone: its answer, which lists no `configure`, stands for
+        // the privileged prompt's
         let e = held_engine(&[
             ("Switch#configure terminal", ENTERED),
             (
@@ -8411,6 +8651,239 @@ mod tests {
         assert_eq!(caret_at(&out), "Switch#sh vl id ".len());
         // a value the crawl typed other than this line types it is not judged
         assert_eq!(s.type_line("show vlan id 2").1, Result::Ok);
+    }
+
+    #[test]
+    fn the_privileged_prompt_s_own_answer_places_the_caret_under_its_first_word() {
+        // `do-exec ?` asked before the prompt's own `?`, which lists `configure` beside `connect`
+        let e = held_engine(&[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#do-exec ?",
+                &[
+                    "  clear    Reset functions",
+                    "  connect  Open a terminal connection",
+                    "",
+                ],
+            ),
+            ("Switch(config)#end", &[]),
+            (
+                "Switch# ?",
+                &[
+                    "Exec commands:",
+                    "  clear      Reset functions",
+                    "  configure  Enter configuration mode",
+                    "  connect    Open a terminal connection",
+                    "",
+                ],
+            ),
+        ]);
+        let mut s = configured(&e, &["end"]);
+        let (out, r) = s.type_line("configuration terminal");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#configur".len());
+        let words = |help: Vec<String>| -> Vec<String> {
+            help.iter()
+                .filter_map(|l| l.strip_prefix("  "))
+                .filter_map(|l| l.split_whitespace().next())
+                .map(str::to_string)
+                .collect()
+        };
+        assert!(words(s.help("")).contains(&"configure".to_string()));
+        // `do-exec ?` answers what the crawl's `do-exec ?` printed
+        assert_eq!(s.type_line("configure terminal").1, Result::Ok);
+        for typed in ["do-exec ", "do "] {
+            assert_eq!(words(s.help(typed)), ["clear", "connect"], "{typed}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_after_a_listed_name_leaves_the_name_to_the_session() {
+        // the crawl's switch held one monitor, refused `name` with none by that name, and refused
+        // a name it did not hold
+        let e = held_engine(&[
+            ("Switch#clear ?", &["  flow  Flow information", ""]),
+            ("Switch#clear flow ?", &["  monitor  Flow monitor", ""]),
+            (
+                "Switch#clear flow monitor ?",
+                &["  MONA  User defined", "  name  Name of a flow monitor", ""],
+            ),
+            (
+                "Switch#clear flow monitor name ?",
+                &["% Unrecognized command"],
+            ),
+            (
+                "Switch#clear flow monitor MONB ?",
+                &["% Unrecognized command"],
+            ),
+        ]);
+        let mut s = configured(&e, &["flow monitor MONB", "exit", "end"]);
+        for line in [
+            "clear flow monitor name MONB",
+            "clear flow monitor name MONB statistics",
+            "clear flow monitor MONB statistics",
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+        }
+        // a name this session does not hold
+        let (out, r) = s.type_line("clear flow monitor name MONC");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#clear flow monitor name ".len());
+        // with no monitor, as the crawl's switch answered `name`
+        let mut s = configured(&e, &["end"]);
+        let (out, r) = s.type_line("clear flow monitor name MONB");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch#clear flow monitor ".len());
+    }
+
+    #[test]
+    fn a_flow_object_s_contents_are_judged_only_on_the_image_that_measured_them() {
+        const STEPS: &[(&str, &[&str])] = &[
+            ("Switch#configure terminal", ENTERED),
+            ("Switch(config)#interface GigabitEthernet1/0/1", &[]),
+            (
+                "Switch(config-if)#ip flow monitor ?",
+                &["No monitors configured", "  <cr>  <cr>", ""],
+            ),
+            ("Switch(config-if)#exit", &[]),
+            ("Switch(config)#flow monitor MONA", &[]),
+            (
+                "Switch(config-flow-monitor)#record ?",
+                &[
+                    "  RECA     User defined",
+                    "  netflow  Traditional NetFlow collection schemes",
+                    "",
+                ],
+            ),
+        ];
+        let essentials = "network-essentials";
+        let at = |e: &Engine, lines: &[&str]| -> Vec<Result> {
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(e, Device::new(stack));
+            s.boot_level = Some(essentials.into());
+            for line in ["enable", "configure terminal"].iter().chain(&[
+                "flow record RECB",
+                "exit",
+                "flow monitor MONB",
+                "exit",
+                "flow monitor MONC",
+                "exit",
+            ]) {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+            }
+            lines.iter().map(|l| s.type_line(l).1).collect()
+        };
+        // an empty record named in a monitor, and a monitor with no record named on a port
+        let lines = [
+            "flow monitor MONB",
+            "record RECB",
+            "exit",
+            "interface GigabitEthernet1/0/1",
+            "ip flow monitor MONC input",
+        ];
+        let measured = held_engine_of("c9300", "17.6", essentials, STEPS);
+        assert_eq!(
+            at(&measured, &lines),
+            [
+                Result::Ok,
+                Result::Error,
+                Result::Ok,
+                Result::Ok,
+                Result::Error
+            ]
+        );
+        // the C9200L took the empty record and answered the monitor without one with a message
+        let other = held_engine_of("c9200", "17.6", essentials, STEPS);
+        assert_eq!(
+            at(&other, &lines),
+            [
+                Result::Ok,
+                Result::Ok,
+                Result::Ok,
+                Result::Ok,
+                Result::Error
+            ]
+        );
+        // a name neither holds is refused on both
+        for e in [&measured, &other] {
+            assert_eq!(
+                at(e, &["flow monitor MONB", "record RECC"]),
+                [Result::Ok, Result::Error]
+            );
+        }
+    }
+
+    #[test]
+    fn the_c9200_answers_a_monitor_without_a_record_and_refuses_a_sampler_it_lacks() {
+        const STEPS: &[(&str, &[&str])] = &[
+            ("Switch#configure terminal", ENTERED),
+            ("Switch(config)#interface GigabitEthernet1/0/1", &[]),
+            (
+                "Switch(config-if)#ip flow monitor ?",
+                &["No monitors configured", "  <cr>  <cr>", ""],
+            ),
+            ("Switch(config-if)#exit", &[]),
+        ];
+        let e = held_engine_of("c9200", "17.6", "network-essentials", STEPS);
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.boot_level = Some("network-essentials".into());
+        for line in [
+            "enable",
+            "configure terminal",
+            "flow record RECA",
+            "exit",
+            "flow record RECB",
+            "exit",
+            "flow monitor MONA",
+            "exit",
+            "sampler SAMA",
+            "interface GigabitEthernet1/0/1",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, r) = s.type_line("ip flow monitor MONA input");
+        assert_eq!(
+            (out, r),
+            (
+                vec![
+                    "% Flow Monitor: Failed to add monitor to interface: The monitor does not have \
+                     a valid record"
+                        .to_string()
+                ],
+                Result::Error
+            )
+        );
+        let (out, r) = s.type_line("ip flow monitor MONA sampler SAMB input");
+        assert_eq!(r, Result::Error);
+        assert_eq!(
+            caret_at(&out),
+            "Switch(config-if)#ip flow monitor MONA sampler ".len()
+        );
+        for line in ["exit", "flow monitor MONA", "record RECA", "record RECA"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, r) = s.type_line("record RECB");
+        assert_eq!(
+            (out, r),
+            (
+                vec![
+                    "% Flow Monitor: Failed to set record: Already there is an existing record \
+                     configured for this monitor"
+                        .to_string()
+                ],
+                Result::Error
+            )
+        );
+        for line in [
+            "exit",
+            "interface GigabitEthernet1/0/1",
+            "ip flow monitor MONA input",
+            "ipv6 flow monitor MONA sampler SAMA output",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
     }
 
     #[test]
@@ -9610,6 +10083,41 @@ mod tests {
         assert_eq!(s.mode(), "config-if");
         s.type_line("exit");
         assert_eq!(s.type_line("interface nve 33").1, Result::Error);
+    }
+
+    #[test]
+    fn a_named_eigrp_family_keeps_its_as_and_refuses_one_another_instance_runs() {
+        let e = c9300_17_6();
+        let mut s = typed_24t(
+            &e,
+            &[
+                "router eigrp EIGA",
+                "address-family ipv4 autonomous-system 10",
+                "exit-address-family",
+            ],
+        );
+        assert_eq!(s.mode(), "config-router");
+        let (out, r) = s.type_line("address-family ipv4 autonomous-system 20");
+        assert_eq!(out, ["Changing from AS(10) to AS(20) is not allowed"]);
+        assert_eq!((r, s.mode()), (Result::Error, "config-router"));
+        // the AS it holds, `unicast` written or not
+        assert_eq!(
+            s.type_line("address-family ipv4 unicast autonomous-system 10")
+                .1,
+            Result::Ok
+        );
+        assert_eq!(s.mode(), "config-router-af");
+        for line in ["exit-address-family", "exit", "router eigrp EIGB"] {
+            s.type_line(line);
+        }
+        let (out, r) = s.type_line("address-family ipv4 unicast autonomous-system 10");
+        assert_eq!(out, ["%ERROR: AS(10) in use by VR(EIGA)"]);
+        assert_eq!((r, s.mode()), (Result::Error, "config-router"));
+        assert_eq!(
+            s.type_line("address-family ipv4 autonomous-system 30").1,
+            Result::Ok
+        );
+        assert_eq!(s.mode(), "config-router-af");
     }
 
     #[test]

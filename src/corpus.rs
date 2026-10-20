@@ -610,7 +610,10 @@ fn refusal(
 
 /// The `?` answers a crawl's log holds, as (mode, context, key, answer): the mode its prompt showed
 /// and the context its entering lines give it, or privileged EXEC for a line typed after `do-exec`,
-/// which runs the rest of the line there. Only a complete exchange is an answer: `swcon crawl` writes
+/// which runs the rest of the line there. The answers read through `do-exec` come after the others,
+/// so the privileged prompt's own answer is the first for its line: `do-exec ?` leaves out the
+/// commands that change mode (`configure`, `enable`), and is held as typed as well. Only a complete
+/// exchange is an answer: `swcon crawl` writes
 /// a probe to the log once the switch has printed its answer and the prompt again, and leaves a probe
 /// that timed out, left the mode or met a question out, so a probe is complete when another prompt
 /// follows it; a refusal is complete the same way, the switch having printed it and the prompt again.
@@ -630,6 +633,7 @@ pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<Strin
     };
     let complete = exchanges.len().saturating_sub(1);
     let mut out = vec![];
+    let mut through_do = vec![];
     for e in exchanges.into_iter().take(complete) {
         let Some(before) = e.command.strip_suffix('?') else {
             continue;
@@ -650,17 +654,34 @@ pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<Strin
             .split_once(char::is_whitespace)
             .filter(|(w, _)| crate::cli::names_do_exec(w) && crate::cli::is_config(&e.mode))
             .map(|(_, rest)| rest);
-        let (mode, context, typed) = match exec {
-            Some(rest) => ("privileged".to_string(), String::new(), rest),
+        match exec {
+            Some(rest) => {
+                if rest.trim().is_empty()
+                    && let Some(context) = e.context.clone()
+                {
+                    out.push((
+                        e.mode.clone(),
+                        context,
+                        crate::context::key(before),
+                        answer.clone(),
+                    ));
+                }
+                through_do.push((
+                    "privileged".to_string(),
+                    String::new(),
+                    crate::context::key(rest),
+                    answer,
+                ));
+            }
             None => {
                 let Some(context) = e.context.clone() else {
                     continue;
                 };
-                (e.mode.clone(), context, before)
+                out.push((e.mode.clone(), context, crate::context::key(before), answer));
             }
-        };
-        out.push((mode, context, crate::context::key(typed), answer));
+        }
     }
+    out.extend(through_do);
     out
 }
 
@@ -2491,13 +2512,14 @@ mod tests {
             [
                 row("config", "buffers test ", UNRECOGNIZED),
                 row("config", "alias filter ", AMBIGUOUS),
-                row("privileged", "show aliases filter ", AMBIGUOUS),
                 row(
                     "config",
                     "buffers lspvif ",
                     "  <0-2147483647>  Lspvif interface number"
                 ),
                 row("config", "spanning-tree vlan 1 test ", UNRECOGNIZED),
+                // the answers read through `do-exec` after the others
+                row("privileged", "show aliases filter ", AMBIGUOUS),
             ]
         );
     }
@@ -2513,9 +2535,9 @@ mod tests {
         assert_eq!(
             held,
             [
+                row("config", "do "),
                 row("privileged", "show "),
                 row("privileged", "show vtp "),
-                row("config", "do "),
             ]
         );
     }

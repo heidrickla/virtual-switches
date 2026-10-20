@@ -40,6 +40,10 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | Line | State | Message |
 |---|---|---|
 | `router bgp <asn>` | another AS running | `BGP is already running; AS is <asn>` |
+| `address-family ... autonomous-system <n>` in a named EIGRP instance | the instance's family (address family, unicast or multicast, VRF) holds another AS | `Changing from AS(<old>) to AS(<n>) is not allowed` |
+| the same | another named instance's family runs AS `<n>` | `%ERROR: AS(<n>) in use by VR(<name>)` |
+| `ip\|ipv6 flow monitor <m> ...` on a port, on the C9200 at 17.6 (the lab C9200L-48T-4G at 17.6.4) | the monitor holds no record | `% Flow Monitor: Failed to add monitor to interface: The monitor does not have a valid record` |
+| `record <r>` in a flow monitor, on the C9200 at 17.6 | the monitor holds another record | `% Flow Monitor: Failed to set record: Already there is an existing record configured for this monitor` |
 | `class <name>` in a policy map | no class map of the name | `class map <name> not configured` |
 | `service-policy input\|output <name>` on an interface | no policy map of the name | `% policy map <name> not configured` |
 | `service-export mdns-sd controller <name>` | another controller | `Only one Controller is allowed` and a blank line |
@@ -133,7 +137,7 @@ These lines are taken with a warning first:
 - Classic IOS heads the EXEC list with `Exec commands:`.
 - A description wraps under its column at the console's width. With piped input the help is fitted to `terminal width` when it was set to a number.
 - Right after a word, `?` prints the keywords the word begins, two spaces apart, wrapped before the console's last column.
-- After `do` or `do-exec` (each by any unique start) `?` and Tab answer as the privileged prompt does.
+- After `do` or `do-exec` (each by any unique start) `?` and Tab answer as the privileged prompt does. `?` right after them prints the crawl's `do-exec ?` for the mode where one is held, which leaves out the commands that change mode.
 - Tab completes the one keyword or interface type a word begins, whole keywords included (`ip` beside `ipv6` completes nothing), and nothing after a held refusal.
 
 ## Privilege levels

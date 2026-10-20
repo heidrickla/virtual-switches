@@ -2505,6 +2505,204 @@
       "lines": ["{additional-code | additional-location-information | branch-road-name | building | city | country | county | division | floor | landmark | leading-street-dir | name | neighborhood | number | post-office-box | postal-code | postal-community-name | primary-road-name | road-section | room | seat | state | street-group | street-name-postmodifier | street-name-premodifier | street-number-suffix | street-suffix | sub-branch-road-name | trailing-street-suffix | type-of-place | unit} <value>", "no {additional-code | additional-location-information | branch-road-name | building | city | country | county | division | floor | landmark | leading-street-dir | name | neighborhood | number | post-office-box | postal-code | postal-community-name | primary-road-name | road-section | room | seat | state | street-group | street-name-postmodifier | street-name-premodifier | street-number-suffix | street-suffix | sub-branch-road-name | trailing-street-suffix | type-of-place | unit}"],
       "args": {"value": {"kind": "Word"}},
       "evidence": "the lab C9300-24T (17.6.4)'s (config-civic)# lists these, each taking a WORD and then <cr>, and its 'no' form <cr>; the switch took 'number 3550', 'state CA', 'building 19', 'room C6' and 'country US' there"
+    },
+    {
+      "name": "ip dhcp pool",
+      "platform": "Catalyst 9200",
+      "lines": [],
+      "enters": "dhcp-config",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) entered (dhcp-config)# from 'ip dhcp pool <name>' and printed 'network', 'default-router' and 'dns-server' under a pool in its running configuration"
+    },
+    {
+      "name": "network (DHCP pool)",
+      "platform": "Catalyst 9200",
+      "modes": ["dhcp-config"],
+      "lines": ["network <network-number> [<mask>]", "no network"],
+      "args": {"network-number": {"kind": "Ipv4"}, "mask": {"kind": "Ipv4"}},
+      "evidence": "the books' pool form takes 'mask' before the mask; the lab C9200L-48T-4G (17.6.4) printed ' network <address> <mask>' under an 'ip dhcp pool' in its running configuration"
+    },
+    {
+      "name": "dns-server (DHCP pool)",
+      "platform": "Catalyst 9200",
+      "modes": ["dhcp-config"],
+      "lines": ["dns-server <address> [<address> [<address> [<address> [<address> [<address> [<address> [<address>]]]]]]]", "no dns-server"],
+      "args": {"address": {"kind": "Ipv4"}},
+      "evidence": "no 9200 book lists it for an IPv4 pool; the lab C9200L-48T-4G (17.6.4) printed ' dns-server <address>' under an 'ip dhcp pool' in its running configuration and its (dhcp-config)# lists 'dns-server'; up to eight servers as 'default-router' takes (inferred)"
+    },
+    {
+      "name": "protocol (device-tracking policy)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-device-tracking"],
+      "lines": ["protocol {arp | dhcp4 | dhcp6 | ndp | udp} [prefix-list <prefix-list-name>]", "no protocol {arp | dhcp4 | dhcp6 | ndp | udp}"],
+      "args": {"prefix-list-name": {"kind": "Word"}},
+      "evidence": "no 9200 book lists it in a device-tracking policy; the lab C9200L-48T-4G (17.6.4) printed ' no protocol udp' under a device-tracking policy in its running configuration and its (config-device-tracking)# lists 'protocol'"
+    },
+    {
+      "name": "object-group network (subnet)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-network-group"],
+      "lines": ["<network-address> <network-mask>", "no <network-address> <network-mask>"],
+      "args": {"network-address": {"kind": "Ipv4"}, "network-mask": {"kind": "Ipv4"}},
+      "evidence": "no 9200 book lists the subnet line, which starts with no keyword; the lab C9200L-48T-4G (17.6.4) printed ' <address> <mask>' under an 'object-group network' in its running configuration and its (config-network-group)# lists 'A.B.C.D'"
+    },
+    {
+      "name": "permit (MAC access-list configuration)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-ext-macl"],
+      "lines": ["permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]", "no permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]"],
+      "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "protocol": {"kind": "Word"}},
+      "evidence": "the security reference's line runs every choice together; the lab C9200L-48T-4G (17.6.4) printed ' permit host <mac> any' under a 'mac access-list extended' in its running configuration"
+    },
+    {
+      "name": "ip dhcp snooping trust",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip dhcp snooping trust", "no ip dhcp snooping trust"],
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed it under two trunk ports in its running configuration"
+    },
+    {
+      "name": "ip dhcp client client-id",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip dhcp client client-id {<interface> | ascii <client-id-string> | hex <client-id-hex>}", "no ip dhcp client client-id"],
+      "args": {"interface": {"kind": "Interface"}, "client-id-string": {"kind": "Word"}, "client-id-hex": {"kind": "Word"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed ' ip dhcp client client-id ascii <string>' under its management port in its running configuration, and its crawl answers the interface types, 'ascii' and 'hex' after 'ip dhcp client client-id'"
+    },
+    {
+      "name": "ip ospf area",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf <process-id> area <area-id> [secondaries none]", "no ip ospf <process-id> area [<area-id>]"],
+      "args": {"process-id": {"kind": "Number", "min": 1, "max": 65535}, "area-id": {"kind": "Word"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed 'ip ospf 1 area 0' under a routed port and an SVI in its running configuration, and its crawl answers 'area' after 'ip ospf 1' and 'secondaries' after the area"
+    },
+    {
+      "name": "exit-vrrp",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if-vrrp"],
+      "lines": ["exit-vrrp"],
+      "enters": "config-if",
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed '  exit-vrrp' under 'vrrp <group> address-family ipv4' in its running configuration"
+    },
+    {
+      "name": "address-family (EIGRP named mode)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router"],
+      "lines": ["address-family {ipv4 | ipv6} [unicast | multicast] [vrf <vrf-name>] autonomous-system <as-number>", "no address-family {ipv4 | ipv6} [unicast | multicast] [vrf <vrf-name>] autonomous-system <as-number>"],
+      "args": {"vrf-name": {"kind": "Word"}, "as-number": {"kind": "Number", "min": 1, "max": 65535}},
+      "enters": "config-router-af",
+      "evidence": "the books' EIGRP form drops the space before the number ('autonomous-system<as-number>'); the lab C9200L-48T-4G (17.6.4) took 'address-family ipv4 autonomous-system <number>' under 'router eigrp <name>' and entered (config-router-af)#, refused it under 'router eigrp <number>', and printed 'address-family ipv4 unicast autonomous-system <number>' in its running configuration"
+    },
+    {
+      "name": "topology (EIGRP address family)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-af"],
+      "lines": ["topology {base | <topology-name> tid <tid>}", "no topology {base | <topology-name>}"],
+      "args": {"topology-name": {"kind": "Word"}, "tid": {"kind": "Number", "min": 1, "max": 65535}},
+      "enters": "config-router-af-topology",
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) took 'topology base' in an EIGRP address family, entered (config-router-af-topology)# and printed it with 'exit-af-topology' in its running configuration"
+    },
+    {
+      "name": "exit-af-topology",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-af-topology"],
+      "lines": ["exit-af-topology"],
+      "enters": "config-router-af",
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) took it at (config-router-af-topology)#, returned to (config-router-af)# and printed it under 'topology base'"
+    },
+    {
+      "name": "service-family (EIGRP named mode)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router"],
+      "lines": ["service-family {ipv4 | ipv6} [vrf <vrf-name>] autonomous-system <as-number>", "no service-family {ipv4 | ipv6} [vrf <vrf-name>] autonomous-system <as-number>"],
+      "args": {"vrf-name": {"kind": "Word"}, "as-number": {"kind": "Number", "min": 1, "max": 65535}},
+      "enters": "config-router-sf",
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) took 'service-family ipv4 autonomous-system <number>' under 'router eigrp <name>' and entered (config-router-sf)#, and refused it under 'router eigrp <number>'"
+    },
+    {
+      "name": "eigrp stub",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router", "config-router-af"],
+      "lines": ["eigrp stub [receive-only]", "eigrp stub [leak-map <leak-map-name>] [connected] [static] [summary] [redistributed]", "no eigrp stub"],
+      "args": {"leak-map-name": {"kind": "Word"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed ' eigrp stub connected summary' under 'router eigrp <number>' and in a named EIGRP address family in its running configuration, and its crawl answers 'connected', 'leak-map', 'receive-only', 'redistributed', 'static' and 'summary' after 'eigrp stub' in both, and only <cr> after 'receive-only'"
+    },
+    {
+      "name": "network (OSPF)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router"],
+      "lines": ["network <ip-address> <wildcard-mask> area <area-id>", "no network <ip-address> <wildcard-mask> area <area-id>"],
+      "args": {"ip-address": {"kind": "Ipv4"}, "wildcard-mask": {"kind": "Ipv4"}, "area-id": {"kind": "Word"}},
+      "evidence": "the 9200 books' OSPF form has no wildcard mask; the lab C9200L-48T-4G (17.6.4) printed ' network <address> <wildcard> area 0' under 'router ospf 1' in its running configuration and took 'network <address> <mask> area 20' there"
+    },
+    {
+      "name": "ip http client source-interface",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["ip http client source-interface <interface>", "no ip http client source-interface"],
+      "args": {"interface": {"kind": "Interface"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed 'ip http client source-interface <management port>' in its running configuration, and its crawl answers the interface types after it"
+    },
+    {
+      "name": "ip rcmd rcp-enable",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["ip rcmd rcp-enable", "no ip rcmd rcp-enable"],
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed it in its running configuration and its crawl lists 'rcp-enable' after 'ip rcmd'"
+    },
+    {
+      "name": "ip rcmd rsh-enable",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["ip rcmd rsh-enable", "no ip rcmd rsh-enable"],
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) printed it in its running configuration and its crawl lists 'rsh-enable' after 'ip rcmd'"
+    },
+    {
+      "name": "sequence (IPv6 access list)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-ipv6-acl"],
+      "lines": ["sequence <sequence-number> {permit | deny} <entry>", "no sequence <sequence-number>"],
+      "args": {"sequence-number": {"kind": "Number", "min": 1, "max": 4294967295}, "entry": {"kind": "Text"}},
+      "evidence": "the guide lists 'sequence' only in an FQDN list; the lab C9200L-48T-4G (17.6.4) printed an IPv6 access list's entries as ' sequence 10 permit ...' and ' sequence 20 deny ...' in its running configuration"
+    },
+    {
+      "name": "ipv6 nd inspection policy",
+      "platform": "Catalyst 9200",
+      "lines": [],
+      "enters": "config-nd-inspection",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 nd inspection policy <name>' at (config)# and entered (config-nd-inspection)#"
+    },
+    {
+      "name": "class-map type multicast-flows",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "drop_modes": ["config-if"],
+      "lines": [],
+      "enters": "config-mcast-flows-cmap",
+      "evidence": "the guide types it under an interface; the lab C9200L-48T-4G (17.6.4) took 'class-map type multicast-flows <name>' at (config-if)# as a global line and entered (config-mcast-flows-cmap)#"
+    },
+    {
+      "name": "ipv6 nd cache expire",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) left (config-if)# on a switchport for (config)# on 'ipv6 nd cache expire 7200' and took it there too"
+    },
+    {
+      "name": "set precedence",
+      "platform": "Catalyst 9200",
+      "modes": ["config-pmap-c"],
+      "drop_modes": ["config-pmap"],
+      "lines": [],
+      "evidence": "the guide types it in a policy map; the lab C9200L-48T-4G (17.6.4) took 'set precedence 5' at (config-pmap-c)# and stayed, and refused it at (config-pmap)#"
+    },
+    {
+      "name": "ipv6 mld ssm-map static",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["ipv6 mld ssm-map static <access-list> <source-address>", "no ipv6 mld ssm-map static <access-list> <source-address>"],
+      "args": {"access-list": {"kind": "Word"}, "source-address": {"kind": "Ipv6"}},
+      "evidence": "the guide types it under an interface; the lab C9200L-48T-4G (17.6.4) answered 'ipv6 mld ssm-map static <list> <address>' typed there at (config)#, and its crawl offers 'ssm-map' after 'ipv6 mld' at (config)#, and no 'vrf'"
     }
   ]
 }
