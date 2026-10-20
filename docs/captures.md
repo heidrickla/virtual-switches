@@ -139,7 +139,15 @@ That is 106 switches, each a running configuration and a session.
 
 ## Crawls
 
-A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswitch corpus` reads crawls and the binary does not embed them. A C9300 17.6 crawl at each Catalyst 9000 level and a C2960G 15.0(2)SE crawl at `lanbase` serve as donors.
+A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswitch corpus` reads crawls and the binary does not embed them.
+
+| Image | Lab switch | Levels |
+|---|---|---|
+| C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
+| C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-essentials` |
+| C2960 15.0(2)SE | C2960G, 15.0(2)SE11 | `lanbase` |
+
+The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors.
 
 ### Crawl folders
 
@@ -330,6 +338,11 @@ What the gated level prints for a line its image leaves out (`network-essentials
 ## Sweeps
 
 A sweep is a transcript of lines typed on Enter at the privileged prompt of a lab switch, each followed by the switch's parser answer alone. `vswitch corpus` reads sweeps and the binary does not embed them. A sweep's forms and refusals are a grammar overlay for its own book, release and level (Matching in `grammars.md`).
+
+| Image | Lab switch | Levels |
+|---|---|---|
+| C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
+| C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-essentials` |
 
 ### Sweep folders
 
