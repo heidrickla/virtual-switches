@@ -1936,10 +1936,27 @@ fn run(args: &[String]) -> Result<bool, String> {
             let dir = args.get(1).ok_or(USAGE)?;
             let out = arg(args, "--out").unwrap_or("data/corpus.json.gz");
             let src = corpus::Source::read(std::path::Path::new(dir))?;
+            // a folder above the `<book>-<release>` folders reads no capture and so no site word:
+            // a scan of it finds nothing and its corpus holds nothing, so neither is taken as clean
+            if src.running.is_empty() && src.logs.is_empty() {
+                return Err(format!(
+                    "{dir}: no running configuration or session log in a <book>-<release> folder; \
+                     name the folder that holds them"
+                ));
+            }
             let deny = corpus::Deny::of(&src);
             if let Some(tree) = arg(args, "--scan") {
                 // every published file under the tree that names the site, by file, line and word
                 let deny = deny.published();
+                if deny.len() == 0 {
+                    return Err(format!("{dir}: the captures name no site word to scan for"));
+                }
+                println!(
+                    "{} running configurations, {} session logs, {} site words read",
+                    src.running.len(),
+                    src.logs.len(),
+                    deny.len()
+                );
                 let hits = corpus::scan_tree(std::path::Path::new(tree), &deny, loose);
                 for (file, line, word) in &hits {
                     println!("{file}:{line}: {word}");
@@ -4081,6 +4098,59 @@ mod command_tests {
         let plain = t.0.join("plain.txt");
         std::fs::write(&plain, CONFIG).unwrap();
         assert_eq!(run(&args(&["sweep", &plain.to_string_lossy()])), Ok(true));
+    }
+
+    #[test]
+    fn corpus_refuses_a_folder_of_no_captures_and_its_scan_finds_a_planted_hostname() {
+        let t = library::tests::TempDir::new("corpus-scan");
+        let caps = t.0.join("caps");
+        let live = caps.join("live");
+        let image = live.join("c9300-17.6");
+        std::fs::create_dir_all(&image).unwrap();
+        std::fs::write(
+            image.join("qzwmxtrk01-running-config.txt"),
+            "hostname qzwmxtrk01\n!\ninterface GigabitEthernet1/0/1\n description to qzwmxtrk02\n!\nend\n",
+        )
+        .unwrap();
+        let tree = t.0.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("clean.md"), "A switch.\n").unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().to_string();
+        // the folder above the `<book>-<release>` folders reads nothing: refused, never clean
+        let out = t.0.join("corpus.json.gz");
+        for line in [
+            args(&["corpus", &s(&caps), "--scan", &s(&tree)]),
+            args(&["corpus", &s(&caps), "--out", &s(&out)]),
+        ] {
+            let e = run(&line).unwrap_err();
+            assert!(e.contains("no running configuration"), "{line:?}: {e}");
+        }
+        assert!(!out.exists());
+        // captures whose names are all IOS's own name no site word: a scan for none is refused
+        let plain = t.0.join("plain").join("c9300-17.6");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(
+            plain.join("a-running-config.txt"),
+            "hostname Switch\n!\nend\n",
+        )
+        .unwrap();
+        let e = run(&args(&[
+            "corpus",
+            &s(&t.0.join("plain")),
+            "--scan",
+            &s(&tree),
+        ]))
+        .unwrap_err();
+        assert!(e.contains("no site word"), "{e}");
+        assert_eq!(
+            run(&args(&["corpus", &s(&live), "--scan", &s(&tree)])),
+            Ok(true)
+        );
+        std::fs::write(tree.join("planted.md"), "Named qzwmxtrk01 here.\n").unwrap();
+        assert_eq!(
+            run(&args(&["corpus", &s(&live), "--scan", &s(&tree)])),
+            Ok(false)
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ The sweep folder is `sweep` beside the switch list. Put configuration files ther
 
 ## Corpus
 
-`vswitch corpus <captures dir> [--out <file>]` writes the corpus, by default `data/corpus.json.gz`. It holds:
+`vswitch corpus <captures dir> [--out <file>]` writes the corpus, by default `data/corpus.json.gz`, from the `<book>-<release>` folders in the captures dir, and refuses a dir with no running configuration or session log in one. The corpus holds:
 
 - the lines the captures held, and where and how IOS printed them
 - the `?` answers of session logs and crawls, and the keyword descriptions beside them
@@ -62,7 +62,7 @@ The command reads `<captures dir>/../designs` for the names it gives and nothing
 
 | Option | Does |
 |---|---|
-| `--scan <tree>` | lists every published file under the tree that names the site, by file, line and word; exits 1 on a hit |
+| `--scan <tree>` | lists every published file under the tree that names the site, by file, line and word, after the counts of captures and site words read; exits 1 on a hit, and refuses captures that name no site word |
 | `--loose` | with `--scan`, the wider match |
 | `--why` | counts which denied word took out each `?` answer row |
 
