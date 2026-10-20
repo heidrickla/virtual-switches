@@ -1292,8 +1292,9 @@ impl<'a> Session<'a> {
         let abbreviated = matches!(&outcome, Outcome::Ok(p) if !whole_words(p));
         // a first word the submode reads only as the start of a longer one (`key` for
         // `key-string`) is an enclosing mode's word where that mode has it whole: the lab C9300-24T
-        // (17.6.4) refused `key rad123` at (config-keychain-key)# and stayed, as the key chain's
-        // `key` takes a number
+        // and C9200L-48T-4G (17.6.4) refused `key rad123` and `key 0 auth-key` at
+        // (config-keychain-key)# and stayed, as the key chain's `key` takes one number, the caret
+        // under the space after `key`
         let first_abbreviated = matches!(&outcome, Outcome::Ok(p) if p.items.iter().find_map(|i| match i {
             Item::Kw { kw, exact, .. } if !kw.eq_ignore_ascii_case("no") => Some(!*exact),
             _ => None,
@@ -1332,7 +1333,10 @@ impl<'a> Session<'a> {
                     })
                     && whole_refusal.is_none()
                 {
-                    whole_refusal = Some(o);
+                    whole_refusal = Some(match o {
+                        Outcome::Invalid(_) => Outcome::Invalid(first),
+                        o => o,
+                    });
                     continue;
                 }
                 if !abbreviated
@@ -1504,9 +1508,13 @@ impl<'a> Session<'a> {
                 }
                 None => {}
             }
-            let at = crate::cli::tokens(trimmed)
-                .get(tok)
-                .map_or(0, |t| t.at + past_in_range(&t.text, &self.device.stack));
+            let stack = &self.device.stack;
+            let at = crate::cli::tokens(trimmed).get(tok).map_or(0, |t| {
+                t.at + match past_in_range(&t.text, stack) {
+                    0 => past_a_name(&trimmed[t.at..], stack),
+                    n => n,
+                }
+            });
             let o = if partial {
                 Outcome::Incomplete
             } else {
@@ -1680,11 +1688,13 @@ impl<'a> Session<'a> {
                 out.insert(0, "Clearing device VTP password.".into());
             }
         }
-        // a legacy 802.1X line IOS XE takes and calls deprecated (the lab C9300-24T, 17.6.4)
+        // a legacy 802.1X line IOS XE takes and calls deprecated once the configuration is
+        // new-style (the lab C9300-24T, 17.6.4); a legacy one takes it silently (the lab C9200L)
         if r == Result::Ok
             && !self.redacted
             && !p.negated
             && !self.device.stack.classic()
+            && new_style(&self.device)
             && DEPRECATED
                 .iter()
                 .any(|(m, start)| *m == mode && canonical.starts_with(start))
@@ -1756,14 +1766,16 @@ impl<'a> Session<'a> {
     /// record, a class a policy map
     /// names before its class map exists (`class map class1 not configured`), a second mDNS
     /// controller (`Only one Controller is allowed`, then a blank line), a VRF the switch does not
-    /// hold (`NO_VRF`), a BGP neighbor's policy outside an address family once the process has
+    /// hold (`NO_VRF`, and an OSPF process's `Unknown VRF specified`), a global SXP filter group's
+    /// filter list not made, a BGP neighbor's policy outside an address family once the process has
     /// one, a template a neighbor inherits before it exists, a private VLAN association naming a
     /// VLAN the switch does not hold, a secondary type for a VLAN whose SVI is up, a tunnel PIM
     /// registers through (`pim_tunnels`), an object a line names before it exists (a policy map, a
     /// first-hop security policy (`ATTACH`), a NAT pool, an access list, a trustpoint, a regex
     /// parameter map, a VFI's VPN ID), a classifier condition while the classifier runs, an IP
     /// service on a LISP instance carrying Ethernet, an MLD SSM map's static entry before `ipv6 mld
-    /// ssm-map enable` (`%ssm-map is not enabled!`), a subnet another interface holds, a BGP
+    /// ssm-map enable` (`%ssm-map is not enabled!`), an auth proxy rule a port names before it is
+    /// defined (the C9200 17.6 image), a subnet another interface holds, a BGP
     /// neighbor line before the neighbor's remote AS, a link-local peer outside an address family,
     /// the switch's own address as a peer, a SPAN line its sessions refuse (`span_refusal`), an
     /// HSRP group's second address family, a setting already in force or one another excludes
@@ -1772,7 +1784,8 @@ impl<'a> Session<'a> {
     /// number of the wrong kind), an interface whose mode or features refuse the line (half duplex,
     /// `nonegotiate`, network policy, `cts manual`, REP, Umbrella, DHCPv6 client), and the EXEC
     /// shows of state the switch lacks (MST, WCCP, an OSPF topology, a BGP neighbor).
-    /// `no` lines are taken.
+    /// `no` lines are taken, but for a missing policy map's removal and `no switchport` on a port
+    /// under 802.1X port control.
     fn unconfigured(&self, mode: &str, p: &Parse) -> Option<String> {
         if self.device.stack.classic() {
             return None;
@@ -1795,9 +1808,6 @@ impl<'a> Session<'a> {
         {
             return Some(format!("% policy map {name} not configured"));
         }
-        if p.negated {
-            return None;
-        }
         // the block the line is typed into: the router, interface or VLAN of its mode
         let block = self
             .frames
@@ -1806,6 +1816,29 @@ impl<'a> Session<'a> {
             .find(|f| f.mode == mode)
             .and_then(|f| f.blocks.first())
             .and_then(|&b| self.device.blocks.get(b));
+        // a port mode change on a port under 802.1X port control (the lab C9200L-48T-4G, 17.6.4,
+        // took `switchport mode trunk` and `switchport mode private-vlan host` there)
+        if let (
+            "config-if",
+            ["no", "switchport"]
+            | ["switchport", "mode", "dot1q-tunnel"]
+            | ["switchport", "mode", "private-vlan", "promiscuous"],
+        ) = (mode, words.as_slice())
+            && block.is_some_and(|b| {
+                b.lines
+                    .iter()
+                    .any(|e| e.text.trim().starts_with("authentication port-control "))
+            })
+        {
+            return Some(
+                "Command rejected: Conflict with Authentication. \nAuthentication must be disabled \
+                 before changing port mode "
+                    .into(),
+            );
+        }
+        if p.negated {
+            return None;
+        }
         let header = block.map_or("", |b| b.header.as_str());
         let holds =
             |text: &str| block.is_some_and(|b| b.lines.iter().any(|e| e.text.trim() == text));
@@ -1825,6 +1858,28 @@ impl<'a> Session<'a> {
             {
                 return Some(said.replace("{}", words[start.len()]));
             }
+        }
+        // an OSPF process in a VRF the switch does not hold (the lab C9300-24T and C9200L-48T-4G)
+        if let ("config", ["router", "ospf", _, "vrf", name, ..]) = (mode, words.as_slice())
+            && !vrf(name)
+        {
+            return Some("Unknown VRF specified".into());
+        }
+        // a global SXP filter group before its filter list (the lab C9300-24T and C9200L-48T-4G)
+        if let (
+            "config",
+            [
+                "cts",
+                "sxp",
+                "filter-group",
+                "listener" | "speaker",
+                "global",
+                name,
+            ],
+        ) = (mode, words.as_slice())
+            && !named("cts sxp filter-list ", name)
+        {
+            return Some(format!("Filter-list {name} not configured"));
         }
         let vlans = || show::defined_vlans(&self.device);
         for (m, feature) in ATTACH {
@@ -1880,6 +1935,14 @@ impl<'a> Session<'a> {
                 if !global("ipv6 mld ssm-map enable") =>
             {
                 return Some("%ssm-map is not enabled!".into());
+            }
+            // an auth proxy rule a port names before `ip admission name` defines it (the lab
+            // C9200L-48T-4G, 17.6.4; the lab C9300-24T at 17.6.4 took it silently)
+            ("config-if", ["ip", "admission", name])
+                if self.runs(crate::context::C9200_17_6)
+                    && !global(&format!("ip admission name {name} ")) =>
+            {
+                return Some(format!("%Auth-proxy name {name} is not defined\n\n"));
             }
             (
                 "config",
@@ -2608,6 +2671,18 @@ impl<'a> Session<'a> {
             }
             ("config-if", ["ipv6", "dhcp", "server", "automatic", ..]) => {
                 Some("% Warning: Pool  not configured globally - configuring anyway.".into())
+            }
+            // a named pool the configuration lacks (the lab C9200L-48T-4G, 17.6.4)
+            ("config-if", ["ipv6", "dhcp", "server", name, ..])
+                if !self
+                    .device
+                    .blocks
+                    .iter()
+                    .any(|b| b.header == format!("ipv6 dhcp pool {name}")) =>
+            {
+                Some(format!(
+                    "% Warning: Pool {name} not configured globally - configuring anyway."
+                ))
             }
             ("config", ["auto", "qos", "global", "compact"]) => Some(
                 "%Warning: This command will reset all autoqos generated configurations".into(),
@@ -4636,6 +4711,31 @@ const DEPRECATED: &[(&str, &str)] = &[
     ("config", "authentication mac-move "),
 ];
 
+/// Lines that hold the 802.1X configuration new-style: the lab C9200L-48T-4G (17.6.4), its
+/// configuration legacy, asked to convert it before taking each of these.
+const NEW_STYLE: &[&str] = &[
+    "policy-map type control subscriber ",
+    "class-map type control subscriber ",
+    "parameter-map type webauth ",
+    "parameter-map type subscriber ",
+    "autoconf enable",
+    "subscriber aging ",
+    "access-session host-mode ",
+    "access-session closed",
+    "access-session port-control ",
+    "access-session control-direction ",
+];
+
+/// Whether the configuration's 802.1X lines are new-style: a line of `NEW_STYLE` at the top, as a
+/// block's header or in a block.
+fn new_style(d: &Device) -> bool {
+    let style = |t: &str| NEW_STYLE.iter().any(|s| t.starts_with(s));
+    d.global.iter().any(|e| style(&e.text))
+        || d.blocks
+            .iter()
+            .any(|b| style(&b.header) || b.lines.iter().any(|e| style(e.text.trim_start())))
+}
+
 /// The words after a BGP neighbor's address that set its policy, which an address family holds:
 /// what the lab C9300-24T (17.6.4) offered for `neighbor <address> ?` in `address-family ipv4`,
 /// `inherit` apart (a peer session is no policy).
@@ -5302,6 +5402,76 @@ fn past_in_range(word: &str, stack: &crate::platform::Stack) -> usize {
     }
 }
 
+/// Where in a refused interface name (`rest`, the line from the name on) the caret goes: past a
+/// front-panel port the stack has where the number goes on (`GigabitEthernet1/0/13/0`, at its
+/// fourth level), or where the number departs from the management port's (`gigabitethernet 0/1`,
+/// at the `1`), as the lab C9200L-48T-4G (17.6.4) put it, or at a level no port could have
+/// (`beyond_the_stack`); at the name's start for any other number (`gigabitethernet 1/0/0`,
+/// `GigabitEthernet4/0/1`, `GigabitEthernet 0/0/0`). Other IOS XE platforms are inferred to do the
+/// same.
+fn past_a_name(rest: &str, stack: &crate::platform::Stack) -> usize {
+    if stack.classic() {
+        return 0;
+    }
+    let mut words = rest.split_whitespace();
+    let Some(first) = words.next() else {
+        return 0;
+    };
+    let Some((full, number, used)) = cli::interface_name(first, words.next()) else {
+        return 0;
+    };
+    let at = match used {
+        1 => first.len() - number.len(),
+        _ => rest[first.len()..]
+            .find(|c: char| !c.is_whitespace())
+            .map_or(0, |i| first.len() + i),
+    };
+    if let Some(i) = number.match_indices('/').map(|(i, _)| i).find(|&i| {
+        let name = format!("{full}{}", &number[..i]);
+        stack.has(&name) && stack.management() != Some(name.as_str())
+    }) {
+        return at + i;
+    }
+    if let Some(own) = stack
+        .management()
+        .and_then(|m| m.strip_prefix(full.as_str()))
+    {
+        let same = number
+            .bytes()
+            .zip(own.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        if same < number.len() && same < own.len() && own[..same].contains('/') {
+            return at + same;
+        }
+    }
+    beyond_the_stack(&full, &number, stack).map_or(0, |i| at + i)
+}
+
+/// Where in a port's number (`number`, of type `full`) a level no port could have begins: a module
+/// no member's ports of the type carry (`gigabitethernet 6/2`, `2/3/0`, the lab C9300-24T and
+/// C9200L-48T-4G, 17.6.4), and on a C9200 a member past the stack's most (`9/0/6`; the lab
+/// C9300-24T put that caret at the name).
+fn beyond_the_stack(full: &str, number: &str, stack: &crate::platform::Stack) -> Option<usize> {
+    use crate::platform::Family;
+    let family = stack.family().filter(|f| !f.two_part())?;
+    let (member, rest) = number.split_once('/')?;
+    let module = rest.split('/').next()?;
+    let m: usize = member.parse().ok()?;
+    if m > family.max_members() {
+        return matches!(family, Family::C9200 | Family::C9200L | Family::C9200B).then_some(0);
+    }
+    let physical = stack.physical();
+    let modules: Vec<&str> = physical
+        .iter()
+        .filter(|p| stack.management() != Some(p.as_str()))
+        .filter_map(|p| p.strip_prefix(full)?.split('/').nth(1))
+        .collect();
+    let numeric = !module.is_empty() && module.bytes().all(|b| b.is_ascii_digit());
+    (m > 0 && numeric && !modules.is_empty() && !modules.contains(&module))
+        .then_some(member.len() + 1)
+}
+
 /// Whether a port name is the start of one the stack has, short of a level of its number
 /// (`GigabitEthernet1/1` of `GigabitEthernet1/1/1`).
 fn starts_a_port(value: &str, stack: &crate::platform::Stack) -> bool {
@@ -5577,6 +5747,209 @@ mod tests {
         ] {
             assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
             assert_eq!(s.mode(), mode, "after {line}");
+        }
+    }
+
+    #[test]
+    fn the_submodes_and_forms_a_c9200l_took_load_on_its_image() {
+        // the lab C9200L-48T-4G (17.6.4) entered these submodes and took these forms where its
+        // books leave them out, run their keywords together or give them other modes
+        // (`data/overrides.json`, platform Catalyst 9200)
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.frames.push(Frame::top("config"));
+        for (line, mode) in [
+            ("coap proxy", "config-coap-proxy"),
+            ("exit", "config"),
+            ("telemetry ietf subscription 101", "config-mdt-subs"),
+            ("exit", "config"),
+            ("vlan configuration 10-15", "config-vlan-config"),
+            ("ipv6 nd suppress", "config-vlan-config"),
+            ("exit", "config"),
+            ("ipv6 nd raguard policy POLA", "config-nd-raguard"),
+            ("exit", "config"),
+            ("key chain CHAINA", "config-keychain"),
+            ("key 1", "config-keychain-key"),
+            ("exit", "config-keychain"),
+            ("exit", "config"),
+            ("key chain CHAINB macsec", "config-keychain-macsec"),
+            ("key 2000", "config-keychain-macsec-key"),
+            (
+                "cryptographic-algorithm aes-256-cmac",
+                "config-keychain-macsec-key",
+            ),
+            ("exit", "config-keychain-macsec"),
+            ("exit", "config"),
+            ("key chain CHAINC tcp", "config-keychain-tcp"),
+            ("key 7", "config-keychain-tcp-key"),
+            ("send-id 21", "config-keychain-tcp-key"),
+            ("recv-id 21", "config-keychain-tcp-key"),
+            ("key-string KEYA", "config-keychain-tcp-key"),
+            (
+                "cryptographic-algorithm hmac-sha-1",
+                "config-keychain-tcp-key",
+            ),
+            ("exit", "config-keychain-tcp"),
+            ("exit", "config"),
+            ("coap proxy", "config-coap-proxy"),
+            ("list ipv4 LISTA", "config-coap-proxy-iplist"),
+            ("exit", "config-coap-proxy"),
+            ("exit", "config"),
+            ("ipv6 dhcp guard policy POLB", "config-dhcp-guard"),
+            ("exit", "config"),
+            ("ipv6 nd suppress policy POLC", "config-nd-suppress"),
+            ("exit", "config"),
+            (
+                "access-session attributes filter-list list LISTB",
+                "config-com-filter-list",
+            ),
+            ("exit", "config"),
+            ("vlan access-map VAMA 10", "config-access-map"),
+            ("action forward", "config-access-map"),
+            ("exit", "config"),
+            ("interface GigabitEthernet1/0/3", "config-if"),
+            ("mka policy POLD", "config-if"),
+            ("macsec replay-protection window-size 10", "config-if"),
+            ("mac-address 0000.5e00.5301", "config-if"),
+            ("exit", "config"),
+            ("mka policy POLD", "config-mka-policy"),
+            ("exit", "config"),
+            (
+                "snmp-server enable traps call-home message-send-fail",
+                "config",
+            ),
+            ("snmp-server enable traps cef inconsistency", "config"),
+            ("snmp-server enable traps license deploy", "config"),
+            ("snmp-server enable traps ospf lsa", "config"),
+            ("snmp-server enable traps vrfmib vnet-trunk-down", "config"),
+            (
+                "cts sxp connection peer 192.0.2.1 source 192.0.2.2 password none mode local speaker",
+                "config",
+            ),
+            ("interface Vlan20", "config-if"),
+            ("ip ospf transmit-delay 2", "config-if"),
+            ("ip ospf priority 5", "config-if"),
+            ("ip ospf hello-interval 12", "config-if"),
+            ("ip ospf dead-interval 8", "config-if"),
+            ("ip ospf authentication-key KEYB", "config-if"),
+            ("exit", "config"),
+            ("time-range TRA", "config-time-range"),
+            ("exit", "config"),
+            ("table-map TMA", "config-tablemap"),
+            ("exit", "config"),
+            ("fallback profile FPA", "config-fallback-profile"),
+            ("ip admission RULEA", "config-fallback-profile"),
+            ("exit", "config"),
+            ("dot1x credentials CREDA", "config-dot1x-creden"),
+            ("exit", "config"),
+            ("crypto pki certificate map MAPA 10", "ca-certificate-map"),
+            ("exit", "config"),
+            (
+                "device-sensor filter-list cdp list CDPA",
+                "config-sensor-cdplist",
+            ),
+            ("tlv name device-name", "config-sensor-cdplist"),
+            ("tlv number 10", "config-sensor-cdplist"),
+            ("exit", "config"),
+            (
+                "device-sensor filter-list lldp list LLDPA",
+                "config-sensor-lldplist",
+            ),
+            ("tlv number 34", "config-sensor-lldplist"),
+            ("exit", "config"),
+            ("policy-map PMA", "config-pmap"),
+            ("class class-default", "config-pmap-c"),
+            ("police rate 100 pps", "config-pmap-c-police"),
+            ("exit", "config-pmap-c"),
+            ("random-detect dscp cs1 percent 10 20", "config-pmap-c"),
+            ("exit", "config-pmap"),
+            ("exit", "config"),
+            ("class-map CMA", "config-cmap"),
+            ("match dscp af11 af12", "config-cmap"),
+            ("match ip precedence 5 6 7", "config-cmap"),
+            ("exit", "config"),
+            ("route-map RMA permit 10", "config-route-map"),
+            ("set tag 5", "config-route-map"),
+            ("set metric 10000 10 255 1 1500", "config-route-map"),
+            ("match metric external 500 +- 100", "config-route-map"),
+            ("exit", "config"),
+            ("radius server RSA", "config-radius-server"),
+            ("dscp auth 10 acct 20", "config-radius-server"),
+            ("exit", "config"),
+            ("interface GigabitEthernet1/0/2", "config-if"),
+            ("ip ospf cost 8", "config-if"),
+            ("exit", "config"),
+            ("monitor session 1 filter vlan 100 - 110", "config"),
+            ("snmp-server enable traps bridge newroot", "config"),
+            (
+                "port-channel load-balance extended dst-ip dst-mac src-ip",
+                "config",
+            ),
+            ("cts role-based sgt-map host 192.0.2.1 sgt 3", "config"),
+            ("ip dhcp snooping database tftp://192.0.2.9/FILEA", "config"),
+            ("tftp-server flash:FILEB", "config"),
+            ("version 2", "config"),
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+            assert_eq!(s.mode(), mode, "after {line}");
+        }
+    }
+
+    #[test]
+    fn a_c9200l_refuses_a_port_mode_change_under_port_control_and_an_auth_proxy_rule_it_lacks() {
+        // the lab C9200L-48T-4G (17.6.4)
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        let said = |s: &mut Session, line: &str| {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            out.join("\n")
+        };
+        for line in [
+            "enable",
+            "configure terminal",
+            "interface GigabitEthernet1/0/5",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        // a port without port control takes a mode change
+        assert_eq!(s.type_line("switchport mode dot1q-tunnel").1, Result::Ok);
+        assert_eq!(
+            s.type_line("authentication port-control auto").1,
+            Result::Ok
+        );
+        for line in [
+            "no switchport",
+            "switchport mode dot1q-tunnel",
+            "switchport mode private-vlan promiscuous",
+        ] {
+            assert_eq!(
+                said(&mut s, line),
+                "Command rejected: Conflict with Authentication. \nAuthentication must be \
+                 disabled before changing port mode ",
+                "{line}"
+            );
+        }
+        for line in ["switchport mode trunk", "switchport mode private-vlan host"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        // an auth proxy rule the configuration does not define, then one it does
+        assert_eq!(
+            said(&mut s, "ip admission RULEA"),
+            "%Auth-proxy name RULEA is not defined\n"
+        );
+        for line in [
+            "exit",
+            "ip admission name RULEA proxy http",
+            "interface GigabitEthernet1/0/5",
+            "ip admission RULEA",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
         }
     }
 
@@ -9168,7 +9541,7 @@ mod tests {
 
     #[test]
     fn class_does_not_begin_class_map_on_the_image_whose_switch_refused_it() {
-        let e = held_engine(&[
+        const STEPS: &[(&str, &[&str])] = &[
             ("Switch#configure terminal", ENTERED),
             (
                 "Switch(config)# ?",
@@ -9179,7 +9552,20 @@ mod tests {
                     "",
                 ],
             ),
-        ]);
+        ];
+        // the lab C9200L-48T-4G (17.6.4) refused it alike at network-essentials
+        let essentials = "network-essentials";
+        let c9200 = held_engine_of("c9200", "17.6", essentials, STEPS);
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&c9200, Device::new(stack));
+        s.boot_level = Some(essentials.into());
+        for line in ["enable", "configure terminal"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, r) = s.type_line("class C1");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config)#class".len());
+        let e = held_engine(STEPS);
         let mut s = configured(&e, &[]);
         let (out, r) = s.type_line("class C1");
         assert_eq!(r, Result::Error, "{out:?}");
@@ -9428,6 +9814,37 @@ mod tests {
         let mut s = configured(&books, &["interface Vlan1"]);
         let (out, _) = s.type_line("ip unnumbered gigabitethernet 3/1");
         assert_eq!(out, ["% Incomplete command.", ""]);
+    }
+
+    #[test]
+    fn a_refused_port_s_caret_goes_past_a_name_the_stack_has_or_the_management_port_s_number() {
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        for (rest, at) in [
+            // the management port's number, departed from
+            ("gigabitethernet 0/1", 18),
+            ("gigabitethernet0/1", 17),
+            ("GigabitEthernet 0/2/0", 18),
+            // a port the stack has, gone on past
+            ("GigabitEthernet1/0/13/0", 21),
+            // any other number, at the name's start
+            ("gigabitethernet 1/0/0", 0),
+            ("GigabitEthernet4/0/1", 0),
+            // the management port's whole number, gone on past
+            ("GigabitEthernet 0/0/0", 0),
+            // a module no member's ports carry, at the module; a member past the most, at it
+            ("gigabitethernet 6/2", 18),
+            ("gigabitethernet 2/3/0", 18),
+            ("gigabitethernet 9/0/6", 16),
+            ("gigabitethernet 5/0/2", 0),
+            ("TenGigabitEthernet 6/2", 0),
+        ] {
+            assert_eq!(past_a_name(rest, &stack), at, "{rest}");
+        }
+        // the lab C9300-24T put a member past the most at the name
+        let stack = crate::platform::parse_stack("C9300-24T").unwrap();
+        for (rest, at) in [("gigabitethernet 9/0/6", 0), ("gigabitethernet 6/2", 18)] {
+            assert_eq!(past_a_name(rest, &stack), at, "{rest}");
+        }
     }
 
     /// The shell's contexts for `script` typed from privileged EXEC, and the corpus's for the session
@@ -10309,6 +10726,28 @@ mod tests {
         assert_eq!(said(&mut s, "vrf forwarding V1"), "% VRF V1 not configured");
         let mut s = typed_24t(&e, &["vrf definition V1", "exit", "interface Vlan10"]);
         assert_eq!(s.type_line("vrf forwarding V1").1, Result::Ok);
+        // an OSPF process in a VRF, from a process's mode too, which hands the line up
+        let mut s = typed_24t(&e, &["router ospf 1"]);
+        assert_eq!(
+            said(&mut s, "router ospf 12 vrf V2"),
+            "Unknown VRF specified"
+        );
+        assert_eq!(s.mode(), "config");
+        let mut s = typed_24t(&e, &["vrf definition V2", "exit"]);
+        assert_eq!(s.type_line("router ospf 12 vrf V2").1, Result::Ok);
+        assert_eq!(s.mode(), "config-router");
+        // a global SXP filter group before its filter list, from a filter group's mode too
+        let mut s = typed_24t(&e, &["cts sxp filter-group listener FGA"]);
+        assert_eq!(
+            said(&mut s, "cts sxp filter-group listener global FLB"),
+            "Filter-list FLB not configured"
+        );
+        assert_eq!(s.mode(), "config");
+        let mut s = typed_24t(&e, &["cts sxp filter-list FLB", "exit"]);
+        assert_eq!(
+            s.type_line("cts sxp filter-group speaker global FLB").1,
+            Result::Ok
+        );
         let mut s = typed_24t(&e, &["router bgp 65000"]);
         assert_eq!(
             said(&mut s, "address-family ipv4 vrf V1"),
@@ -10769,6 +11208,20 @@ mod tests {
                 Result::Ok
             )
         );
+        let (out, r) = s.type_line("ipv6 dhcp server POOLA");
+        assert_eq!(
+            (out, r),
+            (
+                vec![
+                    "% Warning: Pool POOLA not configured globally - configuring anyway."
+                        .to_string()
+                ],
+                Result::Ok
+            )
+        );
+        let mut s = typed_24t(&e, &["ipv6 dhcp pool POOLB", "exit", "interface Vlan20"]);
+        let (out, r) = s.type_line("ipv6 dhcp server POOLB");
+        assert_eq!((out.len(), r), (0, Result::Ok), "{out:?}");
         let mut s = typed_24t(&e, &["ipv6 multicast-routing", "interface Vlan20"]);
         let (out, r) = s.type_line("ipv6 mld static-group ff04::10 include 100::1");
         assert_eq!((out.len(), r), (0, Result::Ok));
@@ -11144,7 +11597,19 @@ mod tests {
             ]
         );
         assert_eq!(s.mode(), "config-mka-policy");
+        // legacy 802.1X configuration takes the line silently, new-style calls it deprecated
         let mut s = typed_24t(&e, &["aaa new-model", "interface GigabitEthernet1/0/4"]);
+        let (out, r) = s.type_line("authentication port-control auto");
+        assert_eq!((out, r), (vec![], Result::Ok));
+        let mut s = typed_24t(
+            &e,
+            &[
+                "aaa new-model",
+                "policy-map type control subscriber PC",
+                "exit",
+                "interface GigabitEthernet1/0/4",
+            ],
+        );
         let (out, r) = s.type_line("authentication port-control auto");
         assert_eq!(r, Result::Ok);
         assert_eq!(
@@ -11165,8 +11630,17 @@ mod tests {
         let e = c9300_17_6();
         // the key chain's `key` takes a number; the key's own `key-string` is not read
         let mut s = typed_24t(&e, &["key chain K1", "key 1"]);
-        assert_eq!(s.type_line("key rad123").1, Result::Error);
-        assert_eq!(s.mode(), "config-keychain-key");
+        for line in ["key rad123", "key 0 auth-key"] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error);
+            // under the space after `key` (the lab C9300-24T and C9200L-48T-4G, 17.6.4)
+            assert_eq!(
+                caret_at(&out),
+                "Switch(config-keychain-key)#key".len(),
+                "{line}"
+            );
+            assert_eq!(s.mode(), "config-keychain-key");
+        }
         assert_eq!(s.type_line("key 2").1, Result::Ok);
         assert_eq!(s.type_line("key-str secret").1, Result::Ok);
         // a mode further out that takes the line whole takes it

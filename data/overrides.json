@@ -2703,6 +2703,750 @@
       "lines": ["ipv6 mld ssm-map static <access-list> <source-address>", "no ipv6 mld ssm-map static <access-list> <source-address>"],
       "args": {"access-list": {"kind": "Word"}, "source-address": {"kind": "Ipv6"}},
       "evidence": "the guide types it under an interface; the lab C9200L-48T-4G (17.6.4) answered 'ipv6 mld ssm-map static <list> <address>' typed there at (config)#, and its crawl offers 'ssm-map' after 'ipv6 mld' at (config)#, and no 'vrf'"
+    },
+    {
+      "name": "coap proxy",
+      "platform": "Catalyst 9200",
+      "enters": "config-coap-proxy",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'coap proxy' at (config)# and entered (config-coap-proxy)#"
+    },
+    {
+      "name": "telemetry ietf subscription",
+      "platform": "Catalyst 9200",
+      "enters": "config-mdt-subs",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'telemetry ietf subscription 101' at (config)# and entered (config-mdt-subs)#"
+    },
+    {
+      "name": "telemetry receiver protocol",
+      "platform": "Catalyst 9200",
+      "enters": "config-mdt-protocol-receiver",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'telemetry receiver protocol receiver1' at (config)# and entered (config-mdt-protocol-receiver)#"
+    },
+    {
+      "name": "vlan configuration",
+      "platform": "Catalyst 9200",
+      "enters": "config-vlan-config",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'vlan configuration 10-15' at (config)# and entered (config-vlan-config)#"
+    },
+    {
+      "name": "ipv6 nd raguard policy",
+      "platform": "Catalyst 9200",
+      "enters": "config-nd-raguard",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 nd raguard policy example_policy' at (config)# and entered (config-nd-raguard)#"
+    },
+    {
+      "name": "ipv6 nd raguard policy raguard-router",
+      "platform": "Catalyst 9200",
+      "enters": "config-nd-raguard",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 nd raguard policy raguard-router' at (config)# and entered (config-nd-raguard)#"
+    },
+    {
+      "name": "key chain",
+      "platform": "Catalyst 9200",
+      "enters": "config-keychain",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'key chain chain1' at (config)# and entered (config-keychain)#"
+    },
+    {
+      "name": "key chain macsec",
+      "platform": "Catalyst 9200",
+      "enters": "config-keychain-macsec",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'key chain kc1 macsec' at (config)# and entered (config-keychain-macsec)#"
+    },
+    {
+      "name": "sampler",
+      "platform": "Catalyst 9200",
+      "enters": "config-sampler",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'sampler SAMPLER-1' at (config)# and entered (config-sampler)#"
+    },
+    {
+      "name": "cts sxp filter-list",
+      "platform": "Catalyst 9200",
+      "enters": "config-filter-list",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'cts sxp filter-list filter_1' at (config)# and entered (config-filter-list)#"
+    },
+    {
+      "name": "network-policy profile (global configuration)",
+      "platform": "Catalyst 9200",
+      "enters": "config-network-policy",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'network-policy profile 60' at (config)# and entered (config-network-policy)#"
+    },
+    {
+      "name": "ipv6 destination-guard policy",
+      "platform": "Catalyst 9200",
+      "enters": "config-destguard",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 destination-guard policy pol1' at (config)# and entered (config-destguard)#"
+    },
+    {
+      "name": "ip access-list role-based",
+      "platform": "Catalyst 9200",
+      "enters": "config-rb-acl",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip access-list role-based rbacl1' at (config)# and entered (config-rb-acl)#"
+    },
+    {
+      "name": "ipv6 access-list role-based",
+      "platform": "Catalyst 9200",
+      "enters": "config-ipv6rb-acl",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 access-list role-based sgaclname' at (config)# and entered (config-ipv6rb-acl)#"
+    },
+    {
+      "name": "ipv6 dhcp pool",
+      "platform": "Catalyst 9200",
+      "enters": "config-dhcpv6",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 dhcp pool IPv6_DHCPPOOL' at (config)# and entered (config-dhcpv6)#"
+    },
+    {
+      "name": "ipv6 dhcp pool IPv6_DHCPPOOL",
+      "platform": "Catalyst 9200",
+      "enters": "config-dhcpv6",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 dhcp pool IPv6_DHCPPOOL' at (config)# and entered (config-dhcpv6)#"
+    },
+    {
+      "name": "ipv6 router rip",
+      "platform": "Catalyst 9200",
+      "enters": "config-rtr",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 router rip cisco' at (config)# and entered (config-rtr)#"
+    },
+    {
+      "name": "ipv6 router ospf",
+      "platform": "Catalyst 9200",
+      "enters": "config-rtr",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 router ospf 21' at (config)# and entered (config-rtr)#"
+    },
+    {
+      "name": "time-range",
+      "platform": "Catalyst 9200",
+      "enters": "config-time-range",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'time-range workhours' at (config)# and entered (config-time-range)#"
+    },
+    {
+      "name": "object-group service",
+      "platform": "Catalyst 9200",
+      "enters": "config-service-group",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'object-group service my-service-object-group' at (config)# and entered (config-service-group)#"
+    },
+    {
+      "name": "arp access-list",
+      "platform": "Catalyst 9200",
+      "enters": "config-arp-nacl",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'arp access-list arpacl22' at (config)# and entered (config-arp-nacl)#"
+    },
+    {
+      "name": "template interface",
+      "platform": "Catalyst 9200",
+      "enters": "config-template",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'template interface template_w_sisf' at (config)# and entered (config-template)#"
+    },
+    {
+      "name": "device-sensor filter-list dhcp",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["device-sensor filter-list dhcp list <option-list-name>", "no device-sensor filter-list dhcp list <option-list-name>"],
+      "args": {"option-list-name": {"kind": "Word"}},
+      "enters": "config-sensor-dhcplist",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'device-sensor filter-list dhcp list dhcp-list' at (config)# and entered (config-sensor-dhcplist)#"
+    },
+    {
+      "name": "device-sensor filter-list lldp",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["device-sensor filter-list lldp list <tlv-list-name>", "no device-sensor filter-list lldp list <tlv-list-name>"],
+      "args": {"tlv-list-name": {"kind": "Word"}},
+      "enters": "config-sensor-lldplist",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'device-sensor filter-list lldp list lldp-list' at (config)# and entered (config-sensor-lldplist)#"
+    },
+    {
+      "name": "af-interface default",
+      "platform": "Catalyst 9200",
+      "enters": "config-router-af-interface",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'af-interface default' at (config-router-af)# and entered (config-router-af-interface)#"
+    },
+    {
+      "name": "police",
+      "platform": "Catalyst 9200",
+      "enters": "config-pmap-c-police",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'police 1m', 'police 100000 80000', 'police 8000 conform-action transmit exceed-action drop' and 'police rate 100 pps' at (config-pmap-c)# and entered (config-pmap-c-police)#"
+    },
+    {
+      "name": "police rate",
+      "platform": "Catalyst 9200",
+      "enters": "config-pmap-c-police",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'police 1m', 'police 100000 80000', 'police 8000 conform-action transmit exceed-action drop' and 'police rate 100 pps' at (config-pmap-c)# and entered (config-pmap-c-police)#"
+    },
+    {
+      "name": "police cir pir",
+      "platform": "Catalyst 9200",
+      "modes": ["config-pmap-c"],
+      "lines": ["police cir <cir> [bc <bc>] pir <pir> [be <be>]"],
+      "args": {"cir": {"kind": "Word"}, "bc": {"kind": "Word"}, "pir": {"kind": "Word"}, "be": {"kind": "Word"}},
+      "enters": "config-pmap-c-police",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) entered (config-pmap-c-police)# from each 'police' form it took at (config-pmap-c)#"
+    },
+    {
+      "name": "key (key chain)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain"],
+      "lines": ["key <key-id>", "no key <key-id>"],
+      "args": {"key-id": {"kind": "Number", "min": 0, "max": 2147483647}},
+      "enters": "config-keychain-key",
+      "evidence": "the books give one 'key' for a key chain, a RADIUS server and a TACACS+ server; the lab C9200L-48T-4G (17.6.4) took 'key 1' and 'key 2000' at (config-keychain)# and entered (config-keychain-key)#, and stayed at (config-radius-server)# after 'key cisco123'"
+    },
+    {
+      "name": "key",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-keychain"],
+      "lines": [],
+      "evidence": "key (key chain) takes it in (config-keychain)#"
+    },
+    {
+      "name": "key (MACsec key chain)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-macsec"],
+      "lines": ["key <key-id>", "no key <key-id>"],
+      "args": {"key-id": {"kind": "Word"}},
+      "enters": "config-keychain-macsec-key",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'key 2000' at (config-keychain-macsec)# and entered (config-keychain-macsec-key)#"
+    },
+    {
+      "name": "cryptographic-algorithm",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-macsec-key"],
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'cryptographic-algorithm aes-256-cmac' at (config-keychain-macsec-key)#"
+    },
+    {
+      "name": "key-string",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-macsec-key"],
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took a 'key-string' at (config-keychain-macsec-key)#"
+    },
+    {
+      "name": "ipv6 dhcp guard attach-policy",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if", "config-vlan-config"],
+      "lines": ["ipv6 dhcp guard [attach-policy <[policy-name]>] vlan {add | all | except | none | remove} <vlan-id> [. . . <vlan-id>]", "no ipv6 dhcp guard [attach-policy <[policy-name]>] vlan {add | all | except | none | remove} <vlan-id> [. . . <vlan-id>]", "ipv6 dhcp guard attach-policy <[policy-name]>", "no ipv6 dhcp guard attach-policy <[policy-name]>"],
+      "args": {"policy-name": {"kind": "Word"}, "vlan-id": {"kind": "Number", "min": 1, "max": 4094}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) answered '% Policy example_policy not defined for the feature' to 'ipv6 dhcp guard attach-policy example_policy' at (config-vlan-config)#, which 'vlan configuration' enters"
+    },
+    {
+      "name": "ipv6 nd suppress",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-vlan"],
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 nd suppress' at (config-vlan-config)#, which 'vlan configuration' enters"
+    },
+    {
+      "name": "ipv6 nd raguard attach-policy (VLAN configuration)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-vlan-config"],
+      "lines": ["ipv6 nd raguard attach-policy <policy-name>", "no ipv6 nd raguard attach-policy <policy-name>"],
+      "args": {"policy-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) answered '% Policy example_policy not defined for the feature' to 'ipv6 nd raguard attach-policy example_policy' at (config-vlan-config)#"
+    },
+    {
+      "name": "table-map",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["table-map <table-map-name>", "no table-map <table-map-name>"],
+      "args": {"table-map-name": {"kind": "Word"}},
+      "enters": "config-tablemap",
+      "evidence": "the guide writes the submode's lines into the command's own; the lab C9200L-48T-4G (17.6.4) took 'table-map table01' at (config)# and entered (config-tablemap)#, and took 'no table-map 101'"
+    },
+    {
+      "name": "fallback profile",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["fallback profile <profile-name>", "no fallback profile <profile-name>"],
+      "args": {"profile-name": {"kind": "Word"}},
+      "enters": "config-fallback-profile",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'fallback profile profile1' at (config)# and entered (config-fallback-profile)#, and took 'ip admission rule1' there"
+    },
+    {
+      "name": "ip admission (fallback profile)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-fallback-profile"],
+      "lines": ["ip admission <rule-name>", "no ip admission <rule-name>"],
+      "args": {"rule-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip admission rule1' at (config-fallback-profile)#"
+    },
+    {
+      "name": "dot1x credentials (global)",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["dot1x credentials <profile-name>", "no dot1x credentials <profile-name>"],
+      "args": {"profile-name": {"kind": "Word"}},
+      "enters": "config-dot1x-creden",
+      "evidence": "the books give it under an interface; the lab C9200L-48T-4G (17.6.4) took 'dot1x credentials test' at (config)# and entered (config-dot1x-creden)#, and stayed at (config-if)# after it"
+    },
+    {
+      "name": "dot1x credentials",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config"],
+      "lines": [],
+      "evidence": "dot1x credentials (global) takes it in (config)#"
+    },
+    {
+      "name": "crypto pki certificate map",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["crypto pki certificate map <label> <sequence-number>", "no crypto pki certificate map <label> <sequence-number>"],
+      "args": {"label": {"kind": "Word"}, "sequence-number": {"kind": "Number", "min": 1, "max": 1000}},
+      "enters": "ca-certificate-map",
+      "evidence": "the guide gives the label and sequence number as one argument; the lab C9200L-48T-4G (17.6.4) took 'crypto pki certificate map Group 10' at (config)# and entered (ca-certificate-map)#"
+    },
+    {
+      "name": "location civic-location identifier",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["location civic-location identifier {host | <identifier>}"],
+      "args": {"identifier": {"kind": "Word"}},
+      "enters": "config-civic",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) answered 'location civic-location identifier 1' at (config)# with the bytes left for its attributes and entered (config-civic)#"
+    },
+    {
+      "name": "civic location attributes",
+      "platform": "Catalyst 9200",
+      "modes": ["config-civic"],
+      "lines": ["{additional-code | additional-location-information | branch-road-name | building | city | country | county | division | floor | landmark | leading-street-dir | name | neighborhood | number | post-office-box | postal-code | postal-community-name | primary-road-name | road-section | room | seat | state | street-group | street-name-postmodifier | street-name-premodifier | street-number-suffix | street-suffix | sub-branch-road-name | trailing-street-suffix | type-of-place | unit} <value>", "no {additional-code | additional-location-information | branch-road-name | building | city | country | county | division | floor | landmark | leading-street-dir | name | neighborhood | number | post-office-box | postal-code | postal-community-name | primary-road-name | road-section | room | seat | state | street-group | street-name-postmodifier | street-name-premodifier | street-number-suffix | street-suffix | sub-branch-road-name | trailing-street-suffix | type-of-place | unit}"],
+      "args": {"value": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'number 3550', 'state CA', 'building 19', 'room C6' and 'country US' at (config-civic)#"
+    },
+    {
+      "name": "monitor session",
+      "platform": "Catalyst 9200",
+      "args": {"vlan-id": {"kind": "VlanList"}},
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'monitor session 2 filter vlan 1 - 5 , 9' and 'monitor session 1 filter vlan 100 - 110' at (config)#"
+    },
+    {
+      "name": "monitor session filter",
+      "platform": "Catalyst 9200",
+      "args": {"vlan-id": {"kind": "VlanList"}},
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'monitor session 2 filter vlan 1 - 5 , 9' and 'monitor session 1 filter vlan 100 - 110' at (config)#"
+    },
+    {
+      "name": "snmp-server enable traps bridge",
+      "platform": "Catalyst 9200",
+      "adds": ["snmp-server enable traps bridge [newroot] [topologychange]", "no snmp-server enable traps bridge [newroot] [topologychange]"],
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'snmp-server enable traps bridge newroot' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "monitor capture (interface/control plane)",
+      "platform": "Catalyst 9200",
+      "adds": ["monitor capture <capture-name> interface <capture-interface> {in | out | both} [match any]", "monitor capture <capture-name> control-plane {in | out | both}", "no monitor capture <capture-name> interface <capture-interface> [in | out | both]", "no monitor capture <capture-name> control-plane [in | out | both]"],
+      "args": {"capture-interface": {"kind": "Interface"}},
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'monitor capture mycap interface GigabitEthernet1/0/1 in' and 'monitor capture mycap control-plane in' at #"
+    },
+    {
+      "name": "monitor capture limit",
+      "platform": "Catalyst 9200",
+      "adds": ["monitor capture <capture-name> limit [duration <seconds>] [packet-len <size>] [packets <num>]"],
+      "args": {"size": {"kind": "Number", "min": 64, "max": 9500}, "num": {"kind": "Number", "min": 1, "max": 100000}},
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'monitor capture mycap limit duration 60 packet-len 400' at #"
+    },
+    {
+      "name": "monitor capture match",
+      "platform": "Catalyst 9200",
+      "modes": ["privileged"],
+      "lines": ["monitor capture <capture-name> match {any | ipv4 any any | ipv6 any any}"],
+      "args": {"capture-name": {"kind": "Word"}},
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'monitor capture mycap match ipv4 any any' at #"
+    },
+    {
+      "name": "port-channel load-balance extended",
+      "platform": "Catalyst 9200",
+      "adds": ["port-channel load-balance extended [dst-ip] [dst-mac] [dst-port] [ipv6-label] [l3-proto] [src-ip] [src-mac] [src-port]"],
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'port-channel load-balance extended dst-ip dst-mac src-ip' at (config)#"
+    },
+    {
+      "name": "dscp (RADIUS server)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-radius-server"],
+      "lines": ["dscp auth <dscp_auth_value> acct <dscp_acct_value>", "no dscp auth <dscp_auth_value> acct <dscp_acct_value>"],
+      "args": {"dscp_auth_value": {"kind": "Number", "min": 1, "max": 63}, "dscp_acct_value": {"kind": "Number", "min": 1, "max": 63}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'dscp auth 10 acct 20' at (config-radius-server)#"
+    },
+    {
+      "name": "cts role-based sgt-map",
+      "platform": "Catalyst 9200",
+      "adds": ["cts role-based sgt-map host {<ipv4_hostaddress> | <ipv6_hostaddress>} sgt <sgt-number>"],
+      "args": {"ipv4_hostaddress": {"kind": "Ipv4"}, "ipv6_hostaddress": {"kind": "Ipv6"}, "sgt-number": {"kind": "Number", "min": 2, "max": 65519}},
+      "lines": [],
+      "evidence": "the book runs its forms together; the lab C9200L-48T-4G (17.6.4) took 'cts role-based sgt-map host 10.1.2.1 sgt 3' at (config)#"
+    },
+    {
+      "name": "ip dhcp snooping database (URL)",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["ip dhcp snooping database <url>", "no ip dhcp snooping database"],
+      "args": {"url": {"kind": "Word"}},
+      "evidence": "the book splits the URL at its colon; the lab C9200L-48T-4G (17.6.4) took 'ip dhcp snooping database tftp://10.90.90.90/snooping-rp2' at (config)#"
+    },
+    {
+      "name": "tftp-server (URL)",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["tftp-server <url> [alias <alias-name>] [<access-list-number>]", "no tftp-server <url>"],
+      "args": {"url": {"kind": "Word"}, "alias-name": {"kind": "Word"}, "access-list-number": {"kind": "Number", "min": 1, "max": 1999}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'tftp-server flash:config-boot.text' and 'tftp-server flash:image.bin' at (config)#"
+    },
+    {
+      "name": "set tag",
+      "platform": "Catalyst 9200",
+      "modes": ["config-route-map"],
+      "lines": ["set tag {<tag-value> | <tag-address>}", "no set tag [<tag-value> | <tag-address>]"],
+      "args": {"tag-value": {"kind": "Number", "min": 0, "max": 4294967295}, "tag-address": {"kind": "Ipv4"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) took 'set tag 1' and 'set tag 5' at (config-route-map)#"
+    },
+    {
+      "name": "set metric",
+      "platform": "Catalyst 9200",
+      "modes": ["config-route-map"],
+      "lines": ["set metric <metric-value> [<delay> <reliability> <loading> <mtu>]", "no set metric [<metric-value> [<delay> <reliability> <loading> <mtu>]]"],
+      "args": {"metric-value": {"kind": "Word"}, "delay": {"kind": "Word"}, "reliability": {"kind": "Word"}, "loading": {"kind": "Word"}, "mtu": {"kind": "Word"}},
+      "evidence": "the guide's lines have no space before the value; the lab C9200L-48T-4G (17.6.4) took 'set metric 10000 10 255 1 1500' at (config-route-map)#"
+    },
+    {
+      "name": "match metric (IP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-route-map"],
+      "lines": ["match metric {<metric-value> | external <metric-value>} [+- <deviation-number>]", "no match metric {<metric-value> | external <metric-value>} [+- <deviation-number>]"],
+      "args": {"metric-value": {"kind": "Number", "min": 1, "max": 4294967295}, "deviation-number": {"kind": "Number", "min": 0, "max": 4294967295}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'match metric 1', 'match metric 500 +- 100' and 'match metric external 500 +- 100' at (config-route-map)#"
+    },
+    {
+      "name": "match dscp",
+      "platform": "Catalyst 9200",
+      "modes": ["config-cmap"],
+      "lines": ["match [ip] dscp <dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value>]]]]]]]", "no match [ip] dscp <dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value> [<dscp-value>]]]]]]]"],
+      "args": {"dscp-value": {"kind": "Dscp"}},
+      "evidence": "the guide's line takes either one value or eight; the lab C9200L-48T-4G (17.6.4) took 'match dscp af11 af12' and 'match ip dscp 10 11 12' at (config-cmap)#"
+    },
+    {
+      "name": "random-detect dscp",
+      "platform": "Catalyst 9200",
+      "args": {"dscp-value": {"kind": "Dscp"}},
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'random-detect dscp cs1 percent 10 20' at (config-pmap-c)#"
+    },
+    {
+      "name": "ip ospf cost cost",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's line names no argument; the lab C9200L-48T-4G (17.6.4) took 'ip ospf cost 8' at (config-if)#"
+    },
+    {
+      "name": "ip ospf cost",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf cost <interface-cost>", "no ip ospf cost"],
+      "args": {"interface-cost": {"kind": "Number", "min": 1, "max": 65535}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf cost 8' at (config-if)#"
+    },
+    {
+      "name": "tlv name",
+      "platform": "Catalyst 9200",
+      "modes": ["config-sensor-cdplist"],
+      "lines": ["tlv name <tlv-name>", "no tlv name <tlv-name>"],
+      "args": {"tlv-name": {"kind": "Word"}},
+      "evidence": "the guide's line runs the number into the name; the lab C9200L-48T-4G (17.6.4) took 'tlv name address-type' and 'tlv name device-name' at (config-sensor-cdplist)# and refused both at (config-sensor-lldplist)#"
+    },
+    {
+      "name": "tlv number",
+      "platform": "Catalyst 9200",
+      "modes": ["config-sensor-cdplist", "config-sensor-lldplist"],
+      "lines": ["tlv number <tlv-number>", "no tlv number <tlv-number>"],
+      "args": {"tlv-number": {"kind": "Number", "min": 0, "max": 65535}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'tlv number 10' and 'tlv number 34' at (config-sensor-cdplist)# and 'tlv number 34' at (config-sensor-lldplist)#"
+    },
+    {
+      "name": "version (global configuration)",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["version [<text>]"],
+      "args": {"text": {"kind": "Text"}},
+      "evidence": "no 9200 book lists it at (config)#; the lab C9200L-48T-4G (17.6.4) read 'version 2' typed under 'router ospf 1' as a global line and took it at (config)#, and its crawl answers 'LINE' and '<cr>' after 'version' there"
+    },
+    {
+      "name": "ipv6 dhcp guard policy",
+      "platform": "Catalyst 9200",
+      "enters": "config-dhcp-guard",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 dhcp guard policy example_policy' at (config)# and entered (config-dhcp-guard)#"
+    },
+    {
+      "name": "ipv6 nd suppress policy",
+      "platform": "Catalyst 9200",
+      "enters": "config-nd-suppress",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ipv6 nd suppress policy policy1' at (config)# and entered (config-nd-suppress)#"
+    },
+    {
+      "name": "list (CoAP proxy)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-coap-proxy"],
+      "lines": ["list {ipv4 | ipv6} <list-name>", "no list {ipv4 | ipv6} <list-name>"],
+      "args": {"list-name": {"kind": "Word"}},
+      "enters": "config-coap-proxy-iplist",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'list ipv4 trial_list' at (config-coap-proxy)# and entered (config-coap-proxy-iplist)#"
+    },
+    {
+      "name": "list",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-coap-proxy"],
+      "lines": [],
+      "evidence": "list (CoAP proxy) takes it in (config-coap-proxy)#"
+    },
+    {
+      "name": "list (coap-proxy configuration)",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide runs the family into the name; list (CoAP proxy) takes the line"
+    },
+    {
+      "name": "key chain tcp",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["key chain <name> tcp", "no key chain <name> tcp"],
+      "args": {"name": {"kind": "Word"}},
+      "enters": "config-keychain-tcp",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'key chain kc1 tcp' at (config)# and entered (config-keychain-tcp)#"
+    },
+    {
+      "name": "match precedence",
+      "platform": "Catalyst 9200",
+      "modes": ["config-cmap"],
+      "lines": ["match [ip] precedence <precedence-value> [<precedence-value> [<precedence-value> [<precedence-value>]]]", "no match [ip] precedence <precedence-value> [<precedence-value> [<precedence-value> [<precedence-value>]]]"],
+      "args": {"precedence-value": {"kind": "Word"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) took 'match ip precedence 5 6 7' at (config-cmap)#; four values as the Catalyst 9300's"
+    },
+    {
+      "name": "macsec replay-protection window-size",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["macsec replay-protection window-size <frames>", "no macsec replay-protection window-size"],
+      "args": {"frames": {"kind": "Number", "min": 0, "max": 4294967295}},
+      "evidence": "the guide's line names no argument; the lab C9200L-48T-4G (17.6.4) took 'macsec replay-protection window-size 0' and 'macsec replay-protection window-size 10' at (config-if)#"
+    },
+    {
+      "name": "action (VLAN access map)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-access-map"],
+      "lines": ["action {drop | forward}", "no action"],
+      "evidence": "no 9200 book at 17.6 lists it there; the lab C9200L-48T-4G (17.6.4) took 'action forward' at (config-access-map)#"
+    },
+    {
+      "name": "snmp-server enable traps call-home",
+      "platform": "Catalyst 9200",
+      "adds": ["snmp-server enable traps call-home [message-send-fail] [server-fail]", "no snmp-server enable traps call-home [message-send-fail] [server-fail]"],
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'snmp-server enable traps call-home message-send-fail' at (config)#, each keyword alone (inferred for the other)"
+    },
+    {
+      "name": "mac-address",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["mac-address <mac-address-value>", "no mac-address"],
+      "args": {"mac-address-value": {"kind": "Mac"}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.6.4) took a 'mac-address' line naming a MAC address at (config-if)#"
+    },
+    {
+      "name": "key (TCP key chain)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-tcp"],
+      "lines": ["key <key-id>", "no key <key-id>"],
+      "args": {"key-id": {"kind": "Number", "min": 0, "max": 2147483647}},
+      "enters": "config-keychain-tcp-key",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'key 7890' at (config-keychain-tcp)# and entered (config-keychain-tcp-key)#; the ID's range as a key chain's key"
+    },
+    {
+      "name": "send-id",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-tcp-key"],
+      "lines": ["send-id <id>", "no send-id"],
+      "args": {"id": {"kind": "Number", "min": 0, "max": 255}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'send-id 215' at (config-keychain-tcp-key)#; RFC 5925 gives the ID one octet"
+    },
+    {
+      "name": "recv-id",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-tcp-key"],
+      "lines": ["recv-id <id>", "no recv-id"],
+      "args": {"id": {"kind": "Number", "min": 0, "max": 255}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'recv-id 215' at (config-keychain-tcp-key)#; RFC 5925 gives the ID one octet"
+    },
+    {
+      "name": "key-string (TCP key chain)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-tcp-key"],
+      "lines": ["key-string <text>", "no key-string"],
+      "args": {"text": {"kind": "Text"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took a 'key-string' at (config-keychain-tcp-key)#"
+    },
+    {
+      "name": "cryptographic-algorithm (TCP key chain)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-keychain-tcp-key"],
+      "lines": ["cryptographic-algorithm <algorithm>", "no cryptographic-algorithm"],
+      "args": {"algorithm": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'cryptographic-algorithm hmac-sha-1' at (config-keychain-tcp-key)#"
+    },
+    {
+      "name": "access-session attributes filter-list list",
+      "platform": "Catalyst 9200",
+      "enters": "config-com-filter-list",
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'access-session attributes filter-list list mylist' at (config)# and entered (config-com-filter-list)#"
+    },
+    {
+      "name": "mka policy",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-if"],
+      "lines": [],
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'mka policy mka_policy' at (config-if)# and stayed there; mka policy (interface) takes the line"
+    },
+    {
+      "name": "mka policy (interface)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["mka policy <policy-name>", "no mka policy"],
+      "args": {"policy-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'mka policy mka_policy' at (config-if)# and stayed there"
+    },
+    {
+      "name": "snmp-server enable traps cef",
+      "platform": "Catalyst 9200",
+      "adds": ["snmp-server enable traps cef [inconsistency] [peer-fib-state-change] [peer-state-change] [resource-failure]", "no snmp-server enable traps cef [inconsistency] [peer-fib-state-change] [peer-state-change] [resource-failure]"],
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'snmp-server enable traps cef inconsistency' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps license",
+      "platform": "Catalyst 9200",
+      "adds": ["snmp-server enable traps license [deploy] [error] [usage]", "no snmp-server enable traps license [deploy] [error] [usage]"],
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'snmp-server enable traps license deploy' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps vrfmib",
+      "platform": "Catalyst 9200",
+      "adds": ["snmp-server enable traps vrfmib [vnet-trunk-down] [vnet-trunk-up] [vrf-down] [vrf-up]", "no snmp-server enable traps vrfmib [vnet-trunk-down] [vnet-trunk-up] [vrf-down] [vrf-up]"],
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'snmp-server enable traps vrfmib vnet-trunk-down' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "snmp-server enable traps ospf",
+      "platform": "Catalyst 9200",
+      "adds": ["snmp-server enable traps ospf [cisco-specific] [errors] [lsa] [rate-limit <rate-limit-time> <max-number-of-traps>] [retransmit] [state-change]", "no snmp-server enable traps ospf [cisco-specific] [errors] [lsa] [rate-limit <rate-limit-time> <max-number-of-traps>] [retransmit] [state-change]"],
+      "lines": [],
+      "evidence": "the book runs the keywords together; the lab C9200L-48T-4G (17.6.4) took 'snmp-server enable traps ospf lsa' at (config)#, each keyword alone (inferred for the others)"
+    },
+    {
+      "name": "cts sxp connection peer",
+      "platform": "Catalyst 9200",
+      "adds": ["cts sxp connection peer <peer-ipv4-addr> [source <src-ipv4-addr>] password {default | none} mode {local | peer} {speaker | listener | both} [vrf <vrf-name>]"],
+      "lines": [],
+      "evidence": "the book's line without a source address asks for a VRF; the lab C9200L-48T-4G (17.6.4) took a 'cts sxp connection peer' line with a source address, a password and a mode and no VRF at (config)#"
+    },
+    {
+      "name": "ip ospf transmit-delay seconds",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's line names no argument; ip ospf transmit-delay takes the line"
+    },
+    {
+      "name": "ip ospf transmit-delay",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf transmit-delay <seconds>", "no ip ospf transmit-delay"],
+      "args": {"seconds": {"kind": "Number", "min": 1, "max": 65535}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf transmit-delay 2' at (config-if)#; the range IOS gives it (inferred)"
+    },
+    {
+      "name": "ip ospf priority number",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's line names no argument; ip ospf priority takes the line"
+    },
+    {
+      "name": "ip ospf priority",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf priority <number-value>", "no ip ospf priority"],
+      "args": {"number-value": {"kind": "Number", "min": 0, "max": 255}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf priority 5' at (config-if)#; the range IOS gives it (inferred)"
+    },
+    {
+      "name": "ip ospf hello-interval seconds",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's line names no argument; ip ospf hello-interval takes the line"
+    },
+    {
+      "name": "ip ospf hello-interval",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf hello-interval <seconds>", "no ip ospf hello-interval"],
+      "args": {"seconds": {"kind": "Number", "min": 1, "max": 65535}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf hello-interval 12' at (config-if)#; the range IOS gives it (inferred)"
+    },
+    {
+      "name": "ip ospf dead-interval seconds",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's line names no argument; ip ospf dead-interval takes the line"
+    },
+    {
+      "name": "ip ospf dead-interval",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf dead-interval {<seconds> | minimal hello-multiplier <multiplier>}", "no ip ospf dead-interval"],
+      "args": {"seconds": {"kind": "Number", "min": 1, "max": 65535}, "multiplier": {"kind": "Number", "min": 3, "max": 20}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf dead-interval 8' at (config-if)#; the ranges and the minimal form IOS gives it (inferred)"
+    },
+    {
+      "name": "ip ospf authentication-key key",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's line names no argument; ip ospf authentication-key takes the line"
+    },
+    {
+      "name": "ip ospf authentication-key",
+      "platform": "Catalyst 9200",
+      "modes": ["config-if"],
+      "lines": ["ip ospf authentication-key [0 | 7] <key>", "no ip ospf authentication-key"],
+      "args": {"key": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf authentication-key password' at (config-if)#; the encryption types IOS gives it (inferred)"
     }
   ]
 }

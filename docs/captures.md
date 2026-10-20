@@ -298,6 +298,7 @@ Lines the switch refused where its crawl offers the words (`context::REFUSED`), 
 | Image | Levels | Mode | Line | State | Caret |
 |---|---|---|---|---|---|
 | c9300 17.6 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
+| c9200 17.6 | network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
 | c9300 17.6 | network-advantage | config | `ptp mode boundary delay-req`, `ptp mode boundary pdelay-req`, `ptp mode e2etransparent`, `ptp mode p2ptransparent` | `ptp profile dot1as` | at `mode` |
 | c9300 17.6 | network-advantage | config | `ptp transport ipv4 udp` | `ptp profile dot1as` | at `transport` |
 
@@ -371,6 +372,7 @@ An answered line becomes a form: its words, each value a typed argument. Each wo
 - The rows are tried in that order, a keyword first.
 - A line gives no form where a word fits no row, or names an object the configuration made: a `User defined` row, or a VRF's `VRF Name` row other than `Mgmt-vrf`.
 - A form's value is never another keyword: one observed name stays that name.
+- The words after a value the crawl did not type are read against the answers after one it did that fits the same row; after an interface, one of the same type first, then one of another type (the lab C9200L-48T-4G, 17.6.4, crawled `show interfaces GigabitEthernet1/0/1 ?` and no other interface). Where the words after it read through none of the first value's answers, the next value's are tried.
 
 ### Messages
 

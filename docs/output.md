@@ -23,7 +23,7 @@ The caret stands under the refused word of the line as typed, spaces and `do` in
 | an argument could stand there | at the start of the word |
 | a number past the range offered | under the digit that takes it past the top (`terminal length 600` under the last `0`) |
 | a number below the range, or a word where only a number stands | at the start of the word |
-| an interface the stack does not have | classic IOS: under the start of its number (`GigabitEthernet9/0/1` under the `9`). IOS XE: past the start the word shares with another row of `?`, the type it names not counted (`interface gigabitethernet4/0/1` on a one-member C9300-24T under the `g`, and under the `i` where `GMPLS` is listed). A port channel, VLAN, loopback or tunnel typed with its number, under the digit that takes it past the top (`Po10` on a 2960G under the `0`) |
+| an interface the stack does not have | classic IOS: under the start of its number (`GigabitEthernet9/0/1` under the `9`). IOS XE: past the start the word shares with another row of `?`, the type it names not counted (`interface gigabitethernet4/0/1` on a one-member C9300-24T under the `g`, and under the `i` where `GMPLS` is listed); a number going on past a port the stack has, under the `/` after that port (`GigabitEthernet1/0/13/0`), and one departing from the management port's number, past their shared start (`gigabitethernet 0/1` under the `1`), as the lab C9200L-48T-4G (17.6.4) put them; a module no member's ports of the type carry, under it (`gigabitethernet 6/2` and `2/3/0` under the `2` and the `3`, the lab C9300-24T and C9200L-48T-4G); on a C9200, a member past the stack's most, under it (`gigabitethernet 9/0/6` under the `9`). A port channel, VLAN, loopback or tunnel typed with its number, under the digit that takes it past the top (`Po10` on a 2960G under the `0`) |
 
 The place of the caret in a word comes from a 2960-X session, checked against the words its own `?` offered where a capture has them.
 
@@ -35,7 +35,7 @@ The place of the caret in a word comes from a 2960-X session, checked against th
 
 ### Messages the configuration gives
 
-On IOS XE a line the configuration so far does not let the switch take prints the lab C9300-24T's (17.6.4) message and changes nothing. `no` lines are taken, a service policy's removal excepted. Classic IOS prints none of these.
+On IOS XE a line the configuration so far does not let the switch take prints the lab C9300-24T's (17.6.4) message and changes nothing. `no` lines are taken, a service policy's removal and `no switchport` under 802.1X port control excepted. Classic IOS prints none of these.
 
 | Line | State | Message |
 |---|---|---|
@@ -44,10 +44,14 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | the same | another named instance's family runs AS `<n>` | `%ERROR: AS(<n>) in use by VR(<name>)` |
 | `ip\|ipv6 flow monitor <m> ...` on a port, on the C9200 at 17.6 (the lab C9200L-48T-4G at 17.6.4) | the monitor holds no record | `% Flow Monitor: Failed to add monitor to interface: The monitor does not have a valid record` |
 | `record <r>` in a flow monitor, on the C9200 at 17.6 | the monitor holds another record | `% Flow Monitor: Failed to set record: Already there is an existing record configured for this monitor` |
+| `no switchport`, `switchport mode dot1q-tunnel\|private-vlan promiscuous` on an interface | `authentication port-control` on the port (the lab C9200L-48T-4G, 17.6.4) | `Command rejected: Conflict with Authentication. ` and `Authentication must be disabled before changing port mode ` |
+| `ip admission <name>` on an interface, on the C9200 at 17.6 (the lab C9200L-48T-4G at 17.6.4) | no `ip admission name <name>` | `%Auth-proxy name <name> is not defined` and a blank line |
 | `class <name>` in a policy map | no class map of the name | `class map <name> not configured` |
 | `service-policy input\|output <name>` on an interface | no policy map of the name | `% policy map <name> not configured` |
 | `service-export mdns-sd controller <name>` | another controller | `Only one Controller is allowed` and a blank line |
 | a line naming a VRF (`vrf forwarding`, `ip multicast-routing vrf`, `ip mroute vrf`, `ntp server vrf`, `snmp-server host ... vrf`, a BGP or OSPFv3 address family; in EXEC `show ip route\|arp vrf`, `show ip vrf detail\|interfaces`, `show ip bgp vpnv4 vrf`, `show mpls forwarding-table vrf`, `show mpls static binding ipv4 vrf`) | no `vrf definition` or `ip vrf` of the name; `Mgmt-vrf` is in the factory default | the command family's own (`% VRF V1 not configured`, `% VPN Routing instance V1 does not exist.`) |
+| `router ospf <n> vrf <name>` | no `vrf definition` or `ip vrf` of the name | `Unknown VRF specified` |
+| `cts sxp filter-group listener\|speaker global <name>` | no `cts sxp filter-list <name>` | `Filter-list <name> not configured` |
 | `route-target` in a VRF | no `rd` | `% VRF <name> does not have an RD configured, please configure the RD before configuring route-target` |
 | `<feature> attach-policy <name>`: IPv6 source guard and destination guard on an interface; device tracking, DHCPv6 guard, RA guard in a VLAN configuration | no `<feature> policy <name>` | `% Policy <name> not defined for the feature` and a blank line |
 | `ipv6 mld ssm-map static <acl> <source>`, in global configuration or an interface, which hands it there | no `ipv6 mld ssm-map enable` | `%ssm-map is not enabled!`, the mode global configuration |
@@ -118,11 +122,12 @@ These lines are taken with a warning first:
 | `macsec-cipher-suite ...` in an MKA policy | the suite changes | a blank line, `% If cipher currently being used is not configured, new SAK will be generated`, a blank line |
 | `ipv6 mld static-group ...` on an interface | no `ipv6 multicast-routing` | `%Warning: Enable MLD router-side for this command to be effective` |
 | `ipv6 dhcp server automatic` on an interface | | `% Warning: Pool  not configured globally - configuring anyway.` |
+| `ipv6 dhcp server <name>` on an interface | no `ipv6 dhcp pool <name>` | `% Warning: Pool <name> not configured globally - configuring anyway.` |
 | `auto qos global compact` | | `%Warning: This command will reset all autoqos generated configurations` |
 | `location civic-location identifier <id>` | the location holds no attributes | `% 250 bytes available to configure civic address attributes`, then `(config-civic)#` |
 | `cts role-based sgt-map 0.0.0.0/0 ...` | no `ip route 0.0.0.0 0.0.0.0` | `%Please ensure default route is created using ip route 0.0.0.0 command` |
 | `spanning-tree portfast [trunk]` | PortFast changes | `%Warning: portfast should only be enabled on ports connected to a single`, ` host. Connecting hubs, concentrators, switches, bridges, etc... to this`, ` interface  when portfast is enabled, can cause temporary bridging loops.`, ` Use with CAUTION`, a blank line; without `trunk` then `%Portfast has been configured on <port> but will only` and ` have effect when the interface is in a non-trunking mode.` |
-| `authentication host-mode\|port-control\|control-direction\|open` on an interface, `authentication mac-move` | | `%Command deprecated (<line>) - use access-session instead` and a blank line |
+| `authentication host-mode\|port-control\|control-direction\|open` on an interface, `authentication mac-move` | the configuration is new-style: it holds a line of `shell::NEW_STYLE` (`policy-map type control subscriber`, `access-session ...`, `autoconf enable`); the lab C9200L-48T-4G (17.6.4), legacy, took them silently | `%Command deprecated (<line>) - use access-session instead` and a blank line |
 
 ## Help and Tab
 
@@ -213,7 +218,7 @@ A configuration a switch printed (one with a `version` line) keeps its layout wh
 ### Settings and instances
 
 - A later value of a setting replaces the earlier (`duplex`, `vtp mode`).
-- A command that takes several instances keeps one line per instance, named by the arguments that name it (`username`, `ntp server`, `ip route`, `neighbor`, `network`), and `no` naming an instance removes it whatever it sets.
+- A command that takes several instances keeps one line per instance, named by the arguments that name it (`username`, `ntp server`, `ip route`, `neighbor`, `network`, `monitor session` by its session), and `no` naming an instance removes it whatever it sets.
 - A default turned back on prints nothing, while an interface keeps `no cdp enable`, `no lldp transmit` and `receive`, `no keepalive`, `no ip redirects`, `no ip proxy-arp` and `no ip unreachables`.
 - `no switchport` drops a port's switchport lines and `switchport` its addresses.
 - A member's `channel-group` makes its port-channel with the member's switch port lines.
@@ -622,9 +627,11 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 | notice | `% Command accepted but obsolete, see 'show (ip\|ipv6) cef switching statistics [feature]'` |
 | notice | `% NOTE: This command is deprecated. Please use 'show bgp ipv6 unicast'` |
 | notice | `% Command "show ipv6 nd suppress <...>" is obsolete.`, `% Please use "show flooding-suppression <...>" instead.` |
+| notice | `% Warning: Use of this command may result in packet drops` |
 | fixed | `% Error: Unsupported command`, `% Error: ngwc not supported`, `% Error: Command not supported`, `% Error: Command is not supported on this platform` |
 | fixed | `% Error: Show version installed user-interface is not supported`, `%Error: lowmem gd is not supported in this platform` |
 | fixed | `% Missing filename in URL.` (a file system with no file name) |
+| fixed | a line's own arguments, refused alike by the lab C9300-24T and C9200L-48T-4G (17.6.4) on their configurations: `% Error: Invalid timestamp. Input must be in the correct format with leading and trailing zeroes`, `% Error: Interval too large for reverse. Supported maximum interval is 600 seconds!`, `% Error: Invalid uuid. Requires prefix [0x]`, `% Error: Failed to add options for trace filter command, invalid input`, `% Error: Unknown Protocol`, `% Error: Unknown protocol`, `% Error: Unknown interface <word>`, `% Failed : No such seat`, `%error opening <file system>`, `%Error processing <file system>: Unable to allocate memory` |
 | fixed | `% Linecard information not found` (a fixed-configuration switch has no linecards) |
 
 | State message | Prints where the configuration has no |

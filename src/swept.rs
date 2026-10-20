@@ -635,16 +635,28 @@ impl Reader<'_> {
     /// The tokens of the first `upto` words as the crawls' answers read them (`fit`), the first tier
     /// whose answer a word fits; a number or an interface written as typed where `literal`; and the
     /// words the crawls typed for them. The answer after a value a crawl typed otherwise is the one
-    /// after its value of the same kind.
+    /// after a value of the same kind (`siblings`), the last word's too, which `refused` reads. Where
+    /// the words after a value read through none of its answers, typed by the crawl or not, they
+    /// are read through the next sibling's that reads them.
     fn read(
         &self,
         words: &[&str],
         upto: usize,
         literal: bool,
     ) -> Result<(Vec<String>, Vec<String>), Left> {
-        let mut tokens: Vec<String> = vec![];
-        let mut typed: Vec<String> = vec![];
-        for (k, w) in words.iter().enumerate().take(upto) {
+        self.read_from(words, upto, literal, vec![], vec![])
+    }
+
+    /// `read` from word `tokens.len()`, the crawl's words for those before it in `typed`.
+    fn read_from(
+        &self,
+        words: &[&str],
+        upto: usize,
+        literal: bool,
+        mut tokens: Vec<String>,
+        mut typed: Vec<String>,
+    ) -> Result<(Vec<String>, Vec<String>), Left> {
+        for (k, w) in words.iter().enumerate().take(upto).skip(tokens.len()) {
             let mut why = Left::NoAnswer;
             let mut read = None;
             for &t in &self.tiers {
@@ -680,40 +692,66 @@ impl Reader<'_> {
                 tokens.push(tok);
                 return Ok((tokens, typed));
             }
-            let mut next = typed.clone();
-            next.push(w.to_string());
-            if k + 1 < upto
-                && self.first(&next).is_none()
-                && let Some((t, a)) = at
-                && let Some(s) = Self::sibling(t, &typed, &tok, a)
-            {
-                next = typed.clone();
-                next.push(s);
-            }
-            typed = next;
             let keep = literal
                 && self.literal(w)
                 && (tok.starts_with("<number:")
                     || tok.starts_with("<hex:")
                     || tok.starts_with("<interface:"));
+            let mut next = typed.clone();
+            next.push(w.to_string());
+            // a value the crawl typed reads its own answers first, then a sibling's
+            let own = self.first(&next).is_some();
+            let siblings: Vec<String> = match at {
+                Some((t, a)) if !own || tok.starts_with('<') => Self::siblings(t, &typed, &tok, a)
+                    .into_iter()
+                    .filter(|s| !own || !s.eq_ignore_ascii_case(w))
+                    .collect(),
+                _ => vec![],
+            };
             tokens.push(if keep { w.to_string() } else { tok });
+            if !siblings.is_empty() {
+                let on = |s: &str| {
+                    let mut next = typed.clone();
+                    next.push(s.to_string());
+                    self.read_from(words, upto, literal, tokens.clone(), next)
+                };
+                let mut tries = own.then(|| w.to_string()).into_iter().chain(siblings);
+                let read = tries.next().map_or(Err(Left::NoAnswer), |s| on(&s));
+                return read.or_else(|e| tries.find_map(|s| on(&s).ok()).ok_or(e));
+            }
+            typed = next;
         }
         Ok((tokens, typed))
     }
 
-    /// A word a crawl typed after `typed` that fits `answer` as `tok` does, as its key holds it.
-    fn sibling(tier: &dyn Tier, typed: &[String], tok: &str, answer: &[String]) -> Option<String> {
+    /// The words a crawl typed after `typed` that fit `answer` as `tok` does, as its keys hold them;
+    /// for an interface, then those of another type (the lab C9200L-48T-4G, 17.6, crawled `show
+    /// interfaces GigabitEthernet1/0/1 ?` alone and answered `Port-channel1`, `Tunnel0` and `Vlan10`
+    /// lines).
+    fn siblings(tier: &dyn Tier, typed: &[String], tok: &str, answer: &[String]) -> Vec<String> {
         let prefix = crate::context::key(&match typed {
             [] => String::new(),
             t => format!("{} ", t.join(" ")),
         });
-        tier.keys(&prefix)
-            .filter_map(|k| {
-                let w = k[prefix.len()..].strip_suffix(' ')?;
-                (!w.is_empty() && !w.contains(' ')).then_some(w)
-            })
-            .find(|w| fit(w, answer).is_ok_and(|t| t == tok))
-            .map(str::to_string)
+        let mut same = vec![];
+        let mut other = vec![];
+        for k in tier.keys(&prefix) {
+            let Some(w) = k[prefix.len()..].strip_suffix(' ') else {
+                continue;
+            };
+            if w.is_empty() || w.contains(' ') {
+                continue;
+            }
+            match fit(w, answer) {
+                Ok(t) if t == tok => same.push(w.to_string()),
+                Ok(t) if tok.starts_with("<interface:") && t.starts_with("<interface:") => {
+                    other.push(w.to_string());
+                }
+                _ => {}
+            }
+        }
+        same.extend(other);
+        same
     }
 
     /// A refused line's tokens, its caret in word `caret`: the words before it as `read` reads them,
@@ -1178,6 +1216,62 @@ mod tests {
         // under the caret where a value stands, and before it with no answer, a word no answer
         // offers leaves its line out
         assert_eq!(left.get(&Left::Unoffered), Some(&2), "{left:?}");
+    }
+
+    #[test]
+    fn a_line_after_an_interface_the_crawl_did_not_type_reads_the_answer_after_one_it_did() {
+        let held = [
+            ("", answer(&["show  Show"])),
+            ("show ", answer(&["port  Port"])),
+            (
+                "show port ",
+                answer(&[
+                    "GigabitEthernet  GigabitEthernet IEEE 802.3z",
+                    "Port-channel     Ethernet Channel of interfaces",
+                    "Vlan             Catalyst Vlans",
+                ]),
+            ),
+            (
+                // keys are lowercase, as `context::key` writes them
+                "show port gigabitethernet1/0/1 ",
+                answer(&["counters  Counters", "<cr>  <cr>"]),
+            ),
+            ("show port vlan1 ", answer(&["brief  Brief", "<cr>  <cr>"])),
+            (
+                "show port gigabitethernet1/0/1 counters ",
+                answer(&["detail  Detail", "<cr>  <cr>"]),
+            ),
+            (
+                "show port port-channel2 ",
+                answer(&["counters  Counters", "<cr>  <cr>"]),
+            ),
+        ];
+        let tier: Answers<'_> = held.iter().map(|(k, a)| (k.to_string(), a)).collect();
+        let log = [
+            "Switch#show port Port-channel1 counters\n".to_string(),
+            "Switch#show port Vlan10 counters\n".to_string(),
+            "Switch#show port Port-channel2 counters detail\n".to_string(),
+            refusal("show port GigabitEthernet1/0/11 Hostname", 3),
+            refusal("show port Vlan10 Hostname", 3),
+        ]
+        .concat();
+        let (rows, _, _) = derive(&log, &[&tier]);
+        assert_eq!(
+            rows,
+            [
+                // a value of the same type first, then an interface of another type, the first
+                // whose answers read the words after it
+                row("show port <interface:Port-channel> counters", ""),
+                row("show port <interface:Vlan> counters", ""),
+                // a value the crawl typed whose answers stop short reads through a sibling's
+                row("show port <interface:Port-channel> counters detail", ""),
+                // the answer after the last word read holds the caret word's place
+                row("show port GigabitEthernet1/0/11 <word>", "invalid 3 0"),
+                row("show port Vlan10 <word>", "invalid 3 0"),
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     #[test]

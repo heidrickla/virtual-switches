@@ -341,12 +341,21 @@ const MULTI: &[(&str, Names)] = &[
     // an interface's HSRP groups, each with its own address and settings (the lab C9300-24T,
     // 17.6.4: `standby 1 ip 10.0.0.3` beside `standby 2 ip 10.0.0.4`)
     ("standby", Names::Group),
+    // a SPAN session's lines, by session: the lab C9200L-48T-4G (17.6.4) kept session 1's
+    // destination port after `no monitor session 2 destination interface` named the same port
+    ("monitor session", Names::First(1)),
 ];
 
 /// Instances whose keywords after the instance name a setting of it, each kept on its own line:
 /// `spanning-tree vlan 10 priority 4096` beside `spanning-tree vlan 10 forward-time 10`,
 /// `neighbor 10.0.0.1 remote-as 65001` beside `neighbor 10.0.0.1 activate`.
-const SETTINGS: &[&str] = &["spanning-tree vlan", "switch", "neighbor", "standby"];
+const SETTINGS: &[&str] = &[
+    "spanning-tree vlan",
+    "switch",
+    "neighbor",
+    "standby",
+    "monitor session",
+];
 
 /// The levels a logging destination takes by name (`logging console informational`).
 const LEVELS: &[&str] = &[
@@ -1165,6 +1174,41 @@ mod tests {
 
     fn texts(v: &[Entry]) -> Vec<&str> {
         v.iter().map(|e| e.text.as_str()).collect()
+    }
+
+    /// A parse of `line`, its words keywords but those `values` names.
+    fn line(line: &str, values: &[&str]) -> Parse {
+        let (negated, line) = match line.strip_prefix("no ") {
+            Some(l) => (true, l),
+            None => (false, line),
+        };
+        let items: Vec<(&str, bool)> = line
+            .split_whitespace()
+            .map(|w| (w, !values.contains(&w)))
+            .collect();
+        p(&items, negated)
+    }
+
+    #[test]
+    fn a_span_session_s_lines_are_its_own() {
+        let mut d = Device::new(Stack::single("C9200L-48T-4G", None));
+        let v = ["1", "2", "Gi1/0/1", "Gi1/0/2"];
+        for l in [
+            "monitor session 1 source interface Gi1/0/1 both",
+            "monitor session 1 destination interface Gi1/0/2",
+            "no monitor session 2 destination interface Gi1/0/2",
+        ] {
+            d.apply_as(&line(l, &v), None, false, true);
+        }
+        assert_eq!(
+            texts(&d.global),
+            [
+                "monitor session 1 source interface Gi1/0/1 both",
+                "monitor session 1 destination interface Gi1/0/2",
+            ]
+        );
+        d.apply_as(&line("no monitor session 1", &v), None, false, true);
+        assert!(d.global.is_empty(), "{:?}", texts(&d.global));
     }
 
     #[test]

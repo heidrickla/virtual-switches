@@ -86,6 +86,10 @@ pub const MESSAGES: &[(&str, Kind)] = &[
         "% Please use \"show flooding-suppression <...>\" instead.",
         Kind::Notice,
     ),
+    (
+        "% Warning: Use of this command may result in packet drops",
+        Kind::Notice,
+    ),
     ("% Error: Unsupported command", Kind::Fixed),
     ("% Error: ngwc not supported", Kind::Fixed),
     ("% Error: Command not supported", Kind::Fixed),
@@ -102,6 +106,31 @@ pub const MESSAGES: &[(&str, Kind)] = &[
         Kind::Fixed,
     ),
     ("% Missing filename in URL.", Kind::Fixed),
+    // a line's own arguments, which the lab C9200L-48T-4G (17.6.4) refused alike on another
+    // configuration
+    (
+        "% Error: Invalid timestamp. Input must be in the correct format with leading and \
+         trailing zeroes",
+        Kind::Fixed,
+    ),
+    (
+        "% Error: Interval too large for reverse. Supported maximum interval is 600 seconds!",
+        Kind::Fixed,
+    ),
+    ("% Error: Invalid uuid. Requires prefix [0x]", Kind::Fixed),
+    (
+        "% Error: Failed to add options for trace filter command, invalid input",
+        Kind::Fixed,
+    ),
+    ("% Error: Unknown Protocol", Kind::Fixed),
+    ("% Error: Unknown protocol", Kind::Fixed),
+    ("% Error: Unknown interface {}", Kind::Fixed),
+    ("% Failed : No such seat", Kind::Fixed),
+    ("%error opening {}", Kind::Fixed),
+    (
+        "%Error processing {}: Unable to allocate memory",
+        Kind::Fixed,
+    ),
     // a fixed-configuration switch has no linecards
     ("% Linecard information not found", Kind::Fixed),
     ("% LISP is not running.", Kind::State(Rule::Lisp)),
@@ -792,7 +821,34 @@ mod tests {
                 config
             ));
             assert!(!stands(NOTICE, "show widget", "show widget", config));
+            // a line's own arguments refused (the lab C9300-24T and C9200L-48T-4G, 17.6.4)
+            assert!(stands(
+                "% Error: Unknown interface 10",
+                "show widget name <word>",
+                "show widget name 10",
+                config
+            ));
+            assert!(stands(
+                "%error opening flash:",
+                "show format flash:",
+                "show format flash:",
+                config
+            ));
+            assert!(!stands(
+                "% Warning: Use of this command may result in packet drops",
+                "show widget",
+                "show widget",
+                config
+            ));
         }
+        assert_eq!(
+            template(
+                &lines(&["%Error processing flash:: Unable to allocate memory"]),
+                &["show", "file", "<word>"],
+                &["show", "file", "flash:"]
+            ),
+            ["%Error processing {2}: Unable to allocate memory"]
+        );
     }
 
     #[test]

@@ -211,9 +211,9 @@ A patch reaches every command of its name. `compile` lists the overrides a relea
 | Use | Example |
 |---|---|
 | A hardware document the release books do not cover | the supervisor installation note's `enable` on the 9400 |
-| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command |
+| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command; the submodes `coap proxy`, a key chain's `key`, a TCP key chain and `police` enter on the Catalyst 9200, where an interface's `mka policy` enters none |
 | A correction to every release of one book | the 2960-X `channel-group` |
-| A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables`, `key-hash` and `service unsupported-transceiver` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960; `ip ospf area`, `eigrp stub` and `ip dhcp client client-id` on the Catalyst 9200 |
+| A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables`, `key-hash` and `service unsupported-transceiver` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960; `ip ospf area`, `eigrp stub`, `ip dhcp client client-id`, `set tag`, `fallback profile`, an interface's OSPF timers and a global `version` on the Catalyst 9200 |
 
 ## Matching
 
@@ -233,7 +233,7 @@ A line typed at a prompt is read against the commands the mode runs.
 | Top-level blocks | a line that opens a top-level block (an interface, a VLAN), typed in another block's submode, goes to global configuration and opens its own block |
 | Held blocks | a block real switches hold that the books parse opens at the console in the mode the books' examples name |
 | Enclosing modes | a configuration submode hands a line it does not know to the nearest enclosing mode that takes it, global configuration last, and leaves the submode only when that line is accepted |
-| Abbreviated first word | a line a submode takes only as an abbreviation goes to an enclosing mode that takes it whole: `router ospf 1` typed in an interface goes to global configuration. Where the nearest mode that has the word whole refuses the line, its refusal stands in the submode unless a mode further out takes the line: `key rad123` in a key chain's key is refused under `rad123` as the key chain's `key` refuses it, and `key chain K2` goes to global configuration |
+| Abbreviated first word | a line a submode takes only as an abbreviation goes to an enclosing mode that takes it whole: `router ospf 1` typed in an interface goes to global configuration. Where the nearest mode that has the word whole refuses the line, its refusal stands in the submode unless a mode further out takes the line: `key rad123` in a key chain's key is refused, as the key chain's `key` refuses it, under the space after `key`, and `key chain K2` goes to global configuration |
 | Removed values | a configuration typed from a file (a switch booting from the list, `check`, `lint`, `verify`, `changes`) takes the secret sweep's `<removed>` for any argument but an interface, where a value was; at a console it is the word it is |
 
 ### Measured forms
