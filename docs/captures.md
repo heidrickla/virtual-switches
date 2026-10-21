@@ -144,10 +144,10 @@ A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswit
 | Image | Lab switch | Levels |
 |---|---|---|
 | C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
-| C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-essentials` |
+| C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
 | C2960 15.0(2)SE | C2960G, 15.0(2)SE11 | `lanbase` |
 
-The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors.
+The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 crawls answer for their own image at both levels, the licence gate included.
 
 ### Crawl folders
 
@@ -298,7 +298,7 @@ Lines the switch refused where its crawl offers the words (`context::REFUSED`), 
 | Image | Levels | Mode | Line | State | Caret |
 |---|---|---|---|---|---|
 | c9300 17.6 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
-| c9200 17.6 | network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
+| c9200 17.6 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
 | c9300 17.6 | network-advantage | config | `ptp mode boundary delay-req`, `ptp mode boundary pdelay-req`, `ptp mode e2etransparent`, `ptp mode p2ptransparent` | `ptp profile dot1as` | at `mode` |
 | c9300 17.6 | network-advantage | config | `ptp transport ipv4 udp` | `ptp profile dot1as` | at `transport` |
 
@@ -324,9 +324,10 @@ Measured exceptions, `src/license.rs`:
 | `REFUSED_TYPES` | `network-essentials` | any | `pseudowire`, `Auto-Template` with a number | refused past the characters another listed type begins with (`interface pseudowire 100` under the `s`) |
 | `UNLISTED` | `network-essentials` | config | `net` | `net` taken, the NET after it refused under its first character |
 | `TAKEN` | `network-essentials` | config | `l2 traceroute` | taken though `?` lists no `l2`; `l2 vfi` is refused |
+| `TAKEN_ON` | `network-advantage` on c9200 17.6 | config | `l2 traceroute` | taken though that image's `?` lists no `l2` |
 | `LEFT_OUT` | `network-essentials` | config-subif | `xconnect` | refused at the word |
 
-A table's word stands for its unique abbreviations among the keywords offered where it is typed, the held answer's else the books' (`context::stands_for`). A start of it and of another keyword answers `% Ambiguous command` for `UNLISTED` and `LEFT_OUT`, and is not taken for `TAKEN`.
+A table's word stands for its unique abbreviations among the keywords offered where it is typed, the held answer's else the books' (`context::stands_for`). A start of it and of another keyword answers `% Ambiguous command` for `UNLISTED` and `LEFT_OUT`, and is not taken for `TAKEN` and `TAKEN_ON`.
 
 What the gated level prints for a line its image leaves out (`network-essentials`, IOS XE):
 
@@ -344,7 +345,7 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 | Image | Lab switch | Levels |
 |---|---|---|
 | C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
-| C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-essentials` |
+| C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
 
 ### Sweep folders
 

@@ -3447,6 +3447,22 @@
       "lines": ["ip ospf authentication-key [0 | 7] <key>", "no ip ospf authentication-key"],
       "args": {"key": {"kind": "Word"}},
       "evidence": "the lab C9200L-48T-4G (17.6.4) took 'ip ospf authentication-key password' at (config-if)#; the encryption types IOS gives it (inferred)"
+    },
+    {
+      "name": "router lisp",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["router lisp", "no router lisp"],
+      "enters": "config-router-lisp",
+      "evidence": "the lab C9200L-48T-4G (17.6.4) at network-advantage took 'router lisp' at (config)# and entered (config-router-lisp)#; its 'router ?' lists lisp at network-advantage only"
+    },
+    {
+      "name": "ipv4 map-cache-limit",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["ipv4 map-cache-limit <cache-limit> [warning-threshold <percent>] [reserve-list <prefix-list-name>]", "no ipv4 map-cache-limit"],
+      "args": {"cache-limit": {"kind": "Number", "min": 1, "max": 11264}, "percent": {"kind": "Number", "min": 0, "max": 100}, "prefix-list-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4) at network-advantage kept 'ipv4 map-cache-limit 11264' under 'router lisp' and took it at boot; its ? gave <1-11264>, warning-threshold <0-100> and reserve-list WORD"
     }
   ]
 }

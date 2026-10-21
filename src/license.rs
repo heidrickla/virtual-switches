@@ -106,18 +106,43 @@ pub const TAKEN: &[(&str, &str, &str)] = &[("network-essentials", "config", "l2 
 /// of its start as measured or a unique start of it among the keywords offered before it
 /// (`keywords`, by the text before the word; `context::stands_for`).
 pub fn taken(level: &str, mode: &str, line: &str, keywords: impl Fn(&str) -> Vec<String>) -> bool {
+    TAKEN
+        .iter()
+        .any(|(l, m, start)| *l == level && *m == mode && begins(line, start, &keywords))
+}
+
+/// `TAKEN` entries measured on one image (book, release) at a level its own crawl keys: the lab
+/// C9200L-48T-4G (17.6.4) took `l2 traceroute` at network-advantage too, its `?` listing no `l2`.
+pub const TAKEN_ON: &[((&str, &str), &str, &str, &str)] = &[(
+    crate::context::C9200_17_6,
+    "network-advantage",
+    "config",
+    "l2 traceroute",
+)];
+
+/// `taken`, or a `TAKEN_ON` entry for `image` (book, release).
+pub fn taken_on(
+    image: (&str, &str),
+    level: &str,
+    mode: &str,
+    line: &str,
+    keywords: impl Fn(&str) -> Vec<String>,
+) -> bool {
+    taken(level, mode, line, &keywords)
+        || TAKEN_ON.iter().any(|(i, l, m, start)| {
+            *i == image && *l == level && *m == mode && begins(line, start, &keywords)
+        })
+}
+
+/// Whether `line` begins with `start`, each word as measured or a unique start of it.
+fn begins(line: &str, start: &str, keywords: impl Fn(&str) -> Vec<String>) -> bool {
     let toks = crate::cli::tokens(line);
-    TAKEN.iter().any(|(l, m, start)| {
-        *l == level && *m == mode && {
-            let want: Vec<&str> = start.split_whitespace().collect();
-            toks.len() >= want.len()
-                && toks.iter().zip(&want).all(|(t, w)| {
-                    t.text.eq_ignore_ascii_case(w)
-                        || crate::context::stands_for(&t.text, w, &keywords(&line[..t.at]))
-                            == Some(false)
-                })
-        }
-    })
+    let want: Vec<&str> = start.split_whitespace().collect();
+    toks.len() >= want.len()
+        && toks.iter().zip(&want).all(|(t, w)| {
+            t.text.eq_ignore_ascii_case(w)
+                || crate::context::stands_for(&t.text, w, &keywords(&line[..t.at])) == Some(false)
+        })
 }
 
 /// How `word`, first on a line in `mode`, stands for one `level` takes though its `?` lists it
@@ -299,6 +324,50 @@ mod tests {
             |_| vec![]
         ));
         assert!(!taken(ess, "config-if", "l2 traceroute", |_| vec![]));
+    }
+
+    /// An image's own measured start holds on that image and level alone; the level-wide ones hold
+    /// on every image.
+    #[test]
+    fn an_image_s_taken_start_holds_on_that_image_and_level_alone() {
+        let adv = "network-advantage";
+        let none = |_: &str| vec![];
+        let c9200 = ("c9200", "17.6");
+        assert!(taken_on(c9200, adv, "config", "l2 traceroute", none));
+        assert!(taken_on(c9200, adv, "config", "L2 TRACEROUTE", none));
+        assert!(!taken_on(c9200, adv, "config", "l2 vfi v1 manual", none));
+        assert!(!taken_on(c9200, adv, "config-if", "l2 traceroute", none));
+        assert!(!taken_on(
+            ("c9200", "17.15"),
+            adv,
+            "config",
+            "l2 traceroute",
+            none
+        ));
+        assert!(!taken_on(
+            ("c9300", "17.6"),
+            adv,
+            "config",
+            "l2 traceroute",
+            none
+        ));
+        assert!(!taken_on(c9200, "lanbase", "config", "l2 traceroute", none));
+        assert!(taken_on(
+            ("c9300", "17.6"),
+            "network-essentials",
+            "config",
+            "l2 traceroute",
+            none
+        ));
+        // a unique start stands for the measured word among the keywords offered before it
+        let offered = |text: &str| -> Vec<String> {
+            if text.is_empty() {
+                vec!["l2protocol-tunnel".into(), "lacp".into()]
+            } else {
+                vec!["traceroute".into(), "vfi".into()]
+            }
+        };
+        assert!(taken_on(c9200, adv, "config", "l2 tracer", offered));
     }
 
     /// A measured first word or line start stands for its unique abbreviations among the keywords

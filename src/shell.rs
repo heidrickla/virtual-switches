@@ -3550,7 +3550,7 @@ impl<'a> Session<'a> {
             return Some(o);
         }
         if let Some(l) = level.as_deref()
-            && crate::license::taken(l, mode, line, |text| self.keywords_before(i, l, mode, text))
+            && self.level_takes(i, l, mode, line)
         {
             return None;
         }
@@ -3587,6 +3587,19 @@ impl<'a> Session<'a> {
             }
         }
         None
+    }
+
+    /// Whether `level` takes `line` in `mode` on this image though its crawl offers no such line
+    /// (`license::taken_on`), read in the context of frame `i`.
+    fn level_takes(&self, i: usize, level: &str, mode: &str, line: &str) -> bool {
+        let book = crate::grammars::book_of(&self.engine.grammar.platform).unwrap_or("");
+        crate::license::taken_on(
+            (book, &self.engine.grammar.release),
+            level,
+            mode,
+            line,
+            |text| self.keywords_before(i, level, mode, text),
+        )
     }
 
     /// The keywords offered after `text` in `mode` and the context of frame `i` at `level`: the held
@@ -3699,9 +3712,9 @@ impl<'a> Session<'a> {
         // need list them
         if ["do", "end"].contains(&first.as_str())
             || crate::context::unjudged(mode, line, configured)
-            || level.as_deref().is_some_and(|l| {
-                crate::license::taken(l, mode, line, |text| self.keywords_before(i, l, mode, text))
-            })
+            || level
+                .as_deref()
+                .is_some_and(|l| self.level_takes(i, l, mode, line))
         {
             return None;
         }
@@ -5761,6 +5774,8 @@ mod tests {
         let mut s = Session::new(&e, Device::new(stack));
         s.frames.push(Frame::top("config"));
         for (line, mode) in [
+            // the switch took the AAA lines below on a base holding `aaa new-model`
+            ("aaa new-model", "config"),
             ("coap proxy", "config-coap-proxy"),
             ("exit", "config"),
             ("telemetry ietf subscription 101", "config-mdt-subs"),
@@ -5899,6 +5914,47 @@ mod tests {
     }
 
     #[test]
+    fn a_c9200_runs_the_lisp_process_at_network_advantage_alone() {
+        // the lab C9200L-48T-4G (17.6.4) took `router lisp` and its map-cache limit at
+        // network-advantage, from global configuration and as a block after a named EIGRP one,
+        // and refused `router lisp` under `lisp` at network-essentials
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = || crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack()));
+        s.boot_level = Some("network-advantage".into());
+        for (line, mode) in [
+            ("enable", "privileged"),
+            ("configure terminal", "config"),
+            ("router eigrp NAMEA", "config-router"),
+            ("router lisp", "config-router-lisp"),
+            (
+                "ipv4 map-cache-limit 100 warning-threshold 80 reserve-list PLA",
+                "config-router-lisp",
+            ),
+            ("ipv4 map-cache-limit 11264", "config-router-lisp"),
+            ("exit", "config"),
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+            assert_eq!(s.mode(), mode, "after {line}");
+        }
+        assert_eq!(s.type_line("router lisp").1, Result::Ok);
+        let (out, r) = s.type_line("ipv4 map-cache-limit 11265");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(s.mode(), "config-router-lisp");
+        let mut s = Session::new(&e, Device::new(stack()));
+        s.boot_level = Some("network-essentials".into());
+        for line in ["enable", "configure terminal"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, r) = s.type_line("router lisp");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config)#router ".len());
+        assert_eq!(s.mode(), "config");
+    }
+
+    #[test]
     fn a_c9200l_refuses_a_port_mode_change_under_port_control_and_an_auth_proxy_rule_it_lacks() {
         // the lab C9200L-48T-4G (17.6.4)
         let r = crate::release::Release::parse("17.6").unwrap();
@@ -5910,9 +5966,11 @@ mod tests {
             assert_eq!(r, Result::Error, "{line}: {out:?}");
             out.join("\n")
         };
+        // port control needs `aaa new-model`, which the switch's base held
         for line in [
             "enable",
             "configure terminal",
+            "aaa new-model",
             "interface GigabitEthernet1/0/5",
         ] {
             assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
@@ -9553,18 +9611,19 @@ mod tests {
                 ],
             ),
         ];
-        // the lab C9200L-48T-4G (17.6.4) refused it alike at network-essentials
-        let essentials = "network-essentials";
-        let c9200 = held_engine_of("c9200", "17.6", essentials, STEPS);
-        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
-        let mut s = Session::new(&c9200, Device::new(stack));
-        s.boot_level = Some(essentials.into());
-        for line in ["enable", "configure terminal"] {
-            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        // the lab C9200L-48T-4G (17.6.4) refused it alike at both levels
+        for level in ["network-essentials", "network-advantage"] {
+            let c9200 = held_engine_of("c9200", "17.6", level, STEPS);
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(&c9200, Device::new(stack));
+            s.boot_level = Some(level.into());
+            for line in ["enable", "configure terminal"] {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{level} {line}");
+            }
+            let (out, r) = s.type_line("class C1");
+            assert_eq!(r, Result::Error, "{level} {out:?}");
+            assert_eq!(caret_at(&out), "Switch(config)#class".len(), "{level}");
         }
-        let (out, r) = s.type_line("class C1");
-        assert_eq!(r, Result::Error, "{out:?}");
-        assert_eq!(caret_at(&out), "Switch(config)#class".len());
         let e = held_engine(STEPS);
         let mut s = configured(&e, &[]);
         let (out, r) = s.type_line("class C1");
@@ -9580,6 +9639,43 @@ mod tests {
         let mut plain = configured(&books, &[]);
         assert_eq!(plain.type_line("class C1").1, Result::Ok);
         assert_eq!(plain.mode(), "config-cmap");
+    }
+
+    #[test]
+    fn an_image_takes_its_measured_start_though_its_own_crawl_offers_no_first_word() {
+        const STEPS: &[(&str, &[&str])] = &[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)# ?",
+                &[
+                    "Configure commands:",
+                    "  l2protocol-tunnel  Configure l2protocol-tunnel parameters",
+                    "  lacp               LACP configuration",
+                    "",
+                ],
+            ),
+            (
+                "Switch(config)#l2protocol-tunnel ?",
+                &["  cos     Class of Service", "  global  Global settings"],
+            ),
+        ];
+        let open = |book: &str, level: &str, stack: &str| {
+            let e = held_engine_of(book, "17.6", level, STEPS);
+            let stack = crate::platform::parse_stack(stack).unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.boot_level = Some(level.into());
+            for line in ["enable", "configure terminal"] {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+            }
+            s.type_line("l2 traceroute")
+        };
+        // the lab C9200L-48T-4G (17.6.4) took it at network-advantage, its `?` listing no `l2`
+        let (out, r) = open("c9200", "network-advantage", "C9200L-48T-4G");
+        assert_eq!(r, Result::Ok, "{out:?}");
+        // another image's crawl at that level still reads `l2` as the keyword it offers
+        let (out, r) = open("c9300", "network-advantage", "C9300-24T");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config)#l2 ".len());
     }
 
     #[test]

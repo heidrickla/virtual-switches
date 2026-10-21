@@ -247,7 +247,6 @@ pub(crate) const C9300_17_6: (&str, &str) = ("c9300", "17.6");
 pub(crate) const C9200_17_6: (&str, &str) = ("c9200", "17.6");
 const BOTH: &[&str] = &["network-advantage", "network-essentials"];
 const ADVANTAGE: &[&str] = &["network-advantage"];
-const ESSENTIALS: &[&str] = &["network-essentials"];
 
 /// A `REFUSED` entry under `ptp profile dot1as`, refused at its second word.
 const fn dot1as(words: &'static [&'static str]) -> Refusal {
@@ -266,7 +265,7 @@ const fn dot1as(words: &'static [&'static str]) -> Refusal {
 /// `class <name>` at global configuration past `class` at both levels and took `class-map <name>`;
 /// at network-advantage under `ptp profile dot1as` it refused `ptp mode` and `ptp transport` at
 /// their second word and took `ptp priority1`. The lab C9200L-48T-4G (17.6.4) refused `class
-/// <name>` alike at network-essentials.
+/// <name>` alike at both levels.
 pub const REFUSED: &[Refusal] = &[
     Refusal {
         book: C9300_17_6.0,
@@ -280,7 +279,7 @@ pub const REFUSED: &[Refusal] = &[
     Refusal {
         book: C9200_17_6.0,
         release: C9200_17_6.1,
-        levels: ESSENTIALS,
+        levels: BOTH,
         mode: "config",
         words: &["class", "<word>"],
         state: "",
