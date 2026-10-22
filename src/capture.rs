@@ -1068,8 +1068,17 @@ pub fn write(c: &Capture, out: &Path, pending: Option<&Path>) -> Result<Vec<Path
 }
 
 /// The `ssh` arguments of a session: a terminal for IOS's prompts, and the key as the only way in
-/// (`BatchMode=yes` fails the session where a password would be asked).
-pub fn ssh_args(target: &str, key: Option<&str>) -> Vec<String> {
+/// (`BatchMode=yes` fails the session where a password would be asked). `host_keys` is ssh's
+/// `StrictHostKeyChecking`, `accept-new` or `yes`; the target follows `--`, so it is never an option.
+pub fn ssh_args(target: &str, key: Option<&str>, host_keys: &str) -> Result<Vec<String>, String> {
+    if target.is_empty() || target.starts_with('-') {
+        return Err(format!("{target:?}: not an SSH target"));
+    }
+    if !matches!(host_keys, "accept-new" | "yes") {
+        return Err(format!(
+            "VSWITCH_SSH_HOST_KEYS={host_keys}: accept-new or yes"
+        ));
+    }
     let mut a: Vec<String> = [
         "-tt",
         "-o",
@@ -1077,22 +1086,23 @@ pub fn ssh_args(target: &str, key: Option<&str>) -> Vec<String> {
         "-o",
         "ConnectTimeout=20",
         "-o",
-        "StrictHostKeyChecking=accept-new",
     ]
     .map(String::from)
     .to_vec();
+    a.push(format!("StrictHostKeyChecking={host_keys}"));
     if let Some(k) = key {
         a.extend(["-i", k, "-o", "IdentitiesOnly=yes"].map(String::from));
     }
-    a.push(target.to_string());
-    a
+    a.extend(["--".to_string(), target.to_string()]);
+    Ok(a)
 }
 
 /// Runs the commands in one SSH session and returns what the switch printed.
 pub fn session(target: &str, key: Option<&str>, commands: &[&str]) -> Result<String, String> {
     let ssh = std::env::var("VSWITCH_SSH").unwrap_or_else(|_| "ssh".into());
+    let host_keys = std::env::var("VSWITCH_SSH_HOST_KEYS").unwrap_or_else(|_| "accept-new".into());
     let mut cmd = Command::new(&ssh);
-    cmd.args(ssh_args(target, key))
+    cmd.args(ssh_args(target, key, &host_keys)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1141,11 +1151,28 @@ mod tests {
 
     #[test]
     fn a_session_takes_the_key_and_never_a_password_prompt() {
-        let a = ssh_args("developer@10.10.20.181", Some("k"));
+        let a = ssh_args("developer@10.10.20.181", Some("k"), "accept-new").unwrap();
         assert_eq!(a[0], "-tt");
         assert!(a.windows(2).any(|w| w == ["-o", "BatchMode=yes"]));
         assert!(a.windows(2).any(|w| w == ["-i", "k"]));
-        assert_eq!(a.last().unwrap(), "developer@10.10.20.181");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-o", "StrictHostKeyChecking=accept-new"])
+        );
+        assert_eq!(a[a.len() - 2..], ["--", "developer@10.10.20.181"]);
+    }
+
+    #[test]
+    fn an_ssh_target_is_never_read_as_an_option() {
+        for target in ["-oProxyCommand=calc", "-F/tmp/x", ""] {
+            assert!(ssh_args(target, None, "accept-new").is_err(), "{target}");
+        }
+        let a = ssh_args("lab@192.0.2.10", None, "yes").unwrap();
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-o", "StrictHostKeyChecking=yes"])
+        );
+        assert!(ssh_args("lab@192.0.2.10", None, "no").is_err());
     }
 
     #[cfg(all(test, captures))]

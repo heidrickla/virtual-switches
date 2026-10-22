@@ -433,7 +433,8 @@ At the privileged prompt of a session whose image and level a sweep covers:
 The `?` follows show commands only, so IOS runs the line it redisplays and a show command changes nothing. `show vlan brief` runs at widths 80 and 132 to show how the switch wraps.
 
 - SSH runs with `BatchMode=yes`: key authentication only, never a password prompt. `--key` adds `-i <file>` with `IdentitiesOnly=yes`.
-- The session also sets `ConnectTimeout=20` and `StrictHostKeyChecking=accept-new`, and allocates a terminal.
+- The session also sets `ConnectTimeout=20` and `StrictHostKeyChecking=accept-new`, and allocates a terminal. `VSWITCH_SSH_HOST_KEYS=yes` connects only to a host whose key is already in `known_hosts`.
+- The target follows `--`; a target starting with `-` is refused.
 - `VSWITCH_SSH` names another ssh program.
 - The capture writes `<out>/<book>-<release>/<host>-running-config.txt` and `<host>-show.log`, the layout of a captures folder.
 - Both files are swept of secrets. Serial numbers are removed (`show version` serial lines and processor board ID, `show inventory` `SN:`, a configuration's `license udi ... sn`). A value either sweep removes is removed wherever else it stands in the session.

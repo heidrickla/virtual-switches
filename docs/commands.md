@@ -53,6 +53,7 @@ A failed read or a refused option exits 1 with its message on stderr.
 |---|---|
 | `VSWITCH_HOME` | the folder of the switch list, its configurations and the sweep folder (see [terminal.md](terminal.md)) |
 | `VSWITCH_SSH` | the `ssh` program that `capture` and `probe` run, `ssh` when unset |
+| `VSWITCH_SSH_HOST_KEYS` | ssh's `StrictHostKeyChecking` for `capture` and `probe`: `accept-new` when unset, or `yes` |
 | `VSWITCH_CAPTURES` | at build time, the folder of captures a build embeds; `coverage` exists only in such a build |
 
 ## Switch list and console
