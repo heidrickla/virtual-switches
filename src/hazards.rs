@@ -16,8 +16,15 @@ pub struct Hazard {
     /// the command's words, whole: its keywords, and at `port` the interface it crashed on
     pub command: &'static str,
     /// which word of `command` names an interface, where the crash was measured on that interface
-    /// alone; a line names it as IOS reads one, abbreviated and in one word or two (`tu 0`)
+    /// alone, or on every interface of its type where that word ends `<n>` (`Tunnel<n>`); a line names
+    /// it as IOS reads one, abbreviated and in one word or two (`tu 0`)
     pub port: Option<usize>,
+    /// whether the command is a configuration line, typed in global configuration; an EXEC command
+    /// otherwise
+    pub config: bool,
+    /// the one licence level it crashed at, where the other took it; none where it crashed at every
+    /// level tried
+    pub level: Option<&'static str>,
     /// whether the command crashes with any further words too
     pub subtree: bool,
     /// shorter keywords IOS has where one of the command's stands, each a start of it: a word spelling
@@ -27,8 +34,8 @@ pub struct Hazard {
     pub effect: &'static str,
 }
 
-/// Each crashed a lab switch at network-advantage over SSH: IOSd segfaulted (`linux_iosd_image has
-/// failed (rc 139)`) and the switch reloaded with `Critical software exception`.
+/// Each crashed a lab switch over SSH or its console: IOSd segfaulted (`linux_iosd_image has failed
+/// (rc 139)`) and the switch reloaded with `Critical software exception`.
 pub const KNOWN: &[Hazard] = &[
     // a C9300-24T with a C9300-NM-4G, each typed alone on one SSH session; no published Cisco bug
     // names either
@@ -40,6 +47,8 @@ pub const KNOWN: &[Hazard] = &[
         date: "2026-10-17",
         command: "show ipv6 pim gir",
         port: None,
+        config: false,
+        level: None,
         subtree: false,
         shorter: &["i", "ip"],
         effect: "IOSd segfault and reload",
@@ -52,28 +61,60 @@ pub const KNOWN: &[Hazard] = &[
         date: "2026-10-17",
         command: "show platform software tdl-database content bp",
         port: None,
+        config: false,
+        level: None,
         subtree: true,
         shorter: &[],
         effect: "IOSd segfault and reload",
     },
-    // a C9200L-48T-4G, each the last command of its crashinfo file in a show sweep: the same forms
-    // on the other interfaces swept answered, and at 17.6.4 the Tunnel0 forms closed the session
-    // without a reload
-    max_power("show interfaces Tunnel0 transceiver max-power"),
-    max_power("show interfaces Tunnel0 transceiver max-power violation"),
-    max_power("show interfaces GigabitEthernet0/0 transceiver max-power"),
-    max_power("show interfaces GigabitEthernet0/0 transceiver max-power violation"),
+    // a C9200L-48T-4G, each the last command of its crashinfo file: in a show sweep at
+    // network-advantage, then Tunnel1 there and the Tunnel0 and GigabitEthernet0/0 forms without
+    // `violation` at network-essentials, one per boot on the console. A tunnel logs `ether sub-block
+    // missing` first; the same forms on GigabitEthernet1/x, Port-channel1 and Vlan10 answered, and at
+    // 17.6.4 the Tunnel0 forms closed the session without a reload
+    max_power(
+        "show interfaces Tunnel<n> transceiver max-power",
+        "2026-10-22",
+    ),
+    max_power(
+        "show interfaces Tunnel<n> transceiver max-power violation",
+        "2026-10-21",
+    ),
+    max_power(
+        "show interfaces GigabitEthernet0/0 transceiver max-power",
+        "2026-10-22",
+    ),
+    max_power(
+        "show interfaces GigabitEthernet0/0 transceiver max-power violation",
+        "2026-10-21",
+    ),
+    // the same switch at network-essentials, from its examples base over SSH and from the base alone on
+    // the console; network-advantage took it
+    Hazard {
+        families: &[Family::C9200L, Family::C9200, Family::C9200B],
+        release: "17.15.6",
+        date: "2026-10-22",
+        command: "cts environment-data enable",
+        port: None,
+        config: true,
+        level: Some("network-essentials"),
+        subtree: false,
+        shorter: &[],
+        effect: "IOSd segfault and reload",
+    },
 ];
 
 /// A `transceiver max-power` form that crashed the lab C9200L-48T-4G at 17.15.6, on the interface
 /// it names (the third word); the 9200 books cover the 9200, 9200L and 9200 B.
-const fn max_power(command: &'static str) -> Hazard {
+const fn max_power(command: &'static str, date: &'static str) -> Hazard {
     Hazard {
         families: &[Family::C9200L, Family::C9200, Family::C9200B],
         release: "17.15.6",
-        date: "2026-10-21",
+        date,
         command,
         port: Some(2),
+        config: false,
+        level: None,
         subtree: false,
         shorter: &[],
         effect: "IOSd segfault and reload",
@@ -118,10 +159,17 @@ impl Hazard {
 
     fn measured_on(&self) -> String {
         let family = self.families.first().map_or("switch", |f| f.name());
-        format!("a {family} at {}", crate::probe::named(self.release))
+        let level = self.level.map(|l| format!(" {l}")).unwrap_or_default();
+        format!("a {family} at {}{level}", crate::probe::named(self.release))
     }
 
-    /// Whether an EXEC line's words name the command: each word a start of its keyword, in any case,
+    /// Whether it applies to a switch of `family` at licence `level`; with either not known, to any.
+    fn applies(&self, family: Option<Family>, level: Option<&str>) -> bool {
+        family.is_none_or(|f| self.families.contains(&f))
+            && level.is_none_or(|l| self.level.is_none_or(|m| m == l))
+    }
+
+    /// Whether a line's words name the command: each word a start of its keyword, in any case,
     /// the interface at `port` by type and number, and more words only under a subtree.
     fn named_by(&self, words: &[String]) -> bool {
         let mut at = 0;
@@ -144,17 +192,22 @@ impl Hazard {
 }
 
 /// How many of the words `first` and `second` name the interface `measured` (`Tunnel0`): its type by
-/// IOS's abbreviations and its number, each part equal by value; none where they name another.
+/// IOS's abbreviations and its number, each part equal by value, or any whole number where `measured`
+/// ends `<n>`; none where they name another.
 fn port_named(measured: &str, first: Option<&String>, second: Option<&String>) -> Option<usize> {
-    let (ty, number, _) = cli::interface_name(measured, None)?;
     let (typed, n, used) = cli::interface_name(first?, second.map(String::as_str))?;
+    if let Some(any) = measured.strip_suffix("<n>") {
+        let (ty, _, _) = cli::interface_name(&format!("{any}0"), None)?;
+        return (typed == ty && n.parse::<u32>().is_ok()).then_some(used);
+    }
+    let (ty, number, _) = cli::interface_name(measured, None)?;
     let parts =
         |n: &str| -> Option<Vec<u32>> { n.split(['/', '.']).map(|p| p.parse().ok()).collect() };
     (typed == ty && n.contains('.') == number.contains('.') && parts(&n)? == parts(&number)?)
         .then_some(used)
 }
 
-/// An EXEC line's words as IOS reads them: before any `|`, lowercase, split on spaces and tabs.
+/// A line's words as IOS reads them: before any `|`, lowercase, split on spaces and tabs.
 fn words(line: &str) -> Vec<String> {
     line.split('|')
         .next()
@@ -177,17 +230,34 @@ pub fn exec_line<'a>(mode: &str, line: &'a str) -> Option<&'a str> {
         .then(|| &line[toks.get(1).map_or(line.len(), |t| t.at)..])
 }
 
-/// The known crash an EXEC line runs on a switch of `family`; with no family, on any.
-pub fn find(family: Option<Family>, exec: &str) -> Option<&'static Hazard> {
+/// The known crash an EXEC line runs on a switch of `family` at licence `level`; with either not
+/// known, on any.
+pub fn find(family: Option<Family>, level: Option<&str>, exec: &str) -> Option<&'static Hazard> {
     let w = words(exec);
     KNOWN
         .iter()
-        .find(|h| family.is_none_or(|f| h.families.contains(&f)) && h.named_by(&w))
+        .find(|h| !h.config && h.applies(family, level) && h.named_by(&w))
 }
 
-/// The known crash a line typed in `mode` runs on a switch of `family`; with no family, on any.
-pub fn typed(family: Option<Family>, mode: &str, line: &str) -> Option<&'static Hazard> {
-    find(family, exec_line(mode, line)?)
+/// The known crash a line typed in `mode` runs on a switch of `family` at licence `level`; with either
+/// not known, on any. A configuration line is read in any configuration mode: IOS takes a line a
+/// submode lacks in global configuration.
+pub fn typed(
+    family: Option<Family>,
+    level: Option<&str>,
+    mode: &str,
+    line: &str,
+) -> Option<&'static Hazard> {
+    if cli::is_config(mode) {
+        let w = words(line);
+        if let Some(h) = KNOWN
+            .iter()
+            .find(|h| h.config && h.applies(family, level) && h.named_by(&w))
+        {
+            return Some(h);
+        }
+    }
+    find(family, level, exec_line(mode, line)?)
 }
 
 #[cfg(test)]
@@ -213,7 +283,7 @@ mod tests {
             "show platform software tdl-database content bp oper nodes",
         ] {
             for mode in ["exec", "privileged"] {
-                assert!(typed(C9300, mode, line).is_some(), "{mode}: {line}");
+                assert!(typed(C9300, None, mode, line).is_some(), "{mode}: {line}");
             }
         }
         // from configuration only through `do` or `do-exec`, whole or abbreviated
@@ -224,11 +294,11 @@ mod tests {
             "do-e sh plat soft tdl con bp oper local",
         ] {
             for mode in ["config", "config-if", "config-vlan"] {
-                assert!(typed(C9300, mode, line).is_some(), "{mode}: {line}");
+                assert!(typed(C9300, None, mode, line).is_some(), "{mode}: {line}");
             }
         }
-        assert!(typed(C9300, "config", "show ipv6 pim gir").is_none());
-        assert!(typed(C9300, "privileged", "do show ipv6 pim gir").is_none());
+        assert!(typed(C9300, None, "config", "show ipv6 pim gir").is_none());
+        assert!(typed(C9300, None, "privileged", "do show ipv6 pim gir").is_none());
     }
 
     #[test]
@@ -256,7 +326,7 @@ mod tests {
             "show platform software tdl-database content bpx",
             "show | show ipv6 pim gir",
         ] {
-            assert!(typed(C9300, "privileged", line).is_none(), "{line}");
+            assert!(typed(C9300, None, "privileged", line).is_none(), "{line}");
         }
         for family in [
             Family::C9200,
@@ -270,18 +340,18 @@ mod tests {
                 "show platform software tdl-database content bp config nodes 0",
             ] {
                 assert!(
-                    typed(Some(family), "privileged", line).is_none(),
+                    typed(Some(family), None, "privileged", line).is_none(),
                     "{family:?}: {line}"
                 );
             }
         }
         // a family not known is any family
-        assert!(typed(None, "privileged", "show ipv6 pim gir").is_some());
+        assert!(typed(None, None, "privileged", "show ipv6 pim gir").is_some());
     }
 
     #[test]
     fn the_warning_says_crashes_on_the_train_measured_and_crashed_elsewhere() {
-        let h = typed(C9300, "privileged", "show ipv6 pim gir").unwrap();
+        let h = typed(C9300, None, "privileged", "show ipv6 pim gir").unwrap();
         assert_eq!(
             h.warning("17.6"),
             "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4)"
@@ -312,24 +382,35 @@ mod tests {
             "sh int gi0/0 tr max-power violation",
             "show interfaces gigabitethernet 0/0 transceiver max-power",
             "show interfaces Gi00/0 transceiver max-power",
+            "show interfaces Tunnel1 transceiver max-power",
+            "sh int tu 12 trans max-power violation",
         ] {
             for family in [Family::C9200L, Family::C9200, Family::C9200B] {
                 assert!(
-                    typed(Some(family), "privileged", line).is_some(),
+                    typed(Some(family), None, "privileged", line).is_some(),
                     "{family:?}: {line}"
                 );
             }
-            assert!(typed(None, "privileged", line).is_some(), "{line}");
-            assert!(typed(C9300, "privileged", line).is_none(), "{line}");
+            assert!(typed(None, None, "privileged", line).is_some(), "{line}");
+            assert!(typed(C9300, None, "privileged", line).is_none(), "{line}");
         }
-        assert!(typed(C9200L, "config-if", "do show int Tu0 transceiver max-power").is_some());
-        assert!(typed(C9200L, "config", "show int Tu0 transceiver max-power").is_none());
+        assert!(
+            typed(
+                C9200L,
+                None,
+                "config-if",
+                "do show int Tu0 transceiver max-power"
+            )
+            .is_some()
+        );
+        assert!(typed(C9200L, None, "config", "show int Tu0 transceiver max-power").is_none());
         // the forms the switch answered, other interfaces and other words
         for line in [
             "show interfaces GigabitEthernet1/0/1 transceiver max-power",
             "show interfaces GigabitEthernet1/0/1 transceiver max-power violation",
             "show interfaces Gi1/1/1 transceiver max-power",
-            "show interfaces Tunnel1 transceiver max-power",
+            "show interfaces Tunnel0.1 transceiver max-power",
+            "show interfaces Tunnel transceiver max-power",
             "show interfaces Gi0/0.1 transceiver max-power",
             "show interfaces Gi0 transceiver max-power",
             "show interfaces Vlan0 transceiver max-power",
@@ -338,14 +419,14 @@ mod tests {
             "show interfaces transceiver max-power",
             "show interfaces t0 transceiver max-power",
         ] {
-            assert!(typed(C9200L, "privileged", line).is_none(), "{line}");
+            assert!(typed(C9200L, None, "privileged", line).is_none(), "{line}");
         }
     }
 
     #[test]
     fn a_c9200_hazard_s_warning_and_explain_name_its_interface_and_release() {
-        let h = typed(C9200L, "privileged", "sh int tu0 trans max").unwrap();
-        assert_eq!(h.command, "show interfaces Tunnel0 transceiver max-power");
+        let h = typed(C9200L, None, "privileged", "sh int tu0 trans max").unwrap();
+        assert_eq!(h.command, "show interfaces Tunnel<n> transceiver max-power");
         assert_eq!(
             h.warning("17.15"),
             "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6)"
@@ -356,8 +437,52 @@ mod tests {
         );
         assert_eq!(
             h.described("17.15"),
-            "'show interfaces Tunnel0 transceiver max-power' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6), measured 2026-10-21"
+            "'show interfaces Tunnel<n> transceiver max-power' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6), measured 2026-10-22"
         );
+    }
+
+    #[test]
+    fn a_configuration_line_is_a_hazard_in_configuration_at_its_level() {
+        let essentials = Some("network-essentials");
+        for line in [
+            "cts environment-data enable",
+            "CTS ENV EN",
+            "cts  environment-data\tenable ",
+        ] {
+            for mode in ["config", "config-if", "config-vlan"] {
+                for level in [essentials, None] {
+                    assert!(typed(C9200L, level, mode, line).is_some(), "{mode}: {line}");
+                }
+            }
+            assert!(typed(None, None, "config", line).is_some(), "{line}");
+            // network-advantage took it; EXEC has no such command, and the 9300 was not measured
+            assert!(typed(C9200L, Some("network-advantage"), "config", line).is_none());
+            assert!(typed(C9200L, essentials, "privileged", line).is_none());
+            assert!(typed(C9300, None, "config", line).is_none());
+        }
+        for line in [
+            "cts environment-data",
+            "cts environment-data enable x",
+            "no cts environment-data enable",
+            "do cts environment-data enable",
+            "cts credentials id x password y",
+        ] {
+            assert!(
+                typed(C9200L, essentials, "config", line).is_none(),
+                "{line}"
+            );
+        }
+        let h = typed(C9200L, essentials, "config", "cts env en").unwrap();
+        assert_eq!(
+            h.warning("17.15"),
+            "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6 network-essentials)"
+        );
+        assert_eq!(
+            h.described("17.15"),
+            "'cts environment-data enable' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6 network-essentials), measured 2026-10-22"
+        );
+        // an EXEC hazard is not read bare in configuration
+        assert!(find(C9200L, essentials, "cts environment-data enable").is_none());
     }
 
     /// Every keyword a hazard's book offers at its release where one of its keywords stands, and
@@ -378,7 +503,8 @@ mod tests {
                     continue;
                 }
                 let before = cli::tokens(&keywords[..i].join(" "));
-                for next in engine.next("privileged", &before).0 {
+                let mode = if h.config { "config" } else { "privileged" };
+                for next in engine.next(mode, &before).0 {
                     if let cli::Next::Kw { kw, .. } = next {
                         let kw = kw.to_lowercase();
                         if kw != *k && k.starts_with(kw.as_str()) {

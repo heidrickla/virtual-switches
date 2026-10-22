@@ -218,6 +218,7 @@ A configuration a switch printed (one with a `version` line) keeps its layout wh
 ### Settings and instances
 
 - A later value of a setting replaces the earlier (`duplex`, `vtp mode`).
+- `no fqdn ttl-timeout-factor <value>` removes the line when it names the value set; another value changes nothing (the Catalyst 9200 at 17.15.6).
 - A command that takes several instances keeps one line per instance, named by the arguments that name it (`username`, `ntp server`, `ip route`, `neighbor`, `network`, `monitor session` by its session), and `no` naming an instance removes it whatever it sets.
 - A default turned back on prints nothing, while an interface keeps `no cdp enable`, `no lldp transmit` and `receive`, `no keepalive`, `no ip redirects`, `no ip proxy-arp` and `no ip unreachables`.
 - `no switchport` drops a port's switchport lines and `switchport` its addresses.
@@ -663,29 +664,32 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 
 ## Commands known to crash a switch
 
-A line a lab switch crashed on prints a warning when Enter is pressed on it, as a line of its own after the switch's whole answer, which is unchanged: the caret stays under the typed line, and the warning follows the `%` message and its blank line, before the next prompt. `?` and Tab print none. The line is read as IOS reads it: each word a start of its keyword in any case, a whole shorter keyword read as itself (`show ip` is not `show ipv6`), what follows `|` ignored, and in configuration mode only after `do` or `do-exec`. An interface in a command is read by its type's abbreviation and its number, in one word or two (`tu0`, `tu 0`, `gi0/0`), and the line is a hazard on that interface alone. The table is `src/hazards.rs`.
+A line a lab switch crashed on prints a warning when Enter is pressed on it, as a line of its own after the switch's whole answer, which is unchanged: the caret stays under the typed line, and the warning follows the `%` message and its blank line, before the next prompt. `?` and Tab print none. The line is read as IOS reads it: each word a start of its keyword in any case, a whole shorter keyword read as itself (`show ip` is not `show ipv6`), what follows `|` ignored. An EXEC command is read in configuration mode only after `do` or `do-exec`; a configuration line is read in global configuration and its submodes, which IOS leaves for a line they lack. An interface in a command is read by its type's abbreviation and its number, in one word or two (`tu0`, `tu 0`, `gi0/0`), and the line is a hazard on that interface alone, or on every interface of its type where the table writes `<n>`. A hazard limited to a licence level warns only at that level. The table is `src/hazards.rs`.
 
 | Command | Model | Release | Effect |
 |---|---|---|---|
 | `show ipv6 pim gir` | Catalyst 9300 | IOS XE 17.6.4 | IOSd segfault and reload |
 | `show platform software tdl-database content bp`, with any words after it | Catalyst 9300 | IOS XE 17.6.4 | IOSd segfault and reload |
-| `show interfaces Tunnel0 transceiver max-power` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
-| `show interfaces Tunnel0 transceiver max-power violation` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
+| `show interfaces Tunnel<n> transceiver max-power` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
+| `show interfaces Tunnel<n> transceiver max-power violation` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
 | `show interfaces GigabitEthernet0/0 transceiver max-power` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
 | `show interfaces GigabitEthernet0/0 transceiver max-power violation` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
+| `cts environment-data enable`, a configuration line, at network-essentials | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
 
 | Switch | Warning |
 |---|---|
 | a model listed, on the train of the command's release | `% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4)` |
 | a model listed, on another release | `% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)` |
-| another model | none |
+| another model, or a licence level other than the command's | none |
 
-The `transceiver max-power` warnings name a Catalyst 9200L at IOS XE 17.15.6.
+The 9200 warnings name a Catalyst 9200L at IOS XE 17.15.6; the `cts` one adds `network-essentials`.
 
 Each Catalyst 9300 command was typed alone on one SSH session of a C9300-24T at network-advantage on 2026-10-17. IOSd segfaulted (`linux_iosd_image has failed (rc 139)`) and the switch reloaded with `Critical software exception`, answering SSH again about 4 minutes later. Each crash wrote a crashinfo file and a 58 MB system report to `crashinfo:`. `show ipv6 pim gir` faulted in the process running it, `SSH Process` over SSH; every `bp` form tried (`config local`, `config nodes`, `config nodes 0`, `oper local`, `oper nodes`) faulted in `Sched`. No published Cisco bug names either command.
 
 These answered normally on the C9300-24T: `show ip pim gir`, `show ip igmp gir`, `show ipv6 mld gir`, and the other `show platform software tdl-database content` forms (`cfgmgr`, `fpmd`, `ftm`, `ios`, `ompd`, `vdaemon`).
 
-Each `transceiver max-power` line crashed a C9200L-48T-4G at network-advantage on 2026-10-21, typed in a show sweep over SSH, and was the last command of its crashinfo file. IOSd segfaulted (`linux_iosd_image has failed (rc 139)`) and the switch reloaded with `Critical software exception`, answering SSH again about 5 minutes later. The same forms with no interface or on the sweep's other interfaces (GigabitEthernet1/x, Port-channel1, Vlan10) did not crash it. At 17.6.4 the Tunnel0 forms closed the session without a reload.
+Each `transceiver max-power` line crashed a C9200L-48T-4G at network-advantage on 2026-10-21, typed in a show sweep over SSH, and was the last command of its crashinfo file. IOSd segfaulted (`linux_iosd_image has failed (rc 139)`) and the switch reloaded with `Critical software exception`, answering SSH again about 5 minutes later. The same forms with no interface or on the sweep's other interfaces (GigabitEthernet1/x, Port-channel1, Vlan10) did not crash it. At 17.6.4 the Tunnel0 forms closed the session without a reload. On 2026-10-22, one line per boot on the console, `show interfaces Tunnel1 transceiver max-power` crashed it at network-advantage, and the Tunnel0 and GigabitEthernet0/0 forms without `violation` at network-essentials. Each tunnel crash logged `%SFF8472-3-INTERNAL_ERROR: Tu<n>: ether sub-block missing` first.
+
+`cts environment-data enable` crashed the same switch at network-essentials on 2026-10-22: in global configuration during the book examples over SSH (`SSH Process`), and from the examples base alone on the console (`Exec`). At network-advantage the line was taken and held in the running configuration.
 
 `run` prints the warning in the session; `probe` refuses the line, and `explain` names it ([commands.md](commands.md)).

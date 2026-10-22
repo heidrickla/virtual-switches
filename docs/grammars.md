@@ -191,6 +191,7 @@ A grammar is written without a timestamp, so a recompile of the same sources wri
 | `renames` | renames an argument outside the `no` form so `args` can bound it there alone (`privilege`'s level, 0 to 15 as the lab C9300 took it, its command every word after the level) |
 | `corrects` | the lines the book must document for the override to apply |
 | `platform` | the override applies at every release of that platform |
+| `no_value` | its `no` form needs the value its line states; the keywords alone are incomplete (`no fqdn ttl-timeout-factor` on the Catalyst 9200) |
 | `remove` | drops the entry as an unusable syntax |
 
 ### When a release takes an override

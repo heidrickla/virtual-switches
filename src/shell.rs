@@ -1127,7 +1127,7 @@ impl<'a> Session<'a> {
             return None;
         }
         let family = self.device.stack.family()?;
-        crate::hazards::typed(Some(family), self.mode(), line)
+        crate::hazards::typed(Some(family), self.level().as_deref(), self.mode(), line)
             .map(|h| h.warning(&self.device.release))
     }
 
@@ -5605,6 +5605,7 @@ mod tests {
                     enters: None,
                     evidence: None,
                     help: Default::default(),
+                    no_value: false,
                 })
                 .collect(),
         })
@@ -6126,11 +6127,50 @@ mod tests {
         for line in [
             "fqdn ttl-timeout-factor infinite",
             "fqdn ttl-timeout-factor 300",
-            "no fqdn ttl-timeout-factor",
         ] {
             assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
         }
         assert_eq!(s.type_line("fqdn ttl-timeout-factor 301").1, Result::Error);
+        // its no form names the value: another value changes nothing, the one set removes it
+        let (out, r) = s.type_line("no fqdn ttl-timeout-factor");
+        assert_eq!(out, ["% Incomplete command.", ""]);
+        assert_eq!(r, Result::Error);
+        let factor = |s: &Session| -> Vec<String> {
+            s.device
+                .global
+                .iter()
+                .filter(|e| e.text.starts_with("fqdn "))
+                .map(|e| e.text.clone())
+                .collect()
+        };
+        assert_eq!(factor(&s), ["fqdn ttl-timeout-factor 300"]);
+        // `infinite` replaces a number
+        for (line, after) in [
+            (
+                "no fqdn ttl-timeout-factor 200",
+                "fqdn ttl-timeout-factor 300",
+            ),
+            (
+                "no fqdn ttl-timeout-factor infinite",
+                "fqdn ttl-timeout-factor 300",
+            ),
+            (
+                "fqdn ttl-timeout-factor infinite",
+                "fqdn ttl-timeout-factor infinite",
+            ),
+            (
+                "no fqdn ttl-timeout-factor 300",
+                "fqdn ttl-timeout-factor infinite",
+            ),
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+            assert_eq!(factor(&s), [after], "{line}");
+        }
+        assert_eq!(
+            s.type_line("no fqdn ttl-timeout-factor infinite").1,
+            Result::Ok
+        );
+        assert!(factor(&s).is_empty());
         let mut s = open("network-essentials");
         let (out, r) = s.type_line("fqdn ttl-timeout-factor 100");
         assert_eq!(r, Result::Error, "{out:?}");
@@ -10851,6 +10891,26 @@ mod tests {
         s
     }
 
+    #[test]
+    fn a_9200_cts_environment_data_line_is_warned_of_at_network_essentials_alone() {
+        let r = crate::release::Release::parse("17.15").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let at = |level: &str| {
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.boot_level = Some(level.into());
+            s.type_line("enable");
+            let (t, _) = s.script("configure terminal\ncts environment-data enable\nend\n");
+            (t, s.warned)
+        };
+        let (t, warned) = at("network-essentials");
+        assert_eq!(warned, 1, "{t:#?}");
+        let crashes = "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6 network-essentials)";
+        assert!(t.iter().any(|l| l == crashes), "{t:#?}");
+        // network-advantage took it
+        let (t, warned) = at("network-advantage");
+        assert_eq!(warned, 0, "{t:#?}");
+    }
     #[test]
     fn a_refused_line_leaves_a_submode_only_where_global_configuration_reads_past_its_first_word() {
         let e = c9300_17_6();

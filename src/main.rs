@@ -400,7 +400,8 @@ fn hazard_line(
     release: &str,
 ) -> Option<String> {
     let hardware = family.unwrap_or(platform::Family::C9300);
-    hazards::typed(Some(hardware), mode, line).map(|h| format!("hazard   {}", h.described(release)))
+    hazards::typed(Some(hardware), None, mode, line)
+        .map(|h| format!("hazard   {}", h.described(release)))
 }
 
 /// `--platform 9200`, `9400`, `2960x`, `2960`, `ie3300`, `ie3000`, `ie3010` or any model vswitch
@@ -2621,6 +2622,7 @@ mod release_tests {
                         enters: None,
                         evidence: None,
                         help: Default::default(),
+                        no_value: false,
                     }
                 })
                 .collect(),
@@ -2870,7 +2872,7 @@ mod release_tests {
             assert_eq!(
                 explained(Some(platform), tunnel, "17.15").as_deref(),
                 Some(
-                    "hazard   'show interfaces Tunnel0 transceiver max-power' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6), measured 2026-10-21"
+                    "hazard   'show interfaces Tunnel<n> transceiver max-power' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6), measured 2026-10-22"
                 ),
                 "{platform}"
             );

@@ -357,6 +357,11 @@ const SETTINGS: &[&str] = &[
     "monitor session",
 ];
 
+/// Settings whose `no` names the value set: it removes the line when that is the value, or when it
+/// names none, and another value changes nothing (the lab C9200L-48T-4G, 17.15.6: `no fqdn
+/// ttl-timeout-factor 200` left `fqdn ttl-timeout-factor 100`, `no ... 100` removed it).
+const VALUED_NO: &[&str] = &["fqdn ttl-timeout-factor"];
+
 /// The levels a logging destination takes by name (`logging console informational`).
 const LEVELS: &[&str] = &[
     "alerts",
@@ -524,6 +529,8 @@ const CHOICES: &[(&str, &[&str])] = &[
     ("ip arp inspection validate", &["dst-mac", "ip", "src-mac"]),
     ("file prompt", &["alert", "noisy", "quiet"]),
     ("state", &["active", "suspend"]),
+    // `infinite` replaced 100 (the lab C9200L-48T-4G, 17.15.6)
+    ("fqdn ttl-timeout-factor", &["infinite"]),
 ];
 
 /// A line's keywords, as the grammar spells them and without its `no`.
@@ -1130,7 +1137,10 @@ fn put(lines: &mut Vec<Entry>, e: Entry) {
 /// (`keeps_no`) stands in that entry's place.
 pub fn apply_to(lines: &mut Vec<Entry>, p: &Parse, k: String, keeps_no: bool, whole: bool) {
     if p.negated && !keeps_no {
-        lines.retain(|e| !negates(&k, &e.key, whole));
+        let set = p.canonical();
+        let set = set.strip_prefix("no ").unwrap_or(&set);
+        let valued = VALUED_NO.contains(&k.as_str()) && set != k;
+        lines.retain(|e| !negates(&k, &e.key, whole) || (valued && e.text != set));
         return;
     }
     let text = p.canonical();

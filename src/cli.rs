@@ -989,8 +989,9 @@ impl Engine {
             if expect(t.node, cmd, rest, 0, &mut found).contains(&rest.len()) && !toks.is_empty() {
                 complete = true;
             }
-            // a `no` form names the command's keywords and no more (`no_form`)
-            if t.negated && no_form(t.node, &toks[1..]).is_some() {
+            // a `no` form names the command's keywords and no more (`no_form`), but where it needs
+            // its value (`no_value`)
+            if t.negated && !cmd.no_value && no_form(t.node, &toks[1..]).is_some() {
                 complete = true;
             }
             // the first word of a command whose name it is says what the command does
@@ -1100,8 +1101,10 @@ impl Engine {
                     }
                 }
                 // a `no` form needs only the command's keywords, a stated `no` line's as well
-                // (`no ip address`, where the 2960-X books state `no ip address <ip-address> <mask>`)
+                // (`no ip address`, where the 2960-X books state `no ip address <ip-address> <mask>`),
+                // but where a switch needed its value (`no_value`)
                 if negated
+                    && !cmd.no_value
                     && !full.iter().any(|p| p.command == ci)
                     && let Some(kws) = no_form(node, &toks[1..])
                 {
@@ -1320,6 +1323,7 @@ mod tests {
             enters: None,
             evidence: None,
             help: Default::default(),
+            no_value: false,
         }
     }
 

@@ -377,6 +377,7 @@ pub fn commands(level: &str, forms: &[Vec<String>]) -> Vec<Command> {
             enters: None,
             evidence: None,
             help: BTreeMap::new(),
+            no_value: false,
         });
     }
     out

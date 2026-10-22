@@ -80,6 +80,10 @@ pub struct Command {
     /// Description, and under "" what the command does, from its introduction
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub help: BTreeMap<String, String>,
+    /// its `no` form needs the value its line states: the keywords alone are incomplete
+    /// (data/overrides.json `no_value`)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_value: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -118,6 +122,10 @@ struct Override {
     /// this platform (`Catalyst 9400`)
     #[serde(default)]
     platform: Option<String>,
+    /// its `no` form needs the value its line states, as a switch answered the keywords alone with
+    /// `% Incomplete command.`
+    #[serde(default)]
+    no_value: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -218,6 +226,7 @@ pub fn apply_overrides(
                 if ov.enters.is_some() {
                     c.enters.clone_from(&ov.enters);
                 }
+                c.no_value |= ov.no_value;
                 c.evidence = Some(ov.evidence.clone());
             }
             continue;
@@ -248,6 +257,7 @@ pub fn apply_overrides(
             enters: ov.enters,
             evidence: Some(ov.evidence),
             help,
+            no_value: ov.no_value,
         });
     }
     Ok((applied, skipped))
@@ -932,6 +942,7 @@ pub fn add_guides(g: &mut Grammar, guides: &Value) -> (usize, usize) {
                             enters: None,
                             evidence: None,
                             help: BTreeMap::new(),
+                            no_value: false,
                         });
                         added_cmds += 1;
                         added_lines += 1;
@@ -2458,6 +2469,7 @@ pub fn compile(reference: &Value) -> Grammar {
                     enters: None,
                     evidence: None,
                     help,
+                    no_value: false,
                 });
             }
         }
@@ -2728,6 +2740,7 @@ mod tests {
             enters: enters.map(Into::into),
             evidence: None,
             help: BTreeMap::new(),
+            no_value: false,
         }
     }
 
@@ -3283,6 +3296,23 @@ mod tests {
             assert_eq!(c.args["vlan-id"], ArgKind::VlanList, "{:?}", c.modes);
             assert_eq!(c.evidence.as_deref(), Some("e"));
         }
+    }
+
+    #[test]
+    fn a_patch_sets_no_value_on_every_command_of_its_name() {
+        let mut g = book(vec![command(
+            "fqdn ttl-timeout-factor",
+            "config",
+            "fqdn ttl-timeout-factor <ttl-timeout>",
+            None,
+        )]);
+        let patch = r#"{"commands": [{"name": "fqdn ttl-timeout-factor", "no_value": true, "evidence": "e"}]}"#;
+        apply_overrides(&mut g, patch, &BTreeSet::new()).unwrap();
+        assert!(g.commands.iter().all(|c| c.no_value));
+        // a patch that does not name it leaves it set
+        let patch = r#"{"commands": [{"name": "fqdn ttl-timeout-factor", "evidence": "f"}]}"#;
+        apply_overrides(&mut g, patch, &BTreeSet::new()).unwrap();
+        assert!(g.commands.iter().all(|c| c.no_value));
     }
 
     #[test]
