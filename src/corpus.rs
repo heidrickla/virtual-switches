@@ -1589,6 +1589,16 @@ pub(crate) fn characterize(text: &str, deny: &Deny) -> String {
     if let [(_, "hostname"), (at, _)] = starts[..] {
         return format!("{}«word»", &text[..at]);
     }
+    // so is a local account's name
+    if let [(_, "username"), (at, name), ..] = starts[..] {
+        let rest = &text[at + name.len()..];
+        let rest = if deny.hits(rest) {
+            characterize_words(rest, deny)
+        } else {
+            rest.to_string()
+        };
+        return format!("{}«word»{rest}", &text[..at]);
+    }
     if !deny.hits(text) {
         return text.to_string();
     }
@@ -2228,6 +2238,15 @@ mod tests {
             "interface Gi1/0/1"
         );
         assert_eq!(characterize("hostname", &none), "hostname");
+        assert_eq!(
+            characterize("username ops privilege 15 secret 5 <removed>", &none),
+            "username «word» privilege 15 secret 5 <removed>"
+        );
+        assert_eq!(characterize(" username ops", &none), " username «word»");
+        assert!(crate::live::fits(
+            "username «word» privilege 15 secret 5 <removed>",
+            "username bob privilege 15 secret 5 <removed>"
+        ));
     }
 
     #[test]
