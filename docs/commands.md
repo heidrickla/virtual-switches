@@ -119,23 +119,18 @@ With `--change`, every check command and rollback line is typed into the switch,
 
 | Subcommand | Arguments and options |
 |---|---|
-| `explain <mode> <line>` | `--platform <book or model>`, `--release <x.y>` |
-| `examples` | `--show N`, `--canonical`, `--platform <book or model>`, `--release <x.y>` |
+| `explain <mode> <line>` | `--platform <book, family or model>`, `--release <x.y>` |
+| `examples` | `--show N`, `--canonical`, `--platform <book, family or model>`, `--release <x.y>` |
 | `releases` | none |
 
 ### explain
 
-Prints the command a line matches in a mode: its name, source, syntax line, modes, the mode it enters, how it is shown, and the evidence where a real switch held it. A line that does not match prints its outcome (invalid, incomplete or ambiguous). A line known to crash the platform's model adds a `hazard` line: the command, what it does at the release, and the day it was measured ([output.md](output.md#commands-known-to-crash-a-switch)). `--platform` names a book or a model; the 9300 is the default.
+Prints the command a line matches in a mode: its name, source, syntax line, modes, the mode it enters, how it is shown, and the evidence where a real switch held it. A line that does not match prints its outcome (invalid, incomplete or ambiguous). A line known to crash the platform's model adds a `hazard` line: the command, what it does at the release, and the day it was measured ([output.md](output.md#commands-known-to-crash-a-switch)). `--platform` names a book, a family or a model; with none the 9300's book is read, and any other value is refused.
 
 | `--platform` value | Book |
 |---|---|
-| `9200`, `9200l` | Catalyst 9200 |
-| `9400` | Catalyst 9400 |
-| `2960x`, `2960-x` | Catalyst 2960-X |
-| `2960`, `2960+`, `2960-plus`, `2960c`, `2960-c` | Catalyst 2960 |
-| `ie3300` | IE 3300 |
-| `ie3000` | IE 3000 |
-| `ie3010` | IE 3010 |
+| a book: `c9300`, `c9200`, `c9400`, `c2960x`, `c2960`, `ie3300`, `ie3000`, `ie3010` | that book |
+| a family, case, spaces and hyphens aside, with or without the `Catalyst` or `c`: `Catalyst 9200L`, `9200l`, `c9200l`, `9300 B`, `2960-X`, `2960+` | the family's book |
 | a model name such as `IE-3000-8TC` | that model's book |
 
 ### examples

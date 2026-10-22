@@ -63,7 +63,7 @@ const USAGE: &str = "usage:
                                                  a configuration from a design; every line typed into the switch first
   vswitch run <script> [--stack <members>] [--release <x.y>] [--quiet]
                                                  types every line of a script; exit 1 if any is refused
-  vswitch examples [--show N] [--canonical] [--platform <book or model>] [--release <x.y>]
+  vswitch examples [--show N] [--canonical] [--platform <book, family or model>] [--release <x.y>]
                                                  types every Cisco example line at its prompt
   vswitch check <config> --to <x.y> [--from <x.y>] [--stack <members>] [--all]
                                                  the lines a release change breaks; --from defaults to the version line
@@ -404,23 +404,45 @@ fn hazard_line(
         .map(|h| format!("hazard   {}", h.described(release)))
 }
 
-/// `--platform 9200`, `9400`, `2960x`, `2960`, `ie3300`, `ie3000`, `ie3010` or any model vswitch
-/// knows (`IE-3000-8TC`) for commands that take no stack (explain, examples); the 9300 otherwise.
-fn platform_arg(args: &[String]) -> Option<platform::Family> {
-    let named = arg(args, "--platform")?;
-    match named.to_ascii_lowercase().as_str() {
-        "9200" | "9200l" => Some(platform::Family::C9200),
-        "9400" => Some(platform::Family::C9400),
-        "2960x" | "2960-x" => Some(platform::Family::C2960X),
-        "2960" | "2960+" | "2960-plus" | "2960c" | "2960-c" => Some(platform::Family::C2960),
-        "ie3300" => Some(platform::Family::IE3300),
-        "ie3000" => Some(platform::Family::IE3000),
-        "ie3010" => Some(platform::Family::IE3010),
-        _ => platform::MODELS
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(named))
-            .map(|m| m.family),
+/// `--platform` for commands that take no stack (explain, examples): a book (`c9200`), a family by
+/// name (`Catalyst 9200L`, `9200l`, `c9200l`) or a model vswitch knows (`IE-3000-8TC`); none names
+/// the 9300. Anything else is refused, so a misspelt platform never reads the 9300's grammar.
+fn platform_arg(args: &[String]) -> Result<Option<platform::Family>, String> {
+    let Some(named) = arg(args, "--platform") else {
+        return Ok(None);
+    };
+    if let Some(m) = platform::MODELS
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(named))
+    {
+        return Ok(Some(m.family));
     }
+    let wanted = compact(named);
+    platform::MODELS
+        .iter()
+        .map(|m| m.family)
+        .find(|f| {
+            let own = compact(f.name());
+            wanted == own || wanted.strip_prefix('c') == Some(own.as_str())
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            let books: Vec<&str> = grammars::BOOKS.iter().map(|b| b.0).collect();
+            format!(
+                "--platform {named}: not a book ({}), a family (9200l, Catalyst 9200L) or a model vswitch knows",
+                books.join(", ")
+            )
+        })
+}
+
+/// A platform name in lowercase without its maker, spaces or hyphens: `Catalyst 2960-X` is `2960x`,
+/// `2960+` is `2960plus`.
+fn compact(name: &str) -> String {
+    let lower = name.to_ascii_lowercase().replace('+', "plus");
+    let lower = lower
+        .trim_start_matches("catalyst ")
+        .trim_start_matches("cisco ");
+    lower.chars().filter(|c| !matches!(c, ' ' | '-')).collect()
 }
 
 /// The release a command runs in a book: `--release`, else the one its design or configuration names
@@ -991,7 +1013,7 @@ fn run(args: &[String]) -> Result<bool, String> {
             let show: usize = arg(args, "--show")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0);
-            let family = platform_arg(args);
+            let family = platform_arg(args)?;
             let g = grammar(args, family, release(args, None, grammars::book(family))?)?;
             let examples: Vec<(String, String)> = g
                 .commands
@@ -1214,11 +1236,11 @@ fn run(args: &[String]) -> Result<bool, String> {
             // which command a line matches in a mode, from which source, and the mode it enters
             let (Some(mode), Some(line)) = (args.get(1), args.get(2)) else {
                 return Err(
-                    "usage: vswitch explain <mode> <line> [--platform <book or model>] [--release <x.y>]"
+                    "usage: vswitch explain <mode> <line> [--platform <book, family or model>] [--release <x.y>]"
                         .into(),
                 );
             };
-            let family = platform_arg(args);
+            let family = platform_arg(args)?;
             let r = release(args, None, grammars::book(family))?;
             let engine = cli::Engine::new(grammar(args, family, r)?);
             match engine.parse(mode, line) {
@@ -2865,10 +2887,10 @@ mod release_tests {
             let args: Vec<String> = platform
                 .map(|p| vec!["--platform".to_string(), p.to_string()])
                 .unwrap_or_default();
-            hazard_line(platform_arg(&args), "privileged", line, release)
+            hazard_line(platform_arg(&args).unwrap(), "privileged", line, release)
         };
         let tunnel = "show interfaces Tunnel0 transceiver max-power";
-        for platform in ["9200", "9200l", "C9200L-48T-4G"] {
+        for platform in ["9200", "9200l", "c9200", "Catalyst 9200L", "C9200L-48T-4G"] {
             assert_eq!(
                 explained(Some(platform), tunnel, "17.15").as_deref(),
                 Some(
@@ -2888,6 +2910,41 @@ mod release_tests {
                 "hazard   'show ipv6 pim gir' crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4), measured 2026-10-17"
             )
         );
+    }
+
+    #[test]
+    fn a_platform_is_a_book_a_family_or_a_model_and_anything_else_is_refused() {
+        use platform::Family;
+        let named = |p: &str| platform_arg(&["--platform".to_string(), p.to_string()]);
+        assert_eq!(platform_arg(&[]), Ok(None));
+        // every book names a family whose book it is
+        for (book, _, _) in grammars::BOOKS {
+            let f = named(book).unwrap().unwrap_or_else(|| panic!("{book}"));
+            assert_eq!(grammars::book(Some(f)), *book, "{book}");
+        }
+        // every family by its own name
+        for f in platform::MODELS.iter().map(|m| m.family) {
+            assert_eq!(named(f.name()), Ok(Some(f)), "{}", f.name());
+        }
+        for (p, f) in [
+            ("9200", Family::C9200),
+            ("9200l", Family::C9200L),
+            ("C9200L", Family::C9200L),
+            ("c9200", Family::C9200),
+            ("9300", Family::C9300),
+            ("9300 B", Family::C9300B),
+            ("2960-X", Family::C2960X),
+            ("2960+", Family::C2960Plus),
+            ("ie3300", Family::IE3300),
+            ("IE-3000-8TC", Family::IE3000),
+            ("c9200l-48t-4g", Family::C9200L),
+        ] {
+            assert_eq!(named(p), Ok(Some(f)), "{p}");
+        }
+        for p in ["9201", "c92000", "catalyst", "", "9200x"] {
+            let e = named(p).unwrap_err();
+            assert!(e.contains("c9200") && e.contains(p), "{p}: {e}");
+        }
     }
 
     #[test]
