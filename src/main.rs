@@ -391,6 +391,18 @@ fn grammar(
     }
 }
 
+/// `explain`'s line for a command known to crash the platform's model, the 9300 where none is named:
+/// the command, what it does at `release` and the day it was measured.
+fn hazard_line(
+    family: Option<platform::Family>,
+    mode: &str,
+    line: &str,
+    release: &str,
+) -> Option<String> {
+    let hardware = family.unwrap_or(platform::Family::C9300);
+    hazards::typed(Some(hardware), mode, line).map(|h| format!("hazard   {}", h.described(release)))
+}
+
 /// `--platform 9200`, `9400`, `2960x`, `2960`, `ie3300`, `ie3000`, `ie3010` or any model vswitch
 /// knows (`IE-3000-8TC`) for commands that take no stack (explain, examples); the 9300 otherwise.
 fn platform_arg(args: &[String]) -> Option<platform::Family> {
@@ -1226,10 +1238,8 @@ fn run(args: &[String]) -> Result<bool, String> {
                 }
                 other => println!("{other:?}"),
             }
-            // the 9300 is the platform when none is named
-            let hardware = family.unwrap_or(platform::Family::C9300);
-            if let Some(h) = hazards::typed(Some(hardware), mode, line) {
-                println!("hazard   {}", h.described(&r.to_string()));
+            if let Some(h) = hazard_line(family, mode, line, &r.to_string()) {
+                println!("{h}");
             }
             Ok(true)
         }
@@ -2844,6 +2854,37 @@ mod release_tests {
             grammars::documented("c9400").len(),
             24,
             "16.6, 16.9-16.12, 17.1-17.18, 26.x"
+        );
+    }
+
+    #[test]
+    fn explain_names_a_command_known_to_crash_the_platform_s_model() {
+        let explained = |platform: Option<&str>, line: &str, release: &str| {
+            let args: Vec<String> = platform
+                .map(|p| vec!["--platform".to_string(), p.to_string()])
+                .unwrap_or_default();
+            hazard_line(platform_arg(&args), "privileged", line, release)
+        };
+        let tunnel = "show interfaces Tunnel0 transceiver max-power";
+        for platform in ["9200", "9200l", "C9200L-48T-4G"] {
+            assert_eq!(
+                explained(Some(platform), tunnel, "17.15").as_deref(),
+                Some(
+                    "hazard   'show interfaces Tunnel0 transceiver max-power' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6), measured 2026-10-21"
+                ),
+                "{platform}"
+            );
+            // the switch answered the same form on its front ports
+            let front = "show interfaces GigabitEthernet1/0/1 transceiver max-power";
+            assert_eq!(explained(Some(platform), front, "17.15"), None);
+        }
+        // the 9300 when no platform is named: its own hazards, not the 9200's
+        assert_eq!(explained(None, tunnel, "17.15"), None);
+        assert_eq!(
+            explained(None, "show ipv6 pim gir", "17.6").as_deref(),
+            Some(
+                "hazard   'show ipv6 pim gir' crashes the switch (IOSd segfault and reload on a Catalyst 9300 at IOS XE 17.6.4), measured 2026-10-17"
+            )
         );
     }
 

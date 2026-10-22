@@ -2353,6 +2353,14 @@
       "evidence": "the lab C9300-24T (17.6.4) took 'fqdn ttl-timeout-factor 100' at (config)#; the book writes it 'ttl-timeout factor'"
     },
     {
+      "name": "fqdn ttl-timeout-factor",
+      "platform": "Catalyst 9200",
+      "modes": ["config"],
+      "lines": ["fqdn ttl-timeout-factor {<ttl-timeout> | infinite}", "no fqdn ttl-timeout-factor"],
+      "args": {"ttl-timeout": {"kind": "Number", "min": 1, "max": 300}},
+      "evidence": "no 9200 book lists it; the lab C9200L-48T-4G (17.15.6) took 'fqdn ttl-timeout-factor 100' at network-advantage, and at network-advantage its answers to 'fqdn ?' and 'no fqdn ?' offered 'ttl-timeout-factor', then <1-300> and 'infinite', at 17.6.4 and at 17.15.6"
+    },
+    {
       "name": "cts role-based sgt-map",
       "platform": "Catalyst 9300",
       "adds": ["cts role-based sgt-map host {<ipv4_hostaddress> | <ipv6_hostaddress>} sgt <sgt-number>"],

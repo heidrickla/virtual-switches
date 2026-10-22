@@ -1451,15 +1451,15 @@ impl<'a> Session<'a> {
             _ => None,
         });
         // a sampler a port's flow monitor names before it exists, at its name (the lab
-        // C9200L-48T-4G, 17.6.4; the C9300 refused the monitor first, `offers`); a sampler is held
-        // as a global line, or as a block where its command enters a submode
+        // C9200L-48T-4G, 17.6.4 and 17.15.6; the C9300 refused the monitor first, `offers`); a
+        // sampler is held as a global line, or as a block where its command enters a submode
         let refused = refused.or_else(|| {
             let flow = matches!(
                 p.items.get(..3),
                 Some([Item::Kw { kw: ip, .. }, Item::Kw { kw: flow, .. }, Item::Kw { kw: monitor, .. }])
                     if (ip == "ip" || ip == "ipv6") && flow == "flow" && monitor == "monitor"
             );
-            if !(flow && mode.starts_with("config-if") && self.runs(crate::context::C9200_17_6)) {
+            if !(flow && mode.starts_with("config-if") && self.runs_any(crate::context::C9200_LAB)) {
                 return None;
             }
             p.items.windows(2).find_map(|w| match w {
@@ -1937,9 +1937,9 @@ impl<'a> Session<'a> {
                 return Some("%ssm-map is not enabled!".into());
             }
             // an auth proxy rule a port names before `ip admission name` defines it (the lab
-            // C9200L-48T-4G, 17.6.4; the lab C9300-24T at 17.6.4 took it silently)
+            // C9200L-48T-4G, 17.6.4 and 17.15.6; the lab C9300-24T at 17.6.4 took it silently)
             ("config-if", ["ip", "admission", name])
-                if self.runs(crate::context::C9200_17_6)
+                if self.runs_any(crate::context::C9200_LAB)
                     && !global(&format!("ip admission name {name} ")) =>
             {
                 return Some(format!("%Auth-proxy name {name} is not defined\n\n"));
@@ -2406,10 +2406,11 @@ impl<'a> Session<'a> {
                 }
             }
             // a port's flow monitor holding no record, and a monitor's second record, on the C9200
-            // image (the lab C9200L-48T-4G, 17.6.4; the C9300 refused both names, `offers`)
+            // images (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the C9300 refused both names,
+            // `offers`)
             (m, ["ip" | "ipv6", "flow", "monitor", name, ..])
                 if m.starts_with("config-if")
-                    && self.runs(crate::context::C9200_17_6)
+                    && self.runs_any(crate::context::C9200_LAB)
                     && self.device.blocks.iter().any(|b| {
                         b.header.strip_prefix("flow monitor ") == Some(*name)
                             && !b.lines.iter().any(|e| e.text.trim().starts_with("record "))
@@ -2422,7 +2423,7 @@ impl<'a> Session<'a> {
                 );
             }
             ("config-flow-monitor", ["record", name])
-                if self.runs(crate::context::C9200_17_6)
+                if self.runs_any(crate::context::C9200_LAB)
                     && block.is_some_and(|b| {
                         b.lines.iter().any(|e| {
                             e.text
@@ -3719,6 +3720,9 @@ impl<'a> Session<'a> {
             return None;
         }
         let context = self.context_at(i)?;
+        if mode == "config" && self.provisions_another_family(level.as_deref(), &context, line) {
+            return None;
+        }
         let held = &self.engine.held;
         let toks = cli::tokens(line);
         let mut before: Vec<&str> = vec![];
@@ -3912,6 +3916,50 @@ impl<'a> Session<'a> {
     fn runs(&self, image: (&str, &str)) -> bool {
         crate::grammars::book_of(&self.engine.grammar.platform) == Some(image.0)
             && self.engine.grammar.release == image.1
+    }
+
+    /// Whether the session runs one of the images.
+    fn runs_any(&self, images: &[(&str, &str)]) -> bool {
+        images.iter().any(|&image| self.runs(image))
+    }
+
+    /// Whether `line` is `switch <n> provision ...` and the held answer after `provision` lists types
+    /// of other families alone than this stack's: the types are those the crawled switch stacks
+    /// with (the lab C9200L-48T-4G listed C9200L models alone), so that answer does not judge the
+    /// line for a stack of another family.
+    fn provisions_another_family(&self, level: Option<&str>, context: &str, line: &str) -> bool {
+        let toks = cli::tokens(line);
+        let [switch, n, provision, ..] = toks.as_slice() else {
+            return false;
+        };
+        let starts = |t: &cli::Tok, k: &str| {
+            t.text.len() >= 2 && k.starts_with(t.text.to_lowercase().as_str())
+        };
+        if !(starts(switch, "switch")
+            && n.text.bytes().all(|b| b.is_ascii_digit())
+            && starts(provision, "provision"))
+        {
+            return false;
+        }
+        let Some(family) = self.device.stack.family() else {
+            return false;
+        };
+        let through = format!("switch {} provision ", n.text);
+        let Some(answer) =
+            self.engine
+                .held
+                .help_for(level, "config", Some(context), &through, |l| {
+                    self.running_has(l)
+                })
+        else {
+            return false;
+        };
+        let listed: Vec<crate::platform::Family> = crate::live::keywords(answer)
+            .iter()
+            .filter_map(|k| crate::platform::model(k))
+            .map(|m| m.family)
+            .collect();
+        !listed.is_empty() && !listed.contains(&family)
     }
 
     /// Whether this session holds a block of the kind (`flow monitor `).
@@ -5955,6 +6003,142 @@ mod tests {
     }
 
     #[test]
+    fn a_provision_answer_judges_a_stack_of_the_crawled_switch_s_family_alone() {
+        // the lab C9200L-48T-4G listed C9200L models alone after `switch 1 provision`
+        const STEPS: &[(&str, &[&str])] = &[
+            ("Switch#configure terminal", ENTERED),
+            (
+                "Switch(config)#switch 1 provision ?",
+                &[
+                    "  c9200l-24t-4g  Catalyst 9200L Series Switch with 24G, (4x1G)",
+                    "  c9200l-48t-4g  Catalyst 9200L Series Switch with 48G, (4x1G)",
+                    "",
+                ],
+            ),
+        ];
+        let e = held_engine_of("c9200", "17.15", "network-advantage", STEPS);
+        let open = |stack: &str| {
+            let stack = crate::platform::parse_stack(stack).unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.boot_level = Some("network-advantage".into());
+            for line in ["enable", "configure terminal"] {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+            }
+            s
+        };
+        // a stack of another family reads the line as the books do
+        let mut s = open("C9200-48T");
+        for line in ["switch 1 provision c9200-48t", "switch 1 prov c9200-48t"] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+        }
+        // a stack of the crawled switch's family reads the answer
+        let mut s = open("C9200L-48T-4G");
+        assert_eq!(
+            s.type_line("switch 1 provision c9200l-48t-4g").1,
+            Result::Ok
+        );
+        let (out, r) = s.type_line("switch 1 provision c9200-48t");
+        assert_eq!(r, Result::Error, "{out:?}");
+    }
+
+    #[test]
+    fn a_c9200_takes_the_fqdn_ttl_timeout_factor_at_the_level_whose_answer_offers_fqdn() {
+        // the lab C9200L-48T-4G (17.15.6) took `fqdn ttl-timeout-factor 100` in a standard access
+        // list at network-advantage, leaving for global configuration, and refused `fqdn` there at
+        // network-essentials, whose `?` lists none
+        let root = |fqdn: bool| -> Vec<&'static str> {
+            let mut rows = vec!["Configure commands:"];
+            if fqdn {
+                rows.push("  fqdn  fqdn config commands");
+            }
+            rows.extend([
+                "  ip    Global IP configuration subcommands",
+                "  no    Negate a command or set its defaults",
+                "",
+            ]);
+            rows
+        };
+        let (adv, ess) = (root(true), root(false));
+        let fqdn: &[&str] = &["  ttl-timeout-factor  time-out factor for ttl", ""];
+        let factor: &[&str] = &[
+            "  <1-300>   Specify ttl timeout factor",
+            "  infinite  fqdn entry stays forever",
+            "",
+        ];
+        type Steps<'a> = Vec<(&'a str, &'a [&'a str])>;
+        let levels: [(&str, Steps); 2] = [
+            (
+                "network-advantage",
+                vec![
+                    ("Switch#configure terminal", ENTERED),
+                    ("Switch(config)# ?", &adv),
+                    ("Switch(config)#fqdn ?", fqdn),
+                    ("Switch(config)#fqdn ttl-timeout-factor ?", factor),
+                    ("Switch(config)#end", &[]),
+                ],
+            ),
+            (
+                "network-essentials",
+                vec![
+                    ("Switch#configure terminal", ENTERED),
+                    ("Switch(config)# ?", &ess),
+                    ("Switch(config)#end", &[]),
+                ],
+            ),
+        ];
+        let table = crate::corpus::HeldTable {
+            crawl: levels
+                .iter()
+                .flat_map(|(level, steps)| {
+                    crate::corpus::crawled_help(&transcript(steps))
+                        .into_iter()
+                        .map(|(m, c, k, a)| (level.to_string(), m, c, k, a))
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let grammar =
+            crate::grammars::grammar("c9200", crate::release::Release::parse("17.15").unwrap())
+                .unwrap();
+        let c = crate::corpus::Corpus {
+            held: vec![("c9200".into(), "17.15".into(), table)],
+            ..Default::default()
+        };
+        let held = crate::live::Held::from_corpus(&c, &grammar.platform, &grammar.release);
+        let e = Engine::with_held(grammar, held);
+        let open = |level: &str| {
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.boot_level = Some(level.into());
+            for line in [
+                "enable",
+                "configure terminal",
+                "ip access-list standard ACLA",
+            ] {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{level} {line}");
+            }
+            s
+        };
+        let mut s = open("network-advantage");
+        assert_eq!(s.type_line("fqdn ttl-timeout-factor 100").1, Result::Ok);
+        assert_eq!(s.mode(), "config");
+        for line in [
+            "fqdn ttl-timeout-factor infinite",
+            "fqdn ttl-timeout-factor 300",
+            "no fqdn ttl-timeout-factor",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        assert_eq!(s.type_line("fqdn ttl-timeout-factor 301").1, Result::Error);
+        let mut s = open("network-essentials");
+        let (out, r) = s.type_line("fqdn ttl-timeout-factor 100");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(caret_at(&out), "Switch(config-std-nacl)#".len());
+        assert_eq!(s.mode(), "config-std-nacl");
+    }
+
+    #[test]
     fn a_c9200l_refuses_a_port_mode_change_under_port_control_and_an_auth_proxy_rule_it_lacks() {
         // the lab C9200L-48T-4G (17.6.4)
         let r = crate::release::Release::parse("17.6").unwrap();
@@ -6009,6 +6193,38 @@ mod tests {
         ] {
             assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
         }
+    }
+
+    #[test]
+    fn an_auth_proxy_rule_a_port_names_undefined_is_refused_on_the_lab_c9200_images_alone() {
+        let at = |release: &str| {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            for line in [
+                "enable",
+                "configure terminal",
+                "interface GigabitEthernet1/0/5",
+            ] {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{release} {line}");
+            }
+            let (out, r) = s.type_line("ip admission RULEA");
+            (out.join("\n"), r)
+        };
+        // the lab C9200L-48T-4G, at 17.6.4 and at 17.15.6
+        for release in ["17.6", "17.15"] {
+            assert_eq!(
+                at(release),
+                (
+                    "%Auth-proxy name RULEA is not defined\n".to_string(),
+                    Result::Error
+                ),
+                "{release}"
+            );
+        }
+        // a release of the book the lab switch did not run takes it as its books do
+        assert_eq!(at("17.12"), (String::new(), Result::Ok));
     }
 
     #[test]
@@ -9256,9 +9472,34 @@ mod tests {
             ),
             ("Switch(config-if)#exit", &[]),
         ];
-        let e = held_engine_of("c9200", "17.6", "network-essentials", STEPS);
+        // the lab C9200L-48T-4G answered alike at 17.6.4 and 17.15.6
+        for release in ["17.6", "17.15"] {
+            measured_flow_monitor(&held_engine_of(
+                "c9200",
+                release,
+                "network-essentials",
+                STEPS,
+            ));
+        }
+        // a release of the book the lab switch did not run reads them as its books do
+        let e = held_engine_of("c9200", "17.12", "network-essentials", STEPS);
+        let mut s = flow_session(&e);
+        for line in [
+            "ip flow monitor MONA input",
+            "exit",
+            "flow monitor MONA",
+            "record RECA",
+            "record RECB",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "17.12 {line}");
+        }
+    }
+
+    /// A C9200L session holding records RECA and RECB, monitor MONA without one and sampler SAMA,
+    /// at a port.
+    fn flow_session(e: &Engine) -> Session<'_> {
         let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
-        let mut s = Session::new(&e, Device::new(stack));
+        let mut s = Session::new(e, Device::new(stack));
         s.boot_level = Some("network-essentials".into());
         for line in [
             "enable",
@@ -9274,6 +9515,11 @@ mod tests {
         ] {
             assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
         }
+        s
+    }
+
+    fn measured_flow_monitor(e: &Engine) {
+        let mut s = flow_session(e);
         let (out, r) = s.type_line("ip flow monitor MONA input");
         assert_eq!(
             (out, r),
@@ -9611,18 +9857,25 @@ mod tests {
                 ],
             ),
         ];
-        // the lab C9200L-48T-4G (17.6.4) refused it alike at both levels
-        for level in ["network-essentials", "network-advantage"] {
-            let c9200 = held_engine_of("c9200", "17.6", level, STEPS);
+        // the lab C9200L-48T-4G refused it alike at both levels, at 17.6.4 and at 17.15.6
+        for (release, level) in ["17.6", "17.15"]
+            .into_iter()
+            .flat_map(|r| ["network-essentials", "network-advantage"].map(|l| (r, l)))
+        {
+            let c9200 = held_engine_of("c9200", release, level, STEPS);
             let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
             let mut s = Session::new(&c9200, Device::new(stack));
             s.boot_level = Some(level.into());
             for line in ["enable", "configure terminal"] {
-                assert_eq!(s.type_line(line).1, Result::Ok, "{level} {line}");
+                assert_eq!(s.type_line(line).1, Result::Ok, "{release} {level} {line}");
             }
             let (out, r) = s.type_line("class C1");
-            assert_eq!(r, Result::Error, "{level} {out:?}");
-            assert_eq!(caret_at(&out), "Switch(config)#class".len(), "{level}");
+            assert_eq!(r, Result::Error, "{release} {level} {out:?}");
+            assert_eq!(
+                caret_at(&out),
+                "Switch(config)#class".len(),
+                "{release} {level}"
+            );
         }
         let e = held_engine(STEPS);
         let mut s = configured(&e, &[]);
@@ -9659,8 +9912,8 @@ mod tests {
                 &["  cos     Class of Service", "  global  Global settings"],
             ),
         ];
-        let open = |book: &str, level: &str, stack: &str| {
-            let e = held_engine_of(book, "17.6", level, STEPS);
+        let open = |book: &str, release: &str, level: &str, stack: &str| {
+            let e = held_engine_of(book, release, level, STEPS);
             let stack = crate::platform::parse_stack(stack).unwrap();
             let mut s = Session::new(&e, Device::new(stack));
             s.boot_level = Some(level.into());
@@ -9669,11 +9922,14 @@ mod tests {
             }
             s.type_line("l2 traceroute")
         };
-        // the lab C9200L-48T-4G (17.6.4) took it at network-advantage, its `?` listing no `l2`
-        let (out, r) = open("c9200", "network-advantage", "C9200L-48T-4G");
-        assert_eq!(r, Result::Ok, "{out:?}");
+        // the lab C9200L-48T-4G took it at network-advantage, its `?` listing no `l2`, at 17.6.4
+        // and at 17.15.6
+        for release in ["17.6", "17.15"] {
+            let (out, r) = open("c9200", release, "network-advantage", "C9200L-48T-4G");
+            assert_eq!(r, Result::Ok, "{release} {out:?}");
+        }
         // another image's crawl at that level still reads `l2` as the keyword it offers
-        let (out, r) = open("c9300", "network-advantage", "C9300-24T");
+        let (out, r) = open("c9300", "17.6", "network-advantage", "C9300-24T");
         assert_eq!(r, Result::Error, "{out:?}");
         assert_eq!(caret_at(&out), "Switch(config)#l2 ".len());
     }
@@ -10525,6 +10781,57 @@ mod tests {
             );
             assert_eq!(warned, 0);
         }
+    }
+
+    #[test]
+    fn a_9200_transceiver_max_power_form_is_warned_of_on_the_interface_measured() {
+        let script = "show interfaces Tunnel0 transceiver max-power\nsh int gi0/0 trans max-power violation\nshow interfaces GigabitEthernet1/0/1 transceiver max-power\nshow interfaces GigabitEthernet1/0/1 transceiver max-power violation\nshow ipv6 pim gir\n";
+        let at = |book: &str, model: &str, release: &str| {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar(book, r).unwrap());
+            let stack = crate::platform::parse_stack(model).unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.type_line("enable");
+            let (transcript, _) = s.script(script);
+            (transcript, s.warned)
+        };
+        let warnings = |t: &[String]| -> Vec<String> {
+            t.iter()
+                .filter(|l| l.starts_with("% vswitch: this command"))
+                .cloned()
+                .collect()
+        };
+        let (t, warned) = at("c9200", "C9200L-48T-4G", "17.15");
+        let crashes = "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6)";
+        assert_eq!(warnings(&t), [crashes, crashes], "{t:#?}");
+        assert_eq!(warned, 2);
+        // each warning follows its own line's answer, before the next prompt
+        for typed in [
+            "Switch#show interfaces Tunnel0 transceiver max-power",
+            "Switch#sh int gi0/0 trans max-power violation",
+        ] {
+            let i = t.iter().position(|l| l == typed).unwrap();
+            let w = i + t[i..].iter().position(|l| l == crashes).unwrap();
+            assert!(
+                t[i + 1..w].iter().all(|l| !l.starts_with("Switch")),
+                "{t:#?}"
+            );
+            assert!(t[w + 1].starts_with("Switch"), "{t:#?}");
+        }
+        // at 17.6, what it did at 17.15.6; on a 9300, its own hazard alone
+        let (t, _) = at("c9200", "C9200L-48T-4G", "17.6");
+        assert_eq!(
+            warnings(&t),
+            ["% vswitch: this command crashed a Catalyst 9200L at IOS XE 17.15.6 (IOSd segfault and reload)";
+                2]
+        );
+        let (t, _) = at("c9300", "C9300-24T", "17.15");
+        assert_eq!(
+            warnings(&t),
+            [
+                "% vswitch: this command crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload)"
+            ]
+        );
     }
 
     /// A C9300 at 17.6 on its books and every answer the corpus holds.

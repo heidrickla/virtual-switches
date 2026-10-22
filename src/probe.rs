@@ -1094,6 +1094,30 @@ Gi0/8                        connected    trunk      a-full a-1000 10/100/1000Ba
     }
 
     #[test]
+    fn a_9200_transceiver_max_power_form_is_refused_on_the_interface_measured() {
+        use platform::Family;
+        let script = "show interfaces Tunnel0 transceiver max-power\nshow interfaces GigabitEthernet1/0/1 transceiver max-power\nsh int tu 0 trans max-power violation\nshow ipv6 pim gir\n";
+        let on = |family| refused(script, &vlan54(), family);
+        let numbers = |r: &[(usize, String)]| r.iter().map(|r| r.0).collect::<Vec<_>>();
+        for family in [Family::C9200L, Family::C9200] {
+            let r = on(Some(family));
+            assert_eq!(numbers(&r), [1, 3], "{family:?}");
+            for (_, why) in &r {
+                assert!(
+                    why.starts_with("`show interfaces Tunnel0 transceiver max-power")
+                        && why.contains("crashed a Catalyst 9200L at IOS XE 17.15.6")
+                        && why.contains("skips the `configure replace` rollback"),
+                    "{why}"
+                );
+            }
+        }
+        // the 9300 refuses its own hazard alone
+        assert_eq!(numbers(&on(Some(Family::C9300))), [4]);
+        // a family not known refuses what crashes any
+        assert_eq!(numbers(&on(None)), [1, 3, 4]);
+    }
+
+    #[test]
     fn a_script_with_a_command_known_to_crash_the_switch_sends_nothing() {
         let first = "Switch#terminal length 0\nSwitch#show version\nCisco IOS XE Software, Version 17.06.04\nSwitch#show inventory\nNAME: \"Switch 1\", DESCR: \"C9300-24T\"\nPID: C9300-24T         , VID: V01\nSwitch#show ip interface brief\nInterface              IP-Address      OK? Method Status                Protocol\nGigabitEthernet0/0     192.0.2.60      YES NVRAM  up                    up\nSwitch#show interfaces status\nSwitch#show running-config\n!\nversion 17.6\nhostname Switch\n!\nend\n\nSwitch#exit\n";
         let mut asked = 0;

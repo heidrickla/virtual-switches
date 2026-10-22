@@ -13,8 +13,11 @@ pub struct Hazard {
     pub release: &'static str,
     /// the day it was measured
     pub date: &'static str,
-    /// the command's keywords, whole
+    /// the command's words, whole: its keywords, and at `port` the interface it crashed on
     pub command: &'static str,
+    /// which word of `command` names an interface, where the crash was measured on that interface
+    /// alone; a line names it as IOS reads one, abbreviated and in one word or two (`tu 0`)
+    pub port: Option<usize>,
     /// whether the command crashes with any further words too
     pub subtree: bool,
     /// shorter keywords IOS has where one of the command's stands, each a start of it: a word spelling
@@ -24,10 +27,11 @@ pub struct Hazard {
     pub effect: &'static str,
 }
 
-/// Each typed alone on one SSH session of a C9300-24T with a C9300-NM-4G at network-advantage:
-/// IOSd segfaulted (`linux_iosd_image has failed (rc 139)`) and the switch reloaded with `Critical
-/// software exception`. No published Cisco bug names either command.
+/// Each crashed a lab switch at network-advantage over SSH: IOSd segfaulted (`linux_iosd_image has
+/// failed (rc 139)`) and the switch reloaded with `Critical software exception`.
 pub const KNOWN: &[Hazard] = &[
+    // a C9300-24T with a C9300-NM-4G, each typed alone on one SSH session; no published Cisco bug
+    // names either
     // the fault is in the process running the command (`SSH Process` over SSH); `show ip pim gir`,
     // `show ip igmp gir` and `show ipv6 mld gir` answer
     Hazard {
@@ -35,6 +39,7 @@ pub const KNOWN: &[Hazard] = &[
         release: "17.6.4",
         date: "2026-10-17",
         command: "show ipv6 pim gir",
+        port: None,
         subtree: false,
         shorter: &["i", "ip"],
         effect: "IOSd segfault and reload",
@@ -46,11 +51,34 @@ pub const KNOWN: &[Hazard] = &[
         release: "17.6.4",
         date: "2026-10-17",
         command: "show platform software tdl-database content bp",
+        port: None,
         subtree: true,
         shorter: &[],
         effect: "IOSd segfault and reload",
     },
+    // a C9200L-48T-4G, each the last command of its crashinfo file in a show sweep: the same forms
+    // on the other interfaces swept answered, and at 17.6.4 the Tunnel0 forms closed the session
+    // without a reload
+    max_power("show interfaces Tunnel0 transceiver max-power"),
+    max_power("show interfaces Tunnel0 transceiver max-power violation"),
+    max_power("show interfaces GigabitEthernet0/0 transceiver max-power"),
+    max_power("show interfaces GigabitEthernet0/0 transceiver max-power violation"),
 ];
+
+/// A `transceiver max-power` form that crashed the lab C9200L-48T-4G at 17.15.6, on the interface
+/// it names (the third word); the 9200 books cover the 9200, 9200L and 9200 B.
+const fn max_power(command: &'static str) -> Hazard {
+    Hazard {
+        families: &[Family::C9200L, Family::C9200, Family::C9200B],
+        release: "17.15.6",
+        date: "2026-10-21",
+        command,
+        port: Some(2),
+        subtree: false,
+        shorter: &[],
+        effect: "IOSd segfault and reload",
+    }
+}
 
 impl Hazard {
     /// What the command did on the switch measured: `crashed a Catalyst 9300 at IOS XE 17.6.4 (...)`.
@@ -94,20 +122,36 @@ impl Hazard {
     }
 
     /// Whether an EXEC line's words name the command: each word a start of its keyword, in any case,
-    /// and more words only under a subtree.
+    /// the interface at `port` by type and number, and more words only under a subtree.
     fn named_by(&self, words: &[String]) -> bool {
-        let keywords: Vec<&str> = self.command.split(' ').collect();
-        let count = if self.subtree {
-            words.len() >= keywords.len()
-        } else {
-            words.len() == keywords.len()
-        };
-        count
-            && words
-                .iter()
-                .zip(&keywords)
-                .all(|(w, k)| k.starts_with(w.as_str()) && !self.shorter.contains(&w.as_str()))
+        let mut at = 0;
+        for (i, k) in self.command.split(' ').enumerate() {
+            let used = if self.port == Some(i) {
+                port_named(k, words.get(at), words.get(at + 1))
+            } else {
+                words
+                    .get(at)
+                    .filter(|w| k.starts_with(w.as_str()) && !self.shorter.contains(&w.as_str()))
+                    .map(|_| 1)
+            };
+            match used {
+                Some(n) => at += n,
+                None => return false,
+            }
+        }
+        self.subtree || at == words.len()
     }
+}
+
+/// How many of the words `first` and `second` name the interface `measured` (`Tunnel0`): its type by
+/// IOS's abbreviations and its number, each part equal by value; none where they name another.
+fn port_named(measured: &str, first: Option<&String>, second: Option<&String>) -> Option<usize> {
+    let (ty, number, _) = cli::interface_name(measured, None)?;
+    let (typed, n, used) = cli::interface_name(first?, second.map(String::as_str))?;
+    let parts =
+        |n: &str| -> Option<Vec<u32>> { n.split(['/', '.']).map(|p| p.parse().ok()).collect() };
+    (typed == ty && n.contains('.') == number.contains('.') && parts(&n)? == parts(&number)?)
+        .then_some(used)
 }
 
 /// An EXEC line's words as IOS reads them: before any `|`, lowercase, split on spaces and tabs.
@@ -255,16 +299,84 @@ mod tests {
         );
     }
 
-    /// Every keyword the 9300 book offers where one of a hazard's keywords stands, and which is a
-    /// start of it, is in its `shorter`: IOS reads it as itself.
+    const C9200L: Option<Family> = Some(Family::C9200L);
+
+    #[test]
+    fn a_c9200_line_is_a_hazard_on_the_interface_measured_alone() {
+        for line in [
+            "show interfaces Tunnel0 transceiver max-power",
+            "sh int tu0 trans max",
+            "SHOW INTERFACES TUNNEL 0 TRANSCEIVER MAX-POWER",
+            "show interfaces Tunnel0 transceiver max-power violation | include x",
+            "show interfaces GigabitEthernet0/0 transceiver max-power",
+            "sh int gi0/0 tr max-power violation",
+            "show interfaces gigabitethernet 0/0 transceiver max-power",
+            "show interfaces Gi00/0 transceiver max-power",
+        ] {
+            for family in [Family::C9200L, Family::C9200, Family::C9200B] {
+                assert!(
+                    typed(Some(family), "privileged", line).is_some(),
+                    "{family:?}: {line}"
+                );
+            }
+            assert!(typed(None, "privileged", line).is_some(), "{line}");
+            assert!(typed(C9300, "privileged", line).is_none(), "{line}");
+        }
+        assert!(typed(C9200L, "config-if", "do show int Tu0 transceiver max-power").is_some());
+        assert!(typed(C9200L, "config", "show int Tu0 transceiver max-power").is_none());
+        // the forms the switch answered, other interfaces and other words
+        for line in [
+            "show interfaces GigabitEthernet1/0/1 transceiver max-power",
+            "show interfaces GigabitEthernet1/0/1 transceiver max-power violation",
+            "show interfaces Gi1/1/1 transceiver max-power",
+            "show interfaces Tunnel1 transceiver max-power",
+            "show interfaces Gi0/0.1 transceiver max-power",
+            "show interfaces Gi0 transceiver max-power",
+            "show interfaces Vlan0 transceiver max-power",
+            "show interfaces Tunnel0 transceiver",
+            "show interfaces Tunnel0 transceiver max-power violation detail",
+            "show interfaces transceiver max-power",
+            "show interfaces t0 transceiver max-power",
+        ] {
+            assert!(typed(C9200L, "privileged", line).is_none(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_c9200_hazard_s_warning_and_explain_name_its_interface_and_release() {
+        let h = typed(C9200L, "privileged", "sh int tu0 trans max").unwrap();
+        assert_eq!(h.command, "show interfaces Tunnel0 transceiver max-power");
+        assert_eq!(
+            h.warning("17.15"),
+            "% vswitch: this command crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6)"
+        );
+        assert_eq!(
+            h.warning("17.6"),
+            "% vswitch: this command crashed a Catalyst 9200L at IOS XE 17.15.6 (IOSd segfault and reload)"
+        );
+        assert_eq!(
+            h.described("17.15"),
+            "'show interfaces Tunnel0 transceiver max-power' crashes the switch (IOSd segfault and reload on a Catalyst 9200L at IOS XE 17.15.6), measured 2026-10-21"
+        );
+    }
+
+    /// Every keyword a hazard's book offers at its release where one of its keywords stands, and
+    /// which is a start of it, is in its `shorter`: IOS reads it as itself. `show interface`, which
+    /// the books spell beside `interfaces`, is not one: IOS lists `interfaces` alone and vswitch
+    /// takes `show interface` as it.
     #[test]
     fn a_shorter_keyword_beside_a_hazard_s_is_listed() {
-        let engine = cli::Engine::new(
-            crate::grammars::grammar("c9300", Release::parse("17.6").unwrap()).unwrap(),
-        );
         for h in KNOWN {
+            let book = crate::grammars::book(h.families.first().copied());
+            let engine = cli::Engine::new(
+                crate::grammars::grammar(book, Release::parse(h.release).unwrap()).unwrap(),
+            );
             let keywords: Vec<&str> = h.command.split(' ').collect();
             for (i, k) in keywords.iter().enumerate() {
+                // the books' `show interface` is IOS's `show interfaces` (output.md)
+                if h.port == Some(i) || (i == 1 && *k == "interfaces") {
+                    continue;
+                }
                 let before = cli::tokens(&keywords[..i].join(" "));
                 for next in engine.next("privileged", &before).0 {
                     if let cli::Next::Kw { kw, .. } = next {

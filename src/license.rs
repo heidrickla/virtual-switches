@@ -112,13 +112,22 @@ pub fn taken(level: &str, mode: &str, line: &str, keywords: impl Fn(&str) -> Vec
 }
 
 /// `TAKEN` entries measured on one image (book, release) at a level its own crawl keys: the lab
-/// C9200L-48T-4G (17.6.4) took `l2 traceroute` at network-advantage too, its `?` listing no `l2`.
-pub const TAKEN_ON: &[((&str, &str), &str, &str, &str)] = &[(
-    crate::context::C9200_17_6,
-    "network-advantage",
-    "config",
-    "l2 traceroute",
-)];
+/// C9200L-48T-4G took `l2 traceroute` at network-advantage too, at 17.6.4 and at 17.15.6, its `?`
+/// listing no `l2`.
+pub const TAKEN_ON: &[((&str, &str), &str, &str, &str)] = &[
+    (
+        crate::context::C9200_17_6,
+        "network-advantage",
+        "config",
+        "l2 traceroute",
+    ),
+    (
+        crate::context::C9200_17_15,
+        "network-advantage",
+        "config",
+        "l2 traceroute",
+    ),
+];
 
 /// `taken`, or a `TAKEN_ON` entry for `image` (book, release).
 pub fn taken_on(
@@ -337,8 +346,18 @@ mod tests {
         assert!(taken_on(c9200, adv, "config", "L2 TRACEROUTE", none));
         assert!(!taken_on(c9200, adv, "config", "l2 vfi v1 manual", none));
         assert!(!taken_on(c9200, adv, "config-if", "l2 traceroute", none));
+        // measured again at 17.15.6; a release of the book the lab switch did not run takes none
+        let c9200_17_15 = ("c9200", "17.15");
+        assert!(taken_on(c9200_17_15, adv, "config", "l2 traceroute", none));
         assert!(!taken_on(
-            ("c9200", "17.15"),
+            c9200_17_15,
+            adv,
+            "config",
+            "l2 vfi v1 manual",
+            none
+        ));
+        assert!(!taken_on(
+            ("c9200", "17.12"),
             adv,
             "config",
             "l2 traceroute",

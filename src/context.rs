@@ -245,6 +245,9 @@ pub struct Refusal {
 
 pub(crate) const C9300_17_6: (&str, &str) = ("c9300", "17.6");
 pub(crate) const C9200_17_6: (&str, &str) = ("c9200", "17.6");
+pub(crate) const C9200_17_15: (&str, &str) = ("c9200", "17.15");
+/// The C9200 images the lab C9200L-48T-4G was measured on, at 17.6.4 and at 17.15.6.
+pub(crate) const C9200_LAB: &[(&str, &str)] = &[C9200_17_6, C9200_17_15];
 const BOTH: &[&str] = &["network-advantage", "network-essentials"];
 const ADVANTAGE: &[&str] = &["network-advantage"];
 
@@ -264,8 +267,8 @@ const fn dot1as(words: &'static [&'static str]) -> Refusal {
 /// Lines the lab C9300-24T (17.6.4) refused that its crawl's answers offer. It refused
 /// `class <name>` at global configuration past `class` at both levels and took `class-map <name>`;
 /// at network-advantage under `ptp profile dot1as` it refused `ptp mode` and `ptp transport` at
-/// their second word and took `ptp priority1`. The lab C9200L-48T-4G (17.6.4) refused `class
-/// <name>` alike at both levels.
+/// their second word and took `ptp priority1`. The lab C9200L-48T-4G refused `class <name>` alike at
+/// both levels, at 17.6.4 and at 17.15.6.
 pub const REFUSED: &[Refusal] = &[
     Refusal {
         book: C9300_17_6.0,
@@ -279,6 +282,15 @@ pub const REFUSED: &[Refusal] = &[
     Refusal {
         book: C9200_17_6.0,
         release: C9200_17_6.1,
+        levels: BOTH,
+        mode: "config",
+        words: &["class", "<word>"],
+        state: "",
+        caret: Caret::After(0),
+    },
+    Refusal {
+        book: C9200_17_15.0,
+        release: C9200_17_15.1,
         levels: BOTH,
         mode: "config",
         words: &["class", "<word>"],

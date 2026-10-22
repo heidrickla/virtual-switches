@@ -145,9 +145,10 @@ A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswit
 |---|---|---|
 | C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
 | C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
+| C9200 17.15 | C9200L-48T-4G, 17.15.6 | `network-advantage`, `network-essentials` |
 | C2960 15.0(2)SE | C2960G, 15.0(2)SE11 | `lanbase` |
 
-The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 crawls answer for their own image at both levels, the licence gate included.
+The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 and 17.15 crawls answer for their own images at both levels, the licence gate included.
 
 ### Crawl folders
 
@@ -287,10 +288,11 @@ A configuration or privileged EXEC line is read against the image's own answers 
 - A number range row takes a rate with its unit (`1m`) and a list of numbers and ranges (`31-35,41`).
 - A file system's row (`flash:`) fits a path after it and no other word.
 - A value the crawl typed otherwise reads the keyword after it as after the crawl's own value: `spanning-tree vlan 2-4 cost` as `spanning-tree vlan 10 cost`. The value fills the same `<lo-hi>` row as the crawl's, or the `WORD` the switch describes as a numbered range (`vlan range, example: 1,3-5,7,9-11`), and the crawl's values there were answered alike. A number after the value can be bounded by it (the switch took `mpls label range 100 1000 static 16 99`, where its crawl's `mpls label range 16 16 static ?` offered 17 and up), and answers further on can depend on it (MST 0 takes `root primary diameter`, instance 10 does not); neither is read this way.
-- An answer that lists the objects configured offers this session's: `No monitors configured` and its kin, and the crawl's own names, its `User defined` rows after `record`, `exporter`, `monitor` or `sampler`. On the C9300 17.6 image a flow record counts once it holds a field, and a flow monitor named on an interface once it holds a record, as the lab C9300-24T (17.6.4) refused an empty record in a monitor and a monitor without one on a port; the lab C9200L-48T-4G (17.6.4) read both names. On the C9200 17.6 image a port's monitor without a record answers that switch's message (output.md, Messages the configuration gives), and a sampler the session lacks is refused at its name. A keyword the answer offers beside the names is read as any other, and so is a word the switch answered `?` after where the answer said none was configured (`name` after `show flow exporter`).
+- An answer that lists the objects configured offers this session's: `No monitors configured` and its kin, and the crawl's own names, its `User defined` rows after `record`, `exporter`, `monitor` or `sampler`. On the C9300 17.6 image a flow record counts once it holds a field, and a flow monitor named on an interface once it holds a record, as the lab C9300-24T (17.6.4) refused an empty record in a monitor and a monitor without one on a port; the lab C9200L-48T-4G (17.6.4) read both names. On the C9200 17.6 and 17.15 images a port's monitor without a record answers the lab C9200L-48T-4G's message (output.md, Messages the configuration gives), and a sampler the session lacks is refused at its name. A keyword the answer offers beside the names is read as any other, and so is a word the switch answered `?` after where the answer said none was configured (`name` after `show flow exporter`).
 - A refusal held right after a name such an answer listed, or after the keyword before a name (`name` after `clear flow monitor`), describes the objects the crawl's switch held. The line is read on past a name. After the keyword, where this session holds an object of the kind, the next word is read as one of this session's names; where it holds none, the refusal stands.
 - A privileged line naming an object this session configured, of a kind `?` names (`live::NAMED_KINDS`: flow monitor, sampler, flow record, flow exporter), takes the name where the crawl, asked with none configured, listed none.
 - On a routed port only the configured-object answers are read: every physical port shares one context, which holds the crawled switchport's answers. A PoE port's `power` lines are not read: the crawled ports had no PoE.
+- The types after `switch <n> provision` are those the crawled switch stacks with (the lab C9200L-48T-4G listed C9200L models alone): where they name none of the session's stack family, the line is left to the books.
 - Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides.
 
 Lines the switch refused where its crawl offers the words (`context::REFUSED`), refused on the image and at the levels they were measured on, where that image has its own crawl at the session's level:
@@ -299,6 +301,7 @@ Lines the switch refused where its crawl offers the words (`context::REFUSED`), 
 |---|---|---|---|---|---|
 | c9300 17.6 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
 | c9200 17.6 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
+| c9200 17.15 | network-advantage, network-essentials | config | `class <name>` | any | after `class`; `class-map` is taken |
 | c9300 17.6 | network-advantage | config | `ptp mode boundary delay-req`, `ptp mode boundary pdelay-req`, `ptp mode e2etransparent`, `ptp mode p2ptransparent` | `ptp profile dot1as` | at `mode` |
 | c9300 17.6 | network-advantage | config | `ptp transport ipv4 udp` | `ptp profile dot1as` | at `transport` |
 
@@ -324,7 +327,7 @@ Measured exceptions, `src/license.rs`:
 | `REFUSED_TYPES` | `network-essentials` | any | `pseudowire`, `Auto-Template` with a number | refused past the characters another listed type begins with (`interface pseudowire 100` under the `s`) |
 | `UNLISTED` | `network-essentials` | config | `net` | `net` taken, the NET after it refused under its first character |
 | `TAKEN` | `network-essentials` | config | `l2 traceroute` | taken though `?` lists no `l2`; `l2 vfi` is refused |
-| `TAKEN_ON` | `network-advantage` on c9200 17.6 | config | `l2 traceroute` | taken though that image's `?` lists no `l2` |
+| `TAKEN_ON` | `network-advantage` on c9200 17.6 and 17.15 | config | `l2 traceroute` | taken though that image's `?` lists no `l2` |
 | `LEFT_OUT` | `network-essentials` | config-subif | `xconnect` | refused at the word |
 
 A table's word stands for its unique abbreviations among the keywords offered where it is typed, the held answer's else the books' (`context::stands_for`). A start of it and of another keyword answers `% Ambiguous command` for `UNLISTED` and `LEFT_OUT`, and is not taken for `TAKEN` and `TAKEN_ON`.
@@ -346,6 +349,7 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 |---|---|---|
 | C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
 | C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
+| C9200 17.15 | C9200L-48T-4G, 17.15.6 | `network-advantage`, `network-essentials` |
 
 ### Sweep folders
 
