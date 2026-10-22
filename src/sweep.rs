@@ -280,10 +280,44 @@ fn secrets(lw: &[String], place: &Place) -> Vec<Hit> {
         return out;
     }
     let neighbor = is(k, "neighbor", 3);
+    // `parameter-map type umbrella global` holds the Umbrella connector's `token` and `api-key`
+    let umbrella = mode == "config-profile"
+        || (header.len() >= 3
+            && abbreviates(header[0], "parameter-map", 3)
+            && abbreviates(header[2], "umbrella", 2));
+    // LISP `etr map-server <address> key [<type>] <key>`, and EXEC `cts change-password server ...
+    // key <key>`
+    let named_key = (lw[k..].iter().any(|w| w == "etr")
+        && lw[k..].iter().any(|w| w == "map-server"))
+        || (at(k) == "cts" && is(k + 1, "change-password", 8));
     for i in k..n {
         let w = at(i);
         let first = i == k;
         let hit = match w {
+            "token" if first && umbrella => {
+                Some((value_after(lw, i + 1, &[]), n, "umbrella token"))
+            }
+            "api-key" => Some((value_after(lw, i + 1, &[]), n, "api key")),
+            "service-key" => Some((value_after(lw, i + 1, &[]), n, "service key")),
+            "key" if named_key && i > k => {
+                let v = value_after(lw, i + 1, &[]);
+                Some((v, v + 1, "server key"))
+            }
+            // RADIUS key wrap, the control-plane's `auth-key`, EnergyWise domain secrets
+            "encryption-key"
+            | "message-auth-code-key"
+            | "auth-key"
+            | "shared-secret"
+            | "ntp-shared-secret" => {
+                let v = value_after(lw, i + 1, &[]);
+                Some((v, v + 1, "key"))
+            }
+            "authorization-key" if at(k) == "fips" => {
+                Some((value_after(lw, i + 1, &[]), n, "fips key"))
+            }
+            "pin" if at(k) == "bluetooth" => {
+                Some((value_after(lw, i + 1, &[]), n, "bluetooth pin"))
+            }
             // enable and username lines name theirs above
             "password"
                 if !enable && !username && !names_no_password(at(k), at(k + 1), at(i + 1)) =>
@@ -882,6 +916,51 @@ password encryption aes
             s.text,
             " domain-password <removed> authenticate snp validate\n"
         );
+    }
+
+    #[test]
+    fn umbrella_lisp_key_wrap_energywise_and_other_named_keys_go() {
+        let out = swept_lines(
+            "parameter-map type umbrella global\n token InventedTok1\n api-key InventedApi1\n orgid 1234567\n\
+             stealthwatch-cloud-monitor\n service-key InventedSwc1\n\
+             radius server R2\n key-wrap encryption-key 7 InventedKw1 message-auth-code-key 7 InventedKw2 format ascii\n\
+             router lisp\n service ipv4\n  etr map-server 10.0.0.7 key 6 InventedEtr1 hash-function sha2\n\
+             energywise domain D1 security shared-secret 0 InventedEw1 protocol udp port 43440\n\
+             energywise domain D2 security ntp-shared-secret InventedEw2\n\
+             fips authorization-key InventedFips1\n\
+             bluetooth pin 4821\n\
+             sw1(config)#parameter-map type umbrella global\n\
+             sw1(config-profile)#token InventedTok2\n\
+             sw1(config-profile)#end\n\
+             sw1#cts change-password server 10.0.0.8 1812 key InventedCts1\n",
+            &[
+                "InventedTok1",
+                "InventedApi1",
+                "InventedSwc1",
+                "InventedKw1",
+                "InventedKw2",
+                "InventedEtr1",
+                "InventedEw1",
+                "InventedEw2",
+                "InventedFips1",
+                "4821",
+                "InventedTok2",
+                "InventedCts1",
+            ],
+        );
+        for kept in [
+            " token <removed>",
+            " orgid 1234567",
+            " key-wrap encryption-key 7 <removed> message-auth-code-key 7 <removed> format ascii",
+            "  etr map-server 10.0.0.7 key 6 <removed> hash-function sha2",
+            "energywise domain D1 security shared-secret 0 <removed> protocol udp port 43440",
+            "sw1(config-profile)#token <removed>",
+        ] {
+            assert!(out.iter().any(|l| l == kept), "missing {kept:?}: {out:#?}");
+        }
+        // outside the Umbrella parameter map, `token` names no value
+        let text = "crypto pki token default removal timeout 0\n";
+        assert_eq!(sweep(text).text, text);
     }
 
     #[test]
