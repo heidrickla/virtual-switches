@@ -3257,6 +3257,57 @@ fn reachable(d: &Device, defined: &std::collections::BTreeSet<u32>, a: std::net:
         })
 }
 
+/// The IPv4 prefixes the global CEF table holds: IOS's own, each running interface's subnet and
+/// address, and each static route whose interface runs or whose next hop the table reaches. The lab
+/// C9200L-48T-4G (17.6.4, network-essentials) listed `0.0.0.0/0`, `0.0.0.0/8`, `0.0.0.0/32`,
+/// `127.0.0.0/8`, `224.0.0.0/4`, `224.0.0.0/24`, `240.0.0.0/4` and `255.255.255.255/32` beside its
+/// loopbacks' addresses and a Null0 route, and held `10.1.1.0/24` for a Null0 route but not for a
+/// down SVI's subnet; a running subnet's network and broadcast addresses are inferred.
+pub fn cef_prefixes(d: &Device) -> std::collections::BTreeSet<(std::net::Ipv4Addr, u8)> {
+    use std::net::Ipv4Addr;
+    let defined = defined_vlans(d);
+    let len = |m: Ipv4Addr| u32::from(m).count_ones() as u8;
+    let mut out: std::collections::BTreeSet<(Ipv4Addr, u8)> = [
+        ([0, 0, 0, 0], 0),
+        ([0, 0, 0, 0], 8),
+        ([0, 0, 0, 0], 32),
+        ([127, 0, 0, 0], 8),
+        ([224, 0, 0, 0], 4),
+        ([224, 0, 0, 0], 24),
+        ([240, 0, 0, 0], 4),
+        ([255, 255, 255, 255], 32),
+    ]
+    .into_iter()
+    .map(|(a, n)| (Ipv4Addr::from(a), n))
+    .collect();
+    for (_, a, m) in addressed(d, &defined) {
+        let net = u32::from(a) & u32::from(m);
+        out.insert((Ipv4Addr::from(net), len(m)));
+        out.insert((a, 32));
+        if len(m) <= 30 {
+            out.insert((Ipv4Addr::from(net), 32));
+            out.insert((Ipv4Addr::from(net | !u32::from(m)), 32));
+        }
+    }
+    for e in &d.global {
+        let words: Vec<&str> = e.text.split_whitespace().collect();
+        let ["ip", "route", net, mask, hop, ..] = words[..] else {
+            continue;
+        };
+        let (Ok(net), Ok(mask)) = (net.parse::<Ipv4Addr>(), mask.parse::<Ipv4Addr>()) else {
+            continue;
+        };
+        let installed = match hop.parse() {
+            Ok(h) => reachable(d, &defined, h),
+            Err(_) => hop == "Null0" || brief_state(d, hop, &defined) == ("up", "up"),
+        };
+        if installed {
+            out.insert((Ipv4Addr::from(u32::from(net) & u32::from(mask)), len(mask)));
+        }
+    }
+    out
+}
+
 /// The tunnels PIM makes where `ip pim rp-address` names an RP and multicast routing runs, numbered
 /// after the configured tunnels (the lab C9300-24T, 17.6.4, with Tunnel0 configured): the
 /// encapsulation tunnel, addressed from the first sparse-mode interface (unassigned and its

@@ -212,8 +212,8 @@ A patch reaches every command of its name. `compile` lists the overrides a relea
 | Use | Example |
 |---|---|
 | A hardware document the release books do not cover | the supervisor installation note's `enable` on the 9400 |
-| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command; the submodes `coap proxy`, a key chain's `key`, a TCP key chain and `police` enter on the Catalyst 9200, where an interface's `mka policy` enters none |
-| A correction to every release of one book | the 2960-X `channel-group` |
+| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command; the submodes `coap proxy`, a key chain's `key`, a TCP key chain and `police` enter on the Catalyst 9200, where an interface's `mka policy` enters none; the LISP submodes (an instance, the IPv4 and Ethernet services under `router lisp` and under an instance, a dynamic EID, a locator set, a prefix list, an extranet and its provider) and the lines the C9200L took in them, which the 9200 books give no mode |
+| A correction to every release of one book | the 2960-X `channel-group`; the 9200 policy server's `address`, whose book names its IPv4 and IPv6 addresses one free word |
 | A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables`, `key-hash` and `service unsupported-transceiver` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960; `ip ospf area`, `eigrp stub`, `ip dhcp client client-id`, `set tag`, `fallback profile`, an interface's OSPF timers, a global `version`, `router lisp` and its `ipv4 map-cache-limit`, and `fqdn ttl-timeout-factor` on the Catalyst 9200 |
 
 ## Matching

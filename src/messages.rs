@@ -20,6 +20,21 @@ pub enum Kind {
 pub enum Rule {
     /// `router lisp`
     Lisp,
+    /// an EID table for LISP instance 0 under a running `router lisp`: `instance-id 0` with an
+    /// IPv4 service, or `eid-table <vrf> instance-id 0`; a line naming another instance or LISP
+    /// router lacks nothing
+    LispInstance,
+    /// the EID table of the VRF the line names, `default` where it names none, under a running
+    /// `router lisp`: an `eid-table` line for it in an instance's IPv4 service, or one naming its
+    /// instance
+    LispEidTable,
+    /// an instance's Ethernet service on the VLAN the line names (`eid-table vlan <n>`), under a
+    /// running `router lisp`
+    LispVlan,
+    /// `ddt` under a running `router lisp`
+    LispDdt,
+    /// a `prefix-list` under a running `router lisp`, the one the line names where it names one
+    LispPrefixList,
     /// a subscriber session or service, which vswitch never holds
     Subscriber,
     /// an `snmp-server` line other than `location` and `contact`, which leave the agent off
@@ -61,6 +76,14 @@ pub enum Rule {
     PeerGroup,
     /// `cdp tlv-list`, or the one the line names
     TlvList,
+    /// `address-family l2vpn evpn` in a running `router bgp`, for an EVPN line; another family's
+    /// line lacks nothing
+    EvpnTable,
+    /// the EVPN instance the line names (`l2vpn evpn instance <n>`), a `router bgp` running
+    Evi,
+    /// the IPv4 prefix the line names in the global CEF table (`show::cef_prefixes`); a line in
+    /// another VRF lacks nothing
+    CefPrefix,
 }
 
 /// The messages vswitch holds, as IOS XE prints them (the lab C9300-24T, 17.6.4); `{}` stands for
@@ -134,6 +157,34 @@ pub const MESSAGES: &[(&str, Kind)] = &[
     // a fixed-configuration switch has no linecards
     ("% Linecard information not found", Kind::Fixed),
     ("% LISP is not running.", Kind::State(Rule::Lisp)),
+    // the C9200 images on an empty `router lisp` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the
+    // first EID table text is 17.15's, the second 17.6's)
+    (
+        "% Could not find EID table instance ID 0 in LISP 0.",
+        Kind::State(Rule::LispInstance),
+    ),
+    (
+        "% Could not find EID or RLOC table for specified VRF {}.",
+        Kind::State(Rule::LispEidTable),
+    ),
+    (
+        "% Could not find EID table for specified VRF {}.",
+        Kind::State(Rule::LispEidTable),
+    ),
+    ("% Invalid VRF name!", Kind::State(Rule::Vrf)),
+    ("% Invalid VLAN ID!", Kind::State(Rule::LispVlan)),
+    (
+        "% DDT functionality is currently NOT ENABLED.",
+        Kind::State(Rule::LispDdt),
+    ),
+    (
+        "% There is no prefix list to display.",
+        Kind::State(Rule::LispPrefixList),
+    ),
+    (
+        "% Prefix list {} does not exist.",
+        Kind::State(Rule::LispPrefixList),
+    ),
     (
         "%No active Subscriber Sessions",
         Kind::State(Rule::Subscriber),
@@ -185,6 +236,11 @@ pub const MESSAGES: &[(&str, Kind)] = &[
         "%Tlv-list name does not exists.",
         Kind::State(Rule::TlvList),
     ),
+    // a `router bgp` with no EVPN family or instance (the lab C9200L-48T-4G, 17.6.4 and 17.15.6)
+    ("% Network not in table", Kind::State(Rule::EvpnTable)),
+    ("% Unknown EVI", Kind::State(Rule::Evi)),
+    // the lab C9200L-48T-4G (17.6.4 and 17.15.6)
+    ("%Prefix not found", Kind::State(Rule::CefPrefix)),
 ];
 
 /// The patterns a message line fits, each with where its value stands in the line.
@@ -226,8 +282,10 @@ pub fn kind(held: &str) -> Option<Kind> {
 /// The message lines the switch printed before any output for a line (`raw`), as its form holds
 /// them: notices, then the fixed or state messages that end the answer. A value is written
 /// `{<place>}`, its place the one value token of `form` whose word of the line (`words`) the
-/// message names; a value the form holds as a keyword stays as printed. Notices before a line no
-/// pattern reads are held alone; an ending message is held only where it ends the lines.
+/// message names; a value the form holds as a keyword stays as printed. An ending message is held
+/// only where it ends the lines; the notices before a line no pattern reads, or before an ending
+/// message another line follows, are held alone (`show bgp ipv6 2001:DB8::/32` printed the obsolete
+/// notice, `% Network not in table` and a deprecation notice on the lab C9200L-48T-4G, 17.15.6).
 pub fn template(raw: &[String], form: &[&str], words: &[&str]) -> Vec<String> {
     let names = |i: usize, value: &str| {
         words[i] == value
@@ -254,21 +312,22 @@ pub fn template(raw: &[String], form: &[&str], words: &[&str]) -> Vec<String> {
         }
     };
     let mut out = vec![];
-    let mut ended = false;
+    // how many notices came before the first ending message
+    let mut notices = None;
     for m in raw {
         let read = fit(m)
             .into_iter()
             .find_map(|(k, slot)| held(m, slot).map(|t| (t, k)));
-        let Some((t, k)) = read else {
-            // the notices before a line no pattern reads stand; an ending message does not
-            return if ended { vec![] } else { out };
-        };
-        match k {
-            Kind::Notice if ended => return vec![],
-            Kind::Notice => out.push(t),
-            _ => {
-                ended = true;
+        match read {
+            Some((t, Kind::Notice)) if notices.is_none() => out.push(t),
+            Some((t, k)) if !matches!(k, Kind::Notice) => {
+                notices.get_or_insert(out.len());
                 out.push(t);
+            }
+            // the notices before a line no pattern reads stand; an ending message does not
+            _ => {
+                out.truncate(notices.unwrap_or(out.len()));
+                return out;
             }
         }
     }
@@ -279,10 +338,11 @@ pub fn template(raw: &[String], form: &[&str], words: &[&str]) -> Vec<String> {
 /// messages that end the answer where each holds in `d`, else the command's own output `out`; and
 /// whether the messages stood in place of the output. `items` is the line's parse by the form.
 pub fn print(held: &[String], items: &[Item], d: &Device, out: Vec<String>) -> (Vec<String>, bool) {
-    let config = Config::read(
+    let mut config = Config::read(
         &crate::show::configuration(d),
         d.stack.management().is_some(),
     );
+    config.cef = crate::show::cef_prefixes(d);
     print_by(held, items, &config, out)
 }
 
@@ -336,11 +396,12 @@ struct Line {
     within: Vec<String>,
 }
 
-/// The running configuration's top-level lines, each with the lines printed under it, and whether
-/// the switch has a management port (its `Mgmt-vrf`).
+/// The running configuration's top-level lines, each with the lines printed under it, whether
+/// the switch has a management port (its `Mgmt-vrf`), and the prefixes its global CEF table holds.
 struct Config {
     sections: Vec<(String, Vec<Line>)>,
     management: bool,
+    cef: std::collections::BTreeSet<(std::net::Ipv4Addr, u8)>,
 }
 
 /// What a submode chain names: its address family (`ipv6` where a line of it says so, else
@@ -405,6 +466,7 @@ impl Config {
         Config {
             sections,
             management,
+            cef: Default::default(),
         }
     }
 
@@ -473,6 +535,52 @@ impl Config {
         };
         match r {
             Rule::Lisp => !self.top("router lisp"),
+            Rule::LispInstance => {
+                // the line's numbers, the instance and LISP router it names, are all 0
+                let zero = items.iter().zip(values).all(|(i, v)| {
+                    !matches!(i, Item::Arg { .. })
+                        || !v.bytes().all(|b| b.is_ascii_digit())
+                        || *v == "0"
+                });
+                zero && self.top("router lisp")
+                    && !self.lines_under("router lisp").any(|(l, chain)| {
+                        l.starts_with("eid-table ") && l.ends_with(" instance-id 0")
+                            || l == "service ipv4" && chain.last() == Some(&"instance-id 0")
+                    })
+            }
+            Rule::LispEidTable => {
+                let vrf = after("vrf").unwrap_or("default");
+                let table = if vrf == "default" {
+                    "eid-table default".to_string()
+                } else {
+                    format!("eid-table vrf {vrf}")
+                };
+                self.top("router lisp")
+                    && !self.lines_under("router lisp").any(|(l, chain)| {
+                        l.starts_with(&format!("{table} instance-id "))
+                            || l == table && chain.contains(&"service ipv4")
+                    })
+            }
+            Rule::LispVlan => after("vlan").is_some_and(|v| {
+                let table = format!("eid-table vlan {v}");
+                self.top("router lisp") && !self.lines_under("router lisp").any(|(l, _)| l == table)
+            }),
+            Rule::LispDdt => {
+                self.top("router lisp")
+                    && !self.lines_under("router lisp").any(|(l, chain)| {
+                        chain.len() == 1 && l.split_whitespace().next() == Some("ddt")
+                    })
+            }
+            Rule::LispPrefixList => {
+                let list = |l: &str| match named("prefix-list") {
+                    Some(name) => l == format!("prefix-list {name}"),
+                    None => l.starts_with("prefix-list "),
+                };
+                self.top("router lisp")
+                    && !self
+                        .lines_under("router lisp")
+                        .any(|(l, chain)| chain.len() == 1 && list(l))
+            }
             Rule::Subscriber => true,
             Rule::SnmpAgent => self.sections.iter().all(|(h, _)| {
                 !h.starts_with("snmp-server ")
@@ -562,14 +670,17 @@ impl Config {
                         .any(|f| !f.ipv6 && f.multicast == multicast)
             }),
             Rule::OspfInterface => value.is_some_and(|name| self.ospf_off(name)),
-            Rule::Vrf => named("vrf").is_some_and(|name| {
-                let mgmt = name == "Mgmt-vrf" && self.management;
-                !mgmt
-                    && !self.sections.iter().any(|(h, _)| {
-                        h.strip_prefix("vrf definition ") == Some(name)
-                            || h.strip_prefix("ip vrf ") == Some(name)
-                    })
-            }),
+            // a LISP EID table names its VRF bare (`show lisp eid-table <vrf>`)
+            Rule::Vrf => named("vrf")
+                .or_else(|| after("eid-table"))
+                .is_some_and(|name| {
+                    let mgmt = name == "Mgmt-vrf" && self.management;
+                    !mgmt
+                        && !self.sections.iter().any(|(h, _)| {
+                            h.strip_prefix("vrf definition ") == Some(name)
+                                || h.strip_prefix("ip vrf ") == Some(name)
+                        })
+                }),
             Rule::ConfigLogger => !self.lines_under("archive").any(|(l, chain)| {
                 l == "logging enable" && chain.last().is_some_and(|c| *c == "log config")
             }),
@@ -613,6 +724,29 @@ impl Config {
                 Some(name) if name != "*" => !self.has(&format!("cdp tlv-list {name}")),
                 _ => !self.top("cdp tlv-list "),
             },
+            Rule::EvpnTable => {
+                has_kw("evpn")
+                    && self.top("router bgp ")
+                    && !self
+                        .lines_under("router bgp ")
+                        .any(|(l, _)| l == "address-family l2vpn evpn")
+            }
+            Rule::Evi => after("evi").is_some_and(|n| {
+                let header = format!("l2vpn evpn instance {n}");
+                self.top("router bgp ")
+                    && !self
+                        .sections
+                        .iter()
+                        .any(|(h, _)| *h == header || h.starts_with(&format!("{header} ")))
+            }),
+            Rule::CefPrefix => {
+                let prefix = values.iter().find_map(|v| {
+                    let (a, n) = v.split_once('/')?;
+                    Some((a.parse().ok()?, n.parse().ok()?))
+                });
+                after("vrf").is_none_or(|v| v == "Default")
+                    && prefix.is_some_and(|p| !self.cef.contains(&p))
+            }
         }
     }
 
@@ -1011,6 +1145,91 @@ mod tests {
                 "cdp tlv-list U",
                 &["cdp tlv-list T"],
             ),
+            // the lab C9200L-48T-4G (17.6.4 and 17.15.6) on an empty `router lisp`; with no LISP
+            // process, and with each table defined, what it prints is unmeasured
+            (
+                "% Could not find EID table instance ID 0 in LISP 0.",
+                "show ip lisp database",
+                "show ip lisp database",
+                "router lisp\n instance-id 3\n  service ipv4",
+                &[
+                    "router lisp\n instance-id 0\n  service ipv4\n   eid-table default",
+                    "router lisp\n eid-table default instance-id 0",
+                    "",
+                ],
+            ),
+            (
+                "% Could not find EID or RLOC table for specified VRF default.",
+                "show lisp eid-table default ipv4",
+                "show lisp eid-table default ipv4",
+                "router lisp\n instance-id 3\n  service ipv4\n   eid-table vrf RED",
+                &[
+                    "router lisp\n instance-id 3\n  service ipv4\n   eid-table default",
+                    "router lisp\n eid-table default instance-id 3",
+                    "",
+                ],
+            ),
+            (
+                "% Could not find EID table for specified VRF RED.",
+                "show ip lisp eid-table vrf <word> database",
+                "show ip lisp eid-table vrf RED database",
+                "router lisp\n instance-id 3\n  service ipv4\n   eid-table default",
+                &["router lisp\n instance-id 3\n  service ipv4\n   eid-table vrf RED"],
+            ),
+            (
+                "% Invalid VRF name!",
+                "show lisp eid-table <word>",
+                "show lisp eid-table 10",
+                "router lisp",
+                &["vrf definition 10"],
+            ),
+            (
+                "% Invalid VLAN ID!",
+                "show lisp eid-table vlan <number:1-4094>",
+                "show lisp eid-table vlan 1",
+                "router lisp\n instance-id 3\n  service ethernet\n   eid-table vlan 10",
+                &[
+                    "router lisp\n instance-id 3\n  service ethernet\n   eid-table vlan 1",
+                    "",
+                ],
+            ),
+            (
+                "% DDT functionality is currently NOT ENABLED.",
+                "show lisp ddt",
+                "show lisp ddt",
+                "router lisp",
+                &["router lisp\n ddt", ""],
+            ),
+            (
+                "% There is no prefix list to display.",
+                "show lisp prefix-list",
+                "show lisp prefix-list",
+                "router lisp",
+                &["router lisp\n prefix-list wired\n  192.168.0.0/16", ""],
+            ),
+            (
+                "% Prefix list 10 does not exist.",
+                "show lisp prefix-list <word>",
+                "show lisp prefix-list 10",
+                "router lisp\n prefix-list wired",
+                &["router lisp\n prefix-list 10"],
+            ),
+            // a `router bgp` with neither an EVPN family nor the instance (the lab C9200L-48T-4G,
+            // 17.6.4 and 17.15.6)
+            (
+                "% Network not in table",
+                "show bgp l2vpn evpn route-type ethernet-segment",
+                "show bgp l2vpn evpn route-type ethernet-segment",
+                "router bgp 1\n address-family ipv4",
+                &["router bgp 1\n address-family l2vpn evpn", ""],
+            ),
+            (
+                "% Unknown EVI",
+                "show bgp l2vpn evpn evi <number:1-65535> detail",
+                "show bgp l2vpn evpn evi 1 detail",
+                "router bgp 1\nl2vpn evpn instance 2 vlan-based",
+                &["router bgp 1\nl2vpn evpn instance 1 vlan-based", ""],
+            ),
         ];
         for (said, form, line, lacking, holding) in cases {
             assert!(stands(said, form, line, lacking), "{line} on {lacking:?}");
@@ -1034,6 +1253,19 @@ mod tests {
             "show eigrp address-family ipv4 topology base",
             "router eigrp NAMED\n address-family ipv4 unicast autonomous-system 2"
         ));
+        // a LISP line naming another instance, and a BGP line outside EVPN, lack nothing
+        assert!(!stands(
+            "% Could not find EID table instance ID 0 in LISP 0.",
+            "show ip lisp instance-id <number:0-16777200>",
+            "show ip lisp instance-id 5",
+            "router lisp"
+        ));
+        assert!(!stands(
+            "% Network not in table",
+            "show bgp ipv4 unicast <word>",
+            "show bgp ipv4 unicast 10.1.1.0/24",
+            "router bgp 1"
+        ));
         // vswitch holds no subscriber session
         assert!(stands(
             "%No active Subscriber Sessions",
@@ -1050,6 +1282,29 @@ mod tests {
         assert!(!print_by(&held, &parse(&form, &words), &with, out()).1);
         let without = Config::read(&[], false);
         assert!(print_by(&held, &parse(&form, &words), &without, out()).1);
+    }
+
+    #[test]
+    fn a_cef_prefix_message_reads_the_switch_s_table() {
+        // the lab C9200L-48T-4G (17.6.4 and 17.15.6) printed it for a down SVI's subnet, and the
+        // prefix once a Null0 route installed it
+        let form = ["show", "ip", "cef", "<word>", "detail"];
+        let words = ["show", "ip", "cef", "10.1.1.0/24", "detail"];
+        let held = template(&lines(&["%Prefix not found"]), &form, &words);
+        let out = || vec!["output".to_string()];
+        let mut config = Config::read(&[], true);
+        assert!(print_by(&held, &parse(&form, &words), &config, out()).1);
+        config.cef.insert(([10, 1, 1, 0].into(), 24));
+        assert!(!print_by(&held, &parse(&form, &words), &config, out()).1);
+        // `Default` is the global table; another VRF's is unread
+        let config = Config::read(&[], true);
+        let form = ["show", "ip", "cef", "vrf", "<word>", "<word>"];
+        for (vrf, stood) in [("Default", true), ("RED", false)] {
+            let words = ["show", "ip", "cef", "vrf", vrf, "10.1.1.0/24"];
+            let held = template(&lines(&["%Prefix not found"]), &form, &words);
+            let said = print_by(&held, &parse(&form, &words), &config, out());
+            assert_eq!(said.1, stood, "{vrf}");
+        }
     }
 
     /// A state message reads the context it names: the address family, VRF, autonomous system and
@@ -1174,6 +1429,22 @@ mod tests {
             [NOTICE]
         );
         assert!(template(&lines(&["% LISP is not running.", NOTICE]), &form, &form).is_empty());
+        assert_eq!(
+            template(
+                &lines(&[NOTICE, "% LISP is not running.", NOTICE]),
+                &form,
+                &form
+            ),
+            [NOTICE]
+        );
+        assert_eq!(
+            template(
+                &lines(&[NOTICE, "% LISP is not running.", "% Something else"]),
+                &form,
+                &form
+            ),
+            [NOTICE]
+        );
         assert!(
             template(
                 &lines(&["% LISP is not running.", "% Something else"]),

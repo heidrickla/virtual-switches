@@ -186,9 +186,10 @@ pub const STATE_PREDICATES: &[(&str, &str)] = &[
 ];
 
 /// Lines a crawl's `?` answers do not judge: the lab C9300-24T (17.6.4) took them where its crawl
-/// offered none of their words. Each is a mode, a line's start (past `no` or `default`) and the
-/// configured line under which the switch took them, `""` where the port's own state or hardware
-/// decides or `?` hides the line in every state. The crawl ran without `aaa new-model`, `fhrp version vrrp v3` and `ptp profile
+/// offered none of their words, and the lab C9200L-48T-4G (17.15.6) took `exit-router-lisp` from
+/// its running configuration though its `?` under `router lisp` hides it. Each is a mode, a line's
+/// start (past `no` or `default`) and the configured line under which the switch took them, `""`
+/// where the port's own state or hardware decides or `?` hides the line in every state. The crawl ran without `aaa new-model`, `fhrp version vrrp v3` and `ptp profile
 /// dot1as`, on ports with no dual-purpose media (the captured 2960s set `media-type` on theirs) and
 /// on a sub-interface with no encapsulation.
 pub const UNJUDGED: &[(&str, &str, &str)] = &[
@@ -207,6 +208,7 @@ pub const UNJUDGED: &[(&str, &str, &str)] = &[
     ("config-if", "media-type", ""),
     ("config-if", "ptp sync", ""),
     ("config", "vtp file", ""),
+    ("config-router-lisp", "exit-router-lisp", ""),
 ];
 
 /// Whether `line` in `mode` is one a crawl's answers do not judge (`UNJUDGED`) in the state

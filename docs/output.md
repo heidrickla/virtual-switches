@@ -42,6 +42,8 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | `router bgp <asn>` | another AS running | `BGP is already running; AS is <asn>` |
 | `address-family ... autonomous-system <n>` in a named EIGRP instance | the instance's family (address family, unicast or multicast, VRF) holds another AS | `Changing from AS(<old>) to AS(<n>) is not allowed` |
 | the same | another named instance's family runs AS `<n>` | `%ERROR: AS(<n>) in use by VR(<name>)` |
+| the same, an IPv4 family outside a VRF | `router eigrp <n>` runs (the lab C9200L-48T-4G, 17.15.6) | `%ERROR: AS(<n>) in use by classic router` |
+| `address-family ipv4 [unicast] ... vrf <name> ...` in a classic `router eigrp <n>` (the lab C9200L-48T-4G, 17.15.6) | no `vrf definition` or `ip vrf` of the name | `%VRF <name> does not exist or is not enabled for IPv4` |
 | `ip\|ipv6 flow monitor <m> ...` on a port, on the C9200 at 17.6 and 17.15 (the lab C9200L-48T-4G at 17.6.4 and 17.15.6) | the monitor holds no record | `% Flow Monitor: Failed to add monitor to interface: The monitor does not have a valid record` |
 | `record <r>` in a flow monitor, on the C9200 at 17.6 and 17.15 | the monitor holds another record | `% Flow Monitor: Failed to set record: Already there is an existing record configured for this monitor` |
 | `no switchport`, `switchport mode dot1q-tunnel\|private-vlan promiscuous` on an interface | `authentication port-control` on the port (the lab C9200L-48T-4G, 17.6.4 and 17.15.6) | `Command rejected: Conflict with Authentication. ` and `Authentication must be disabled before changing port mode ` |
@@ -63,6 +65,9 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | `local-domain <name>` in the Umbrella profile | no `parameter-map type regex <name>` | `% Parameter-map regex <name> does not exist` |
 | `member vfi <name>` in a VLAN configuration | no `vpn id` in the VFI | `% VFI <name> must be configured with a valid vpn id first.` |
 | `service ipv4\|ipv6` in a LISP instance | `service ethernet` there | `% Instance ID <id> has 'service ethernet' enabled.` and ` L2 and L3 services are exclusive, remove L2 service first.` |
+| `database-mapping ... locator-set <name> ...` in a LISP instance's service (the lab C9200L-48T-4G, 17.6.4 and 17.15.6) | no `locator-set <name>` under `router lisp` | `% No locator-set named '<name>'.` |
+| `eid-table vrf <name>` in a LISP instance's IPv4 service (the lab C9200L-48T-4G, 17.15.6) | no `vrf definition` or `ip vrf` of the name | `% Invalid VRF name!` |
+| `use-petr <address> priority ...` in `router lisp`'s IPv4 service (the lab C9200L-48T-4G, 17.6.4 and 17.15.6); one without a priority beside one with is inferred | a `use-petr` without a priority there | `% Cannot configure use-petr entries with and without a priority and weight specification at the same time.` |
 | `ipv6 router ospf <n>` | `router ospfv3 <n>` | `% OSPFv3: Use "router ospfv3 <n>" to configure this process` and `% Failed to create routing protocol ospf` |
 | `neighbor <peer> inherit peer-session <t>` | no `template peer-session <t>` | `%Template not found. Please create a template first.` |
 | a neighbor's policy in `router bgp` | the process has an address family | `% Policy commands not allowed without an address family` |
@@ -638,6 +643,12 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 | State message | Prints where the configuration has no |
 |---|---|
 | `% LISP is not running.` | `router lisp` |
+| `% Could not find EID table instance ID 0 in LISP 0.` | EID table for LISP instance 0 under a running `router lisp`: `instance-id 0` with `service ipv4`, or `eid-table <vrf> instance-id 0`; a line naming another instance or LISP router prints without it (the lab C9200L-48T-4G, 17.6.4 and 17.15.6, on an empty `router lisp`, as the rest of the LISP rows) |
+| `% Could not find EID or RLOC table for specified VRF <vrf>.` (17.15), `% Could not find EID table for specified VRF <vrf>.` (17.6) | EID table for the VRF the line names, `default` where it names none, under a running `router lisp`: its `eid-table` line in an instance's `service ipv4`, or one naming an instance |
+| `% Invalid VRF name!` | `vrf definition <name>` or `ip vrf <name>` for the VRF a LISP EID table line names bare (`show lisp eid-table <name>`) |
+| `% Invalid VLAN ID!` | `eid-table vlan <n>` in a LISP instance's `service ethernet`, under a running `router lisp` |
+| `% DDT functionality is currently NOT ENABLED.` | `ddt` under a running `router lisp` |
+| `% There is no prefix list to display.`, `% Prefix list <name> does not exist.` | `prefix-list` (`prefix-list <name>` where the line names one) under a running `router lisp` |
 | `%No active Subscriber Sessions`, `%No active services` | subscriber session: always, as vswitch holds none |
 | `%SNMP agent not enabled` | `snmp-server` line other than `location` and `contact` |
 | `%%SNMP manager not enabled` | `snmp-server manager` |
@@ -655,6 +666,9 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 | `% dampening not enabled for base` | `bgp dampening` directly under `router bgp` or in its `address-family ipv4 [unicast]`, a VRF's not counting, where a `router bgp` runs |
 | `% No such peer-group` | `neighbor <name> peer-group` for the group named, in the VRF's address family where the line names a VRF and outside every VRF's otherwise, where a `router bgp` runs |
 | `%No Tlv-list exists. `, `%Tlv-list name does not exists.` | `cdp tlv-list` (for `*`), `cdp tlv-list <name>` (for a name) |
+| `% Network not in table` | on an EVPN line, `address-family l2vpn evpn` in a running `router bgp` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6); another family's line prints without it |
+| `% Unknown EVI` | `l2vpn evpn instance <n>` for the instance the line names, where a `router bgp` runs |
+| `%Prefix not found` | the IPv4 prefix the line names in the global CEF table (`vrf Default` names it too): IOS's own entries, a running interface's subnet and its address, network and broadcast, and a static route whose interface runs or whose next hop the table reaches (the lab C9200L-48T-4G, 17.6.4, held a Null0 route's prefix and not a down SVI's subnet) |
 
 ## Padding and unmodelled commands
 

@@ -1761,29 +1761,30 @@ impl<'a> Session<'a> {
 
     /// What IOS says for a line the configuration so far does not let it take, on IOS XE (the lab
     /// C9300-24T, 17.6.4): a second BGP process (`BGP is already running; AS is 65000`), a named
-    /// EIGRP address family's second AS or one another named instance runs, on the C9200 image (the
-    /// lab C9200L-48T-4G, 17.6.4) a port's flow monitor holding no record and a monitor's second
-    /// record, a class a policy map
-    /// names before its class map exists (`class map class1 not configured`), a second mDNS
-    /// controller (`Only one Controller is allowed`, then a blank line), a VRF the switch does not
-    /// hold (`NO_VRF`, and an OSPF process's `Unknown VRF specified`), a global SXP filter group's
-    /// filter list not made, a BGP neighbor's policy outside an address family once the process has
-    /// one, a template a neighbor inherits before it exists, a private VLAN association naming a
-    /// VLAN the switch does not hold, a secondary type for a VLAN whose SVI is up, a tunnel PIM
-    /// registers through (`pim_tunnels`), an object a line names before it exists (a policy map, a
-    /// first-hop security policy (`ATTACH`), a NAT pool, an access list, a trustpoint, a regex
-    /// parameter map, a VFI's VPN ID), a classifier condition while the classifier runs, an IP
-    /// service on a LISP instance carrying Ethernet, an MLD SSM map's static entry before `ipv6 mld
-    /// ssm-map enable` (`%ssm-map is not enabled!`), an auth proxy rule a port names before it is
-    /// defined (the C9200 17.6 image), a subnet another interface holds, a BGP
-    /// neighbor line before the neighbor's remote AS, a link-local peer outside an address family,
-    /// the switch's own address as a peer, a SPAN line its sessions refuse (`span_refusal`), an
-    /// HSRP group's second address family, a setting already in force or one another excludes
-    /// (BackboneFast, an NTP trusted key, NSF, an MDT default group, a tracked object's kind, an
-    /// FQDN list's name), a value out of range (a template's port priority, an engine ID, a list
-    /// number of the wrong kind), an interface whose mode or features refuse the line (half duplex,
-    /// `nonegotiate`, network policy, `cts manual`, REP, Umbrella, DHCPv6 client), and the EXEC
-    /// shows of state the switch lacks (MST, WCCP, an OSPF topology, a BGP neighbor).
+    /// EIGRP address family's second AS or one another named instance or a classic process runs, on
+    /// the C9200 image (the lab C9200L-48T-4G, 17.6.4) a port's flow monitor holding no record and
+    /// a monitor's second record, a class a policy map names before its class map exists (`class
+    /// map class1 not configured`), a second mDNS controller (`Only one Controller is allowed`,
+    /// then a blank line), a VRF the switch does not hold (`NO_VRF`, an OSPF process's `Unknown VRF
+    /// specified`, a classic EIGRP family's), a global SXP filter group's filter list not made, a
+    /// BGP neighbor's policy outside an address family once the process has one, a template a
+    /// neighbor inherits before it exists, a private VLAN association naming a VLAN the switch does
+    /// not hold, a secondary type for a VLAN whose SVI is up, a tunnel PIM registers through
+    /// (`pim_tunnels`), an object a line names before it exists (a policy map, a first-hop security
+    /// policy (`ATTACH`), a NAT pool, an access list, a trustpoint, a regex parameter map, a VFI's
+    /// VPN ID, a LISP locator set), a classifier condition while the classifier runs, an IP service
+    /// on a LISP instance carrying Ethernet, a LISP PETR's priority beside one without, an MLD SSM
+    /// map's static entry before `ipv6 mld ssm-map enable` (`%ssm-map is not enabled!`), an auth
+    /// proxy rule a port names before it is defined (the C9200 17.6 image), a subnet another
+    /// interface holds, a BGP neighbor line before the neighbor's remote AS, a link-local peer
+    /// outside an address family, the switch's own address as a peer, a SPAN line its sessions
+    /// refuse (`span_refusal`), an HSRP group's second address family, a setting already in force
+    /// or one another excludes (BackboneFast, an NTP trusted key, NSF, an MDT default group, a
+    /// tracked object's kind, an FQDN list's name), a value out of range (a template's port
+    /// priority, an engine ID, a list number of the wrong kind), an interface whose mode or
+    /// features refuse the line (half duplex, `nonegotiate`, network policy, `cts manual`, REP,
+    /// Umbrella, DHCPv6 client), and the EXEC shows of state the switch lacks (MST, WCCP, an OSPF
+    /// topology, a BGP neighbor).
     /// `no` lines are taken, but for a missing policy map's removal and `no switchport` on a port
     /// under 802.1X port control.
     fn unconfigured(&self, mode: &str, p: &Parse) -> Option<String> {
@@ -2352,6 +2353,34 @@ impl<'a> Session<'a> {
                     ));
                 }
             }
+            // a LISP database mapping naming a locator set `router lisp` lacks, and a PETR with a
+            // priority beside one without (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; one without
+            // beside one with is inferred)
+            (
+                "config-lisp-inst-srv-eth" | "config-lisp-inst-srv-ipv4",
+                ["database-mapping", rest @ ..],
+            ) => {
+                if let Some(name) = rest.iter().skip_while(|w| **w != "locator-set").nth(1)
+                    && !holds(&format!("locator-set {name}"))
+                {
+                    return Some(format!("% No locator-set named '{name}'."));
+                }
+            }
+            ("config-lisp-srv-ipv4", ["use-petr", _, rest @ ..])
+                if block.is_some_and(|b| {
+                    b.lines.iter().any(|e| {
+                        e.text.trim().strip_prefix("use-petr ").is_some_and(|t| {
+                            t.split_whitespace().any(|w| w == "priority") == rest.is_empty()
+                        })
+                    })
+                }) =>
+            {
+                return Some(
+                    "% Cannot configure use-petr entries with and without a priority and weight \
+                     specification at the same time."
+                        .into(),
+                );
+            }
             ("config", ["ipv6", "router", "ospf", n]) if named("router ospfv3 ", n) => {
                 return Some(format!(
                     "% OSPFv3: Use \"router ospfv3 {n}\" to configure this process\n% Failed to \
@@ -2360,6 +2389,22 @@ impl<'a> Session<'a> {
             }
             ("config", ["snmp-server", "host", _, "vrf", name, ..]) if !vrf(name) => {
                 return Some(format!("% VRF name {name} does not exist"));
+            }
+            // a classic EIGRP process's IPv4 family in a VRF the switch does not hold, the name
+            // anywhere in the line (the lab C9200L-48T-4G, 17.15.6, at both levels)
+            ("config-router", ["address-family", "ipv4", rest @ ..])
+                if header
+                    .strip_prefix("router eigrp ")
+                    .is_some_and(|n| n.parse::<u32>().is_ok())
+                    && rest.contains(&"vrf") =>
+            {
+                if let Some(name) = rest.iter().skip_while(|w| **w != "vrf").nth(1)
+                    && !vrf(name)
+                {
+                    return Some(format!(
+                        "%VRF {name} does not exist or is not enabled for IPv4"
+                    ));
+                }
             }
             ("config-router", ["address-family", "ipv4" | "ipv6", .., "vrf", name])
                 if !vrf(name) =>
@@ -2402,6 +2447,17 @@ impl<'a> Session<'a> {
                     });
                     if let Some(name) = other {
                         return Some(format!("%ERROR: AS({asn}) in use by VR({name})"));
+                    }
+                    // nor the AS a classic `router eigrp <asn>` runs, in the global IPv4 table (the
+                    // lab C9200L-48T-4G, 17.15.6)
+                    if matches!(family, ("ipv4", _, None))
+                        && self
+                            .device
+                            .blocks
+                            .iter()
+                            .any(|b| b.header == format!("router eigrp {asn}"))
+                    {
+                        return Some(format!("%ERROR: AS({asn}) in use by classic router"));
                     }
                 }
             }
@@ -4724,6 +4780,12 @@ const NO_VRF: &[(&str, &[&str], &str)] = &[
         &["cts", "role-based", "sgt-map", "vrf"],
         "%VPN Routing/Forwarding table {} does not exist",
     ),
+    // a LISP instance's IPv4 service (the lab C9200L-48T-4G, 17.15.6)
+    (
+        "config-lisp-inst-srv-ipv4",
+        &["eid-table", "vrf"],
+        "% Invalid VRF name!",
+    ),
     // `exec`: user and privileged EXEC
     (
         "exec",
@@ -6001,6 +6063,157 @@ mod tests {
         assert_eq!(r, Result::Error, "{out:?}");
         assert_eq!(caret_at(&out), "Switch(config)#router ".len());
         assert_eq!(s.mode(), "config");
+    }
+
+    #[test]
+    fn the_lisp_submodes_a_c9200l_took_load_on_its_image() {
+        // the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage entered these LISP
+        // submodes, which its books give no mode, took these lines in them and answered these
+        // with what the configuration lacked (`data/overrides.json`, platform Catalyst 9200)
+        for release in ["17.6", "17.15"] {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.boot_level = Some("network-advantage".into());
+            let said = |s: &mut Session<'_>, line: &str| -> Vec<String> {
+                let (out, r) = s.type_line(line);
+                assert_eq!(r, Result::Error, "{line}: {out:?}");
+                out
+            };
+            for (line, mode) in [
+                ("enable", "privileged"),
+                ("configure terminal", "config"),
+                ("router lisp", "config-router-lisp"),
+                ("locator-set RLOC", "config-router-lisp-locator-set"),
+                (
+                    "ipv4-interface Loopback0 priority 10 weight 50",
+                    "config-router-lisp-locator-set",
+                ),
+                (
+                    "ipv4-interface Loopback 0 priority 10 weight 50 affinity-id 5 ,10",
+                    "config-router-lisp-locator-set",
+                ),
+                ("auto-discover-rlocs", "config-router-lisp-locator-set"),
+                ("exit-locator-set", "config-router-lisp"),
+                ("locator default-set RLOC", "config-router-lisp"),
+                ("prefix-list wired", "config-router-lisp-prefix-list"),
+                ("192.168.0.0/16", "config-router-lisp-prefix-list"),
+                ("2001:193:168:1::/64", "config-router-lisp-prefix-list"),
+                ("exit-prefix-list", "config-router-lisp"),
+                ("service ipv4", "config-lisp-srv-ipv4"),
+                ("encapsulation vxlan", "config-lisp-srv-ipv4"),
+                (
+                    "itr map-resolver 2.1.1.6 prefix-list wired",
+                    "config-lisp-srv-ipv4",
+                ),
+                ("map-cache-limit 200", "config-lisp-srv-ipv4"),
+                (
+                    "route-export destinations-summary route-tag 10",
+                    "config-lisp-srv-ipv4",
+                ),
+                ("sgt distribution", "config-lisp-srv-ipv4"),
+                ("use-petr 10.1.1.1", "config-lisp-srv-ipv4"),
+                ("exit-service-ipv4", "config-router-lisp"),
+                ("service ethernet", "config-lisp-srv-eth"),
+                (
+                    "dynamic-eid detection multiple-addr bridged-vm",
+                    "config-lisp-srv-eth",
+                ),
+                ("exit-service-ethernet", "config-router-lisp"),
+                ("instance-id 3", "config-lisp-inst"),
+                ("dynamic-eid Eng.mod", "config-lisp-inst-dyn-eid"),
+                ("exit", "config-lisp-inst"),
+                ("service ethernet", "config-lisp-inst-srv-eth"),
+                ("broadcast-underlay 225.1.1.1", "config-lisp-inst-srv-eth"),
+                ("eid-table vlan 250", "config-lisp-inst-srv-eth"),
+                (
+                    "database-mapping mac locator-set RLOC",
+                    "config-lisp-inst-srv-eth",
+                ),
+                ("fast-detection", "config-lisp-inst-srv-eth"),
+                ("exit-service-ethernet", "config-lisp-inst"),
+                // another instance from inside this one, as a line of `router lisp`
+                ("instance-id 4", "config-lisp-inst"),
+                ("service ipv4", "config-lisp-inst-srv-ipv4"),
+                ("eid-table default", "config-lisp-inst-srv-ipv4"),
+                ("exit-service-ipv4", "config-lisp-inst"),
+                ("router lisp", "config-router-lisp"),
+                ("extranet ext1", "config-router-lisp-extranet"),
+                (
+                    "eid-record-provider instance-id 4097",
+                    "config-router-lisp-extranet-eid",
+                ),
+                ("exit-eid-record-provider", "config-router-lisp-extranet"),
+                (
+                    "extranet-config-from-transit",
+                    "config-router-lisp-extranet",
+                ),
+                ("exit", "config-router-lisp"),
+                ("exit-router-lisp", "config"),
+            ] {
+                let (out, r) = s.type_line(line);
+                assert_eq!(r, Result::Ok, "{release} {line}: {out:?}");
+                assert_eq!(s.mode(), mode, "{release} after {line}");
+            }
+            for line in ["router lisp", "instance-id 3"] {
+                s.type_line(line);
+            }
+            assert_eq!(
+                said(&mut s, "service ipv4"),
+                [
+                    "% Instance ID 3 has 'service ethernet' enabled.",
+                    " L2 and L3 services are exclusive, remove L2 service first."
+                ]
+            );
+            // lines the switch refused in an instance, which its services take
+            for line in [
+                "eid-table default",
+                "database-mapping 172.168.0.0/16 locator-set RLOC proxy",
+                "sgt 100",
+            ] {
+                assert!(caret_at(&said(&mut s, line)) > 0, "{line}");
+                assert_eq!(s.mode(), "config-lisp-inst");
+            }
+            s.type_line("service ethernet");
+            assert_eq!(
+                said(&mut s, "database-mapping mac locator-set rloc2"),
+                ["% No locator-set named 'rloc2'."]
+            );
+            for line in [
+                "exit-service-ethernet",
+                "exit",
+                "instance-id 4",
+                "service ipv4",
+            ] {
+                s.type_line(line);
+            }
+            assert_eq!(s.mode(), "config-lisp-inst-srv-ipv4");
+            assert_eq!(
+                said(
+                    &mut s,
+                    "database-mapping 0.0.0.0/0 locator-set NONE default-etr-route-map abc"
+                ),
+                ["% No locator-set named 'NONE'."]
+            );
+            assert_eq!(said(&mut s, "eid-table vrf green"), ["% Invalid VRF name!"]);
+            for line in ["exit-service-ipv4", "exit", "service ipv4"] {
+                s.type_line(line);
+            }
+            assert_eq!(s.mode(), "config-lisp-srv-ipv4");
+            assert_eq!(
+                said(&mut s, "use-petr 10.1.1.1 priority 1 weight 100"),
+                [
+                    "% Cannot configure use-petr entries with and without a priority and weight \
+                     specification at the same time."
+                ]
+            );
+            s.type_line("exit-service-ipv4");
+            for line in ["prefix-list NO-MARKETING in", "configure terminal"] {
+                said(&mut s, line);
+                assert_eq!(s.mode(), "config-router-lisp");
+            }
+        }
     }
 
     #[test]
@@ -10997,6 +11210,82 @@ mod tests {
             s.type_line("address-family ipv4 autonomous-system 30").1,
             Result::Ok
         );
+        assert_eq!(s.mode(), "config-router-af");
+    }
+
+    #[test]
+    fn the_cef_table_holds_a_running_subnet_and_an_installed_route_alone() {
+        // the lab C9200L-48T-4G (17.6.4): a down SVI's subnet was not in it, a Null0 route's was
+        let e = c9300_17_6();
+        let s = typed_24t(
+            &e,
+            &[
+                "interface Vlan10",
+                "ip address 10.1.1.2 255.255.255.0",
+                "interface Loopback0",
+                "ip address 198.51.100.1 255.255.255.255",
+                "exit",
+                "ip route 203.0.113.0 255.255.255.0 Null0",
+                "ip route 198.18.0.0 255.254.0.0 192.0.2.1",
+            ],
+        );
+        let cef = show::cef_prefixes(&s.device);
+        let has = |a: [u8; 4], n: u8| cef.contains(&(a.into(), n));
+        assert!(has([0, 0, 0, 0], 0) && has([224, 0, 0, 0], 4));
+        assert!(has([203, 0, 113, 0], 24) && has([198, 51, 100, 1], 32));
+        assert!(!has([10, 1, 1, 0], 24) && !has([10, 1, 1, 2], 32));
+        // a next hop no running subnet reaches
+        assert!(!has([198, 18, 0, 0], 15));
+    }
+
+    #[test]
+    fn a_named_eigrp_family_refuses_the_as_a_classic_process_runs() {
+        // the lab C9200L-48T-4G (17.15.6) on a base holding `router eigrp 1`
+        let r = crate::release::Release::parse("17.15").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.frames.push(Frame::top("config"));
+        for line in ["router eigrp 1", "exit", "router eigrp virtual-name"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, r) = s.type_line("address-family ipv4 autonomous-system 1");
+        assert_eq!(out, ["%ERROR: AS(1) in use by classic router"]);
+        assert_eq!((r, s.mode()), (Result::Error, "config-router"));
+        assert_eq!(
+            s.type_line("address-family ipv4 autonomous-system 4453").1,
+            Result::Ok
+        );
+        assert_eq!(s.mode(), "config-router-af");
+        // the classic process refuses a family in a VRF the switch does not hold, by name
+        // wherever the line holds it, and takes one in a VRF it holds
+        for line in ["exit-address-family", "exit", "router eigrp 1"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        for (line, vrf) in [
+            ("address-family ipv4 vrf RED autonomous-system 45000", "RED"),
+            ("address-family ipv4 unicast vrf inside", "inside"),
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(
+                out,
+                [format!(
+                    "%VRF {vrf} does not exist or is not enabled for IPv4"
+                )]
+            );
+            assert_eq!((r, s.mode()), (Result::Error, "config-router"), "{line}");
+        }
+        for line in [
+            "exit",
+            "vrf definition RED",
+            "address-family ipv4",
+            "exit-address-family",
+            "exit",
+            "router eigrp 1",
+            "address-family ipv4 vrf RED autonomous-system 45000",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
         assert_eq!(s.mode(), "config-router-af");
     }
 

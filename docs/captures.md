@@ -383,7 +383,7 @@ An answered line becomes a form: its words, each value a typed argument. Each wo
 
 A form holds the `%` lines its answered lines printed before any output, as the fourth field of its row, one per line (`src/swept.rs`, `said`; `src/messages.rs`).
 
-- A line is held only where it fits a message of `messages::MESSAGES`: a notice, a fixed message or a state message (Measured show messages in `output.md`). Notices before a line no message fits are held alone. A fixed or state message is held only where it ends the lines.
+- A line is held only where it fits a message of `messages::MESSAGES`: a notice, a fixed message or a state message (Measured show messages in `output.md`). A fixed or state message is held only where it ends the lines. Notices before a line no message fits, or before a fixed or state message another line follows, are held alone: `show bgp ipv6 2001:DB8::/32` printed the obsolete notice, `% Network not in table` and the deprecation notice (the lab C9200L-48T-4G, 17.15.6).
 - A value the message names is held as its place in the form (`% No VRF named {3}`), the one value token whose word of the line it is; an interface by its full name. A message naming no value of the form, or two, is not held. A value the form holds as a keyword stays as printed.
 - Every line of a form at its level printed the same held lines. A form whose lines printed output beside a fixed message or a notice holds none. A state message beside output is held: the configuration decides between them.
 - A line answered at two levels printed the same `%` lines at both, or neither level's form holds a fixed message or notice for it. A state message at one level beside output at the other is held.

@@ -3472,6 +3472,287 @@
       "lines": ["ipv4 map-cache-limit <cache-limit> [warning-threshold <percent>] [reserve-list <prefix-list-name>]", "no ipv4 map-cache-limit"],
       "args": {"cache-limit": {"kind": "Number", "min": 1, "max": 11264}, "percent": {"kind": "Number", "min": 0, "max": 100}, "prefix-list-name": {"kind": "Word"}},
       "evidence": "the lab C9200L-48T-4G (17.6.4) at network-advantage kept 'ipv4 map-cache-limit 11264' under 'router lisp' and took it at boot; its ? gave <1-11264>, warning-threshold <0-100> and reserve-list WORD"
+    },
+    {
+      "name": "instance-id (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["instance-id <iid>", "no instance-id <iid>"],
+      "args": {"iid": {"kind": "Number", "min": 0, "max": 16777200}},
+      "enters": "config-lisp-inst",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'instance-id 3' at (config-router-lisp)# and entered (config-lisp-inst)#; its 17.15.6 crawl gave <0-16777200>"
+    },
+    {
+      "name": "service ipv4 (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["service ipv4", "no service ipv4"],
+      "enters": "config-lisp-srv-ipv4",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'service ipv4' at (config-router-lisp)# and entered (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "service ethernet (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["service ethernet", "no service ethernet"],
+      "enters": "config-lisp-srv-eth",
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'service ethernet' at (config-router-lisp)# and entered (config-lisp-srv-eth)#"
+    },
+    {
+      "name": "service ipv4 (LISP instance)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst"],
+      "lines": ["service ipv4", "no service ipv4"],
+      "enters": "config-lisp-inst-srv-ipv4",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'service ipv4' at (config-lisp-inst)# and entered (config-lisp-inst-srv-ipv4)#"
+    },
+    {
+      "name": "service ethernet (LISP instance)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst"],
+      "lines": ["service ethernet", "no service ethernet"],
+      "enters": "config-lisp-inst-srv-eth",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'service ethernet' at (config-lisp-inst)# and entered (config-lisp-inst-srv-eth)#"
+    },
+    {
+      "name": "locator-set (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["locator-set <locator-set-name>", "no locator-set <locator-set-name>"],
+      "args": {"locator-set-name": {"kind": "Word"}},
+      "enters": "config-router-lisp-locator-set",
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'locator-set RLOC' at (config-router-lisp)# and entered (config-router-lisp-locator-set)#"
+    },
+    {
+      "name": "extranet (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["extranet <extranet-name>", "no extranet <extranet-name>"],
+      "args": {"extranet-name": {"kind": "Word"}},
+      "enters": "config-router-lisp-extranet",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'extranet ext1' at (config-router-lisp)# and entered (config-router-lisp-extranet)#"
+    },
+    {
+      "name": "prefix-list (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["prefix-list <prefix-list-name>", "no prefix-list <prefix-list-name>"],
+      "args": {"prefix-list-name": {"kind": "Word"}},
+      "enters": "config-router-lisp-prefix-list",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'prefix-list wired' at (config-router-lisp)# and entered (config-router-lisp-prefix-list)#, and refused 'prefix-list NO-MARKETING in'"
+    },
+    {
+      "name": "prefix (LISP prefix list)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-prefix-list"],
+      "lines": ["{<ipv4-prefix> | <ipv6-prefix>}", "no {<ipv4-prefix> | <ipv6-prefix>}"],
+      "args": {"ipv4-prefix": {"kind": "Ipv4Prefix"}, "ipv6-prefix": {"kind": "Ipv6Prefix"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took '192.168.0.0/16' and '2001:193:168:1::/64' at (config-router-lisp-prefix-list)#"
+    },
+    {
+      "name": "exit-prefix-list",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-prefix-list"],
+      "lines": ["exit-prefix-list"],
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'exit-prefix-list' at (config-router-lisp-prefix-list)# and returned to (config-router-lisp)#"
+    },
+    {
+      "name": "exit-router-lisp",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["exit-router-lisp"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) printed ' exit-router-lisp' under 'router lisp' in its running configuration"
+    },
+    {
+      "name": "ipv4-interface Loopback affinity-id",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-locator-set"],
+      "lines": ["ipv4-interface <interface> priority <priority> weight <weight> [affinity-id <affinity-x> [<affinity-y>]]", "no ipv4-interface <interface> [priority <priority> weight <weight>]"],
+      "args": {"interface": {"kind": "Interface"}, "priority": {"kind": "Number", "min": 0, "max": 255}, "weight": {"kind": "Number", "min": 0, "max": 100}, "affinity-x": {"kind": "Word"}, "affinity-y": {"kind": "Word"}},
+      "evidence": "the book writes 'Loopback' as a keyword before the number; the lab C9200L-48T-4G (17.15.6) at network-advantage took 'ipv4-interface Loopback0 priority 10 weight 50' and 'ipv4-interface Loopback 0 priority 10 weight 50 affinity-id 5 ,10' at (config-router-lisp-locator-set)#; the priority and weight ranges are LISP's (inferred)"
+    },
+    {
+      "name": "auto-discover-rlocs",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-locator-set"],
+      "lines": ["auto-discover-rlocs", "no auto-discover-rlocs"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'auto-discover-rlocs' at (config-router-lisp-locator-set)#"
+    },
+    {
+      "name": "exit-locator-set",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-locator-set"],
+      "lines": ["exit-locator-set"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'exit-locator-set' at (config-router-lisp-locator-set)# and returned to (config-router-lisp)#"
+    },
+    {
+      "name": "locator default-set",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp"],
+      "lines": ["locator default-set <locator-set-name>", "no locator default-set <locator-set-name>"],
+      "args": {"locator-set-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage offered 'default-set' after 'locator' at (config-router-lisp)# in its crawl and took 'locator default-set rloc1' there from (config-router-lisp-locator-set)#"
+    },
+    {
+      "name": "dynamic-eid (LISP instance)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst"],
+      "lines": ["dynamic-eid <eid-name>", "no dynamic-eid <eid-name>"],
+      "args": {"eid-name": {"kind": "Word"}},
+      "enters": "config-lisp-inst-dyn-eid",
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'dynamic-eid Eng.mod' at (config-lisp-inst)# and entered (config-lisp-inst-dyn-eid)#"
+    },
+    {
+      "name": "broadcast-underlay",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-eth"],
+      "lines": ["broadcast-underlay <multicast-ip-address>", "no broadcast-underlay"],
+      "args": {"multicast-ip-address": {"kind": "Ipv4"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'broadcast-underlay 225.1.1.1' at (config-lisp-inst-srv-eth)#"
+    },
+    {
+      "name": "eid-table (LISP ethernet service)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-eth"],
+      "lines": ["eid-table vlan <vlan-id>", "no eid-table vlan <vlan-id>"],
+      "args": {"vlan-id": {"kind": "Number", "min": 1, "max": 4094}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'eid-table vlan 250' at (config-lisp-inst-srv-eth)#, and refused 'eid-table default' and 'eid-table vrf red' at (config-lisp-inst)#"
+    },
+    {
+      "name": "eid-table (LISP IPv4 service)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-ipv4"],
+      "lines": ["eid-table {default | vrf <vrf-name>}", "no eid-table {default | vrf <vrf-name>}"],
+      "args": {"vrf-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'eid-table default' at (config-lisp-inst-srv-ipv4)#, and at 17.15.6 answered 'eid-table vrf green' there with '% Invalid VRF name!'"
+    },
+    {
+      "name": "database-mapping (LISP ethernet service)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-eth"],
+      "lines": ["database-mapping mac locator-set <locator-set-name>", "no database-mapping mac locator-set <locator-set-name>"],
+      "args": {"locator-set-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage answered 'database-mapping mac locator-set rloc2' at (config-lisp-inst-srv-eth)# with '% No locator-set named 'rloc2'.', and at 17.15.6 took it with a locator set it had"
+    },
+    {
+      "name": "database-mapping (LISP IPv4 service)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-ipv4"],
+      "lines": ["database-mapping <eid-prefix> locator-set <locator-set-name> [proxy | default-etr | default-etr-route-map <route-map-name>]", "no database-mapping <eid-prefix> locator-set <locator-set-name> [proxy | default-etr | default-etr-route-map <route-map-name>]"],
+      "args": {"eid-prefix": {"kind": "Ipv4Prefix"}, "locator-set-name": {"kind": "Word"}, "route-map-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage answered 'database-mapping 0.0.0.0/0 locator-set RLOC default-etr-route-map abc' at (config-lisp-inst-srv-ipv4)# with '% No locator-set named 'RLOC'.', and refused 'database-mapping 172.168.0.0/16 locator-set RLOC proxy' at (config-lisp-inst)#; the book's keywords after the set"
+    },
+    {
+      "name": "fast-detection",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-eth"],
+      "lines": ["fast-detection", "no fast-detection"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'fast-detection' at (config-lisp-inst-srv-eth)#"
+    },
+    {
+      "name": "exit-service-ethernet",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-inst-srv-eth", "config-lisp-srv-eth"],
+      "lines": ["exit-service-ethernet"],
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'exit-service-ethernet' at (config-lisp-inst-srv-eth)# and returned to (config-lisp-inst)#; (config-lisp-srv-eth)#, which 'service ethernet' enters under 'router lisp', closes the same way (inferred)"
+    },
+    {
+      "name": "exit-service-ipv4",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4", "config-lisp-inst-srv-ipv4"],
+      "lines": ["exit-service-ipv4"],
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'exit-service-ipv4' at (config-lisp-srv-ipv4)# and returned to (config-router-lisp)#, and at 17.15.6 at (config-lisp-inst-srv-ipv4)#, returning to (config-lisp-inst)#"
+    },
+    {
+      "name": "dynamic-eid detection multiple-addr",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-eth"],
+      "lines": ["dynamic-eid detection multiple-addr [bridged-vm]", "no dynamic-eid detection multiple-addr [bridged-vm]"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'dynamic-eid detection multiple-addr bridged-vm' at (config-lisp-srv-eth)#"
+    },
+    {
+      "name": "encapsulation vxlan (LISP)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["encapsulation vxlan", "no encapsulation vxlan"],
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'encapsulation vxlan' at (config-lisp-srv-ipv4)# and refused 'encapuslation vxlan'"
+    },
+    {
+      "name": "itr map-resolver",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["itr map-resolver <map-resolver-address> [prefix-list <prefix-list-name>]", "no itr map-resolver <map-resolver-address> [prefix-list <prefix-list-name>]"],
+      "args": {"map-resolver-address": {"kind": "Ipv4"}, "prefix-list-name": {"kind": "Word"}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'itr map-resolver 2.1.1.6 prefix-list wired' at (config-lisp-srv-ipv4)#"
+    },
+    {
+      "name": "map-cache-limit (LISP service)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["map-cache-limit <cache-limit>", "no map-cache-limit"],
+      "args": {"cache-limit": {"kind": "Number", "min": 1, "max": 11264}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'map-cache-limit 200' at (config-lisp-srv-ipv4)#; the range 'ipv4 map-cache-limit' gives at (config-router-lisp)# (inferred)"
+    },
+    {
+      "name": "route-export destinations-summary",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["route-export destinations-summary [route-tag <route-tag-value>]", "no route-export destinations-summary [route-tag <route-tag-value>]"],
+      "args": {"route-tag-value": {"kind": "Number", "min": 0, "max": 4294967295}},
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'route-export destinations-summary route-tag 10' at (config-lisp-srv-ipv4)#; the tag's range is a route tag's (inferred)"
+    },
+    {
+      "name": "sgt (LISP service)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["sgt [distribution]", "no sgt [distribution]"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'sgt' and 'sgt distribution' at (config-lisp-srv-ipv4)# and refused both at (config-lisp-inst-srv-ipv4)#"
+    },
+    {
+      "name": "use-petr",
+      "platform": "Catalyst 9200",
+      "modes": ["config-lisp-srv-ipv4"],
+      "lines": ["use-petr <locator-address> [priority <priority> weight <weight>]", "no use-petr <locator-address> [priority <priority> weight <weight>]"],
+      "args": {"locator-address": {"kind": "Ipv4"}, "priority": {"kind": "Number", "min": 0, "max": 255}, "weight": {"kind": "Number", "min": 0, "max": 100}},
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage took 'use-petr 10.1.1.1' at (config-lisp-srv-ipv4)#; the priority and weight ranges are LISP's (inferred)"
+    },
+    {
+      "name": "eid-record-provider instance-id",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-extranet"],
+      "lines": ["eid-record-provider instance-id <iid>", "no eid-record-provider instance-id <iid>"],
+      "args": {"iid": {"kind": "Number", "min": 0, "max": 16777200}},
+      "enters": "config-router-lisp-extranet-eid",
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'eid-record-provider instance-id 4097' at (config-router-lisp-extranet)# and entered (config-router-lisp-extranet-eid)#, and the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage refused the book's line with a prefix and 'bidirectional'"
+    },
+    {
+      "name": "exit-eid-record-provider",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-extranet-eid"],
+      "lines": ["exit-eid-record-provider"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'exit-eid-record-provider' at (config-router-lisp-extranet-eid)# and returned to (config-router-lisp-extranet)#"
+    },
+    {
+      "name": "extranet-config-from-transit",
+      "platform": "Catalyst 9200",
+      "modes": ["config-router-lisp-extranet"],
+      "lines": ["extranet-config-from-transit", "no extranet-config-from-transit"],
+      "evidence": "the lab C9200L-48T-4G (17.15.6) at network-advantage took 'extranet-config-from-transit' at (config-router-lisp-extranet)#"
+    },
+    {
+      "name": "address (CTS)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-policy-server"],
+      "lines": ["address {domain-name <domain-name> | ipv4 <ipv4-address> | ipv6 <ipv6-address>}", "no address {domain-name | ipv4 | ipv6}"],
+      "args": {"domain-name": {"kind": "Word"}, "ipv4-address": {"kind": "Ipv4"}, "ipv6-address": {"kind": "Ipv6"}},
+      "evidence": "the book names both addresses <policy-server-address>; the lab C9200L-48T-4G (17.15.6) took 'address ipv4 10.1.1.1' at (config-policy-server)# and refused 'address ipv4 radius-host' at the host name and 'address ipv6 2001.DB8::1'"
+    },
+    {
+      "name": "address",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-policy-server"],
+      "lines": [],
+      "evidence": "address (CTS) takes the policy server's lines; the lab C9200L-48T-4G (17.15.6) refused 'address 100.0.1.10 primary' at (config-policy-server)#"
     }
   ]
 }
