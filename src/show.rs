@@ -1432,11 +1432,437 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 _ if c == "show ipv6 access-list" || c.starts_with("show ipv6 access-list ") => {
                     ipv6_access_lists(&s.device, c.split_whitespace().nth(3))
                 }
-                _ => vec![format!("% vswitch has no output model for '{c}' yet")],
+                _ => lisp_deprecated(
+                    s,
+                    p,
+                    vec![format!("% vswitch has no output model for '{c}' yet")],
+                ),
             }
         }
         _ => vec![],
     }
+}
+
+/// The deprecated LISP shows of the C9200 image at 17.15 (the lab C9200L-48T-4G, 17.15.6, on an
+/// empty `router lisp`): by the words after `show ip|ipv6 lisp` or `show lisp` and the instance the
+/// line names (`<iid>`, `instance-id <iid>`, `eid-table default` or `eid-table vrf <name>`), a
+/// value written `<address>`, `<prefix>` or `<word>`, the banner it prints first
+/// (`LISP_BANNERS`) and whether a line naming no table reads instance 0's. `show ipv6 lisp` was
+/// measured alone; the banners name both families, so its lines take `show ip lisp`'s.
+const LISP_DEPRECATED: &[(&str, &[&str], usize, bool)] = &[
+    ("show ip lisp", &[], 0, false),
+    (
+        "show ip lisp",
+        &["alt", "negative-prefix", "<address>"],
+        1,
+        true,
+    ),
+    ("show ip lisp", &["away"], 2, true),
+    ("show ip lisp", &["away", "<address>"], 3, true),
+    ("show ip lisp", &["away", "<prefix>"], 4, true),
+    ("show ip lisp", &["database"], 5, true),
+    ("show ip lisp", &["database", "<prefix>"], 6, true),
+    ("show ip lisp", &["eid-table", "summary"], 7, false),
+    ("show ip lisp", &["map-cache"], 8, true),
+    ("show ip lisp", &["map-cache", "<address>"], 9, true),
+    ("show ip lisp", &["map-cache", "<prefix>"], 10, true),
+    ("show ip lisp", &["map-cache", "detail"], 8, true),
+    ("show ip lisp", &["nat-etr-rtr-locator"], 11, true),
+    ("show ip lisp", &["route-import"], 12, true),
+    ("show ip lisp", &["route-import", "<address>"], 13, true),
+    ("show ip lisp", &["route-import", "<prefix>"], 13, true),
+    ("show ip lisp", &["route-import", "database"], 12, true),
+    ("show ip lisp", &["route-import", "map-cache"], 12, true),
+    ("show ip lisp", &["route-import", "prefix-list"], 12, true),
+    ("show ip lisp", &["smr"], 14, true),
+    ("show ip lisp", &["smr", "<prefix>"], 15, true),
+    ("show ip lisp", &["statistics"], 16, false),
+    ("show lisp", &["site"], 17, false),
+    ("show lisp", &["site", "<address>"], 18, true),
+    ("show lisp", &["site", "<prefix>"], 17, true),
+    ("show lisp", &["site", "detail"], 17, false),
+    ("show lisp", &["site", "detail", "internal"], 17, false),
+    ("show lisp", &["site", "name", "<word>"], 17, false),
+    ("show lisp", &["site", "rloc", "members"], 19, true),
+    (
+        "show lisp",
+        &["site", "rloc", "members", "registrations"],
+        20,
+        true,
+    ),
+    (
+        "show lisp",
+        &["site", "rloc", "members", "registrations", "<address>"],
+        20,
+        true,
+    ),
+    ("show lisp", &["site", "summary"], 21, false),
+    ("show lisp", &["site", "summary", "totals"], 22, false),
+];
+
+/// The banners `LISP_DEPRECATED` names, as the switch printed them: two rows of `=`, the text
+/// between them, and the blank line after.
+const LISP_BANNERS: &[&[&str]] = &[
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)>",
+        " commands are deprecated.",
+        "",
+        " Please use <show lisp service ipv4/ipv6> or",
+        " <show lisp instance-id <0-16777200> ipv4/ipv6>",
+        " to get desired informations.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>) alt",
+        " negative-prefix (EID-Prefix)> commands are",
+        " deprecated.",
+        " ",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 alt negative-prefix (EID-Prefix)> to get",
+        " desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>) away",
+        " [<eid> | <eid-prefix>] [instance-id <iid>]> commands",
+        " are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 away [<eid> | <eid-prefix>]> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>) away",
+        " [<eid> | <eid-prefix>] [instance-id <iid>]> commands",
+        " are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 away [<eid> | <eid-prefix>]> to get",
+        " desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>) away",
+        " [<eid> | <eid-prefix>] [instance-id <iid>]> commands",
+        " are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 away [<eid> | <eid-prefix>]> to get",
+        "desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>) database",
+        " (EID-Prefix list)> commands are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 database (EID-Prefix list)> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+        " database (EID-Prefix list)> commands are",
+        " deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 database (EID-Prefix list)> to get",
+        " desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show {ip | ipv6} lisp eid-table summary commands",
+        " are deprecated.",
+        "",
+        " Please use <show lisp service ipv4/ipv6 summary",
+        " to get desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+        " map-cache command is deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 map-cacheto get desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+        " map-cache <eid-address> command is deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 map-cache <eid-address> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+        " map-cache <eid-prefix> command is deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 map-cache <eid-prefix> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp nat-etr-rtr-locator <options>",
+        " command is deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6  nat-etr-rtr-locator> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+        " route-import (options)> commands are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6route-import (options)> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+        " route-import (options)> commands are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 route-import (options)> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp (instance-id <0-16777200>) smr",
+        " [<eid-prefix>] [instance-id <iid>] command is",
+        " deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 smr [<eid> | <eid-prefix>]> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 (instance-id <0-16777200>) lisp smr",
+        " [<eid-prefix>] [instance-id <iid>] command is",
+        " deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6 smr [<eid> | <eid-prefix>]> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show ip/ipv6 lisp statistics> commands are",
+        " deprecated.",
+        "",
+        " Please use <show lisp service ipv4/ipv6 statistics>",
+        " to get desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show lisp (instance-id <0-16777200>) site",
+        " name/prefix/eid/detail> commands are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6/ethernet server> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show lisp (instance-id <0-16777200>) site",
+        " name/prefix/eid/detail> commands are deprecated.",
+        "",
+        " Please use <show lisp instance-id <0-16777200>",
+        " ipv4/ipv6/ethernet server> to get desired",
+        " information.",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show lisp site rloc members> command is",
+        " deprecated.",
+        "",
+        " Please use <show lisp server rloc members> to get",
+        " desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show lisp site rloc members registrations> command",
+        " is deprecated.",
+        "",
+        " Please use <show lisp server rloc members",
+        " registrations to get desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show lisp site summary> command is deprecated.",
+        "",
+        " Please use <show lisp server summary> to get desired",
+        " information.",
+        "",
+        "============================================================",
+        "",
+    ],
+    &[
+        "============================================================",
+        "",
+        " <show lisp site summary totals> command is",
+        " deprecated",
+        "",
+        " Please use <show lisp server summary totals>",
+        " to get desired information.",
+        "",
+        "============================================================",
+        "",
+    ],
+];
+
+/// What a deprecated LISP show prints on the C9200 image at 17.15 (`LISP_DEPRECATED`) where
+/// `router lisp` runs (without one, `messages::lisp_stopped`): its banner, then the message for
+/// the EID table it reads where that message stands (`messages::print`), else `out`. A line
+/// naming a VRF's table reads that table (`% Could not find EID or RLOC table for specified VRF
+/// <vrf>.`); one naming `instance-id`, or one whose subcommand reads an instance's table, reads
+/// instance 0's (`% Could not find EID table instance ID 0 in LISP 0.`); the others printed
+/// output, which vswitch does not model. A line no entry fits prints `out`.
+fn lisp_deprecated(s: &Session, p: &Parse, out: Vec<String>) -> Vec<String> {
+    if !s.runs(crate::context::C9200_17_15) {
+        return out;
+    }
+    let words: Vec<&str> = p
+        .items
+        .iter()
+        .map(|i| match i {
+            crate::cli::Item::Kw { kw, .. } => kw.as_str(),
+            crate::cli::Item::Arg { value, .. } => value.as_str(),
+        })
+        .collect();
+    let (head, rest) = match words.as_slice() {
+        ["show", "ip" | "ipv6", "lisp", rest @ ..] => ("show ip lisp", rest),
+        ["show", "lisp", rest @ ..] => ("show lisp", rest),
+        _ => return out,
+    };
+    let number = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit());
+    let (vrf, named, rest) = match rest {
+        ["eid-table", "default", rest @ ..] => (Some("default"), false, rest),
+        ["eid-table", "vrf", vrf, rest @ ..] => (Some(*vrf), false, rest),
+        ["instance-id", n, rest @ ..] if number(n) => (None, true, rest),
+        [n, rest @ ..] if number(n) => (None, false, rest),
+        rest => (None, false, rest),
+    };
+    let address = |w: &str| w.parse::<std::net::IpAddr>().is_ok();
+    let fits = |key: &[&str]| {
+        key.len() == rest.len()
+            && key.iter().zip(rest).all(|(k, w)| match *k {
+                "<address>" => address(w),
+                "<prefix>" => w
+                    .split_once('/')
+                    .is_some_and(|(a, n)| address(a) && n.parse::<u8>().is_ok()),
+                "<word>" => true,
+                k => k == *w,
+            })
+    };
+    let Some(&(_, _, banner, reads)) = LISP_DEPRECATED
+        .iter()
+        .find(|(h, key, ..)| *h == head && fits(key))
+    else {
+        return out;
+    };
+    let mut said: Vec<String> = LISP_BANNERS[banner].iter().map(|l| l.to_string()).collect();
+    let message = match vrf {
+        Some(vrf) => format!("% Could not find EID or RLOC table for specified VRF {vrf}."),
+        None if named || reads => "% Could not find EID table instance ID 0 in LISP 0.".into(),
+        None => {
+            said.extend(out);
+            return said;
+        }
+    };
+    said.extend(crate::messages::print(&[message], &p.items, &s.device, out).0);
+    said
 }
 
 /// The switch with each port a third-party transceiver err-disables (`Device::gbic_invalid`)

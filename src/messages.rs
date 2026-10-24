@@ -346,6 +346,58 @@ pub fn print(held: &[String], items: &[Item], d: &Device, out: Vec<String>) -> (
     print_by(held, items, &config, out)
 }
 
+/// What a LISP show (`show lisp ...`, `show ip|ipv6 lisp ...`) prints with no `router lisp`: the
+/// notices its form holds, then `% LISP is not running.`, whatever it prints where one runs. A VRF
+/// or VLAN the line names bare is read first, where the form holds its message (`% Invalid VRF
+/// name!`, `% Invalid VLAN ID!`), and `show lisp extranet summary` is incomplete. The lab
+/// C9200L-48T-4G (17.15.6, network-advantage) printed these for every LISP line of its sweep,
+/// typed with no `router lisp`. None for another line, or where `router lisp` runs.
+pub fn lisp_stopped(held: &[String], items: &[Item], d: &Device) -> Option<Vec<String>> {
+    let values: Vec<&str> = items
+        .iter()
+        .map(|i| match i {
+            Item::Kw { kw, .. } => kw.as_str(),
+            Item::Arg { value, .. } => value.as_str(),
+        })
+        .collect();
+    if !matches!(
+        values.as_slice(),
+        ["show", "lisp", ..] | ["show", "ip" | "ipv6", "lisp", ..]
+    ) {
+        return None;
+    }
+    let config = Config::read(
+        &crate::show::configuration(d),
+        d.stack.management().is_some(),
+    );
+    if config.top("router lisp") {
+        return None;
+    }
+    if values == ["show", "lisp", "extranet", "summary"] {
+        return Some(vec!["% Incomplete command.".into(), String::new()]);
+    }
+    let mut said = vec![];
+    for t in held {
+        let at = place(t).map(|(_, at, _)| at);
+        let filled = match place(t) {
+            Some((a, at, b)) => format!("{a}{}{b}", values.get(at)?),
+            None => t.clone(),
+        };
+        match kind(t) {
+            Some(Kind::Notice) => said.push(filled),
+            Some(Kind::State(r @ (Rule::Vrf | Rule::LispVlan)))
+                if config.lacks(r, items, &values, at) =>
+            {
+                said.push(filled);
+                return Some(said);
+            }
+            _ => {}
+        }
+    }
+    said.push("% LISP is not running.".into());
+    Some(said)
+}
+
 /// `print` on a configuration read.
 fn print_by(
     held: &[String],
@@ -561,9 +613,10 @@ impl Config {
                             || l == table && chain.contains(&"service ipv4")
                     })
             }
+            // read before `router lisp` runs (the lab C9200L-48T-4G, 17.15.6)
             Rule::LispVlan => after("vlan").is_some_and(|v| {
                 let table = format!("eid-table vlan {v}");
-                self.top("router lisp") && !self.lines_under("router lisp").any(|(l, _)| l == table)
+                !self.lines_under("router lisp").any(|(l, _)| l == table)
             }),
             Rule::LispDdt => {
                 self.top("router lisp")
@@ -673,6 +726,7 @@ impl Config {
             // a LISP EID table names its VRF bare (`show lisp eid-table <vrf>`)
             Rule::Vrf => named("vrf")
                 .or_else(|| after("eid-table"))
+                .or_else(|| after("locator-table"))
                 .is_some_and(|name| {
                     let mgmt = name == "Mgmt-vrf" && self.management;
                     !mgmt
@@ -1188,10 +1242,9 @@ mod tests {
                 "show lisp eid-table vlan <number:1-4094>",
                 "show lisp eid-table vlan 1",
                 "router lisp\n instance-id 3\n  service ethernet\n   eid-table vlan 10",
-                &[
-                    "router lisp\n instance-id 3\n  service ethernet\n   eid-table vlan 1",
-                    "",
-                ],
+                // read before `router lisp` runs: no configuration holds the VLAN (the lab
+                // C9200L-48T-4G, 17.15.6)
+                &["router lisp\n instance-id 3\n  service ethernet\n   eid-table vlan 1"],
             ),
             (
                 "% DDT functionality is currently NOT ENABLED.",

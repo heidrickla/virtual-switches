@@ -894,6 +894,16 @@ impl<'a> Session<'a> {
                 .collect();
             Some((swept.said.get(&form)?, m))
         });
+        let (notices, items) = match &held {
+            Some((h, m)) => (h.as_slice(), &m.items),
+            None => (&[][..], &p.items),
+        };
+        if let Some(lines) = crate::messages::lisp_stopped(notices, items, &self.device) {
+            return (lines, Result::Error);
+        }
+        if let Some(said) = no_adjacency(items, &self.device) {
+            return said;
+        }
         let Some((held, m)) = held else {
             return (out, Result::Ok);
         };
@@ -3969,7 +3979,7 @@ impl<'a> Session<'a> {
     }
 
     /// Whether the session runs the image (book, release).
-    fn runs(&self, image: (&str, &str)) -> bool {
+    pub(crate) fn runs(&self, image: (&str, &str)) -> bool {
         crate::grammars::book_of(&self.engine.grammar.platform) == Some(image.0)
             && self.engine.grammar.release == image.1
     }
@@ -5149,6 +5159,93 @@ fn pim_tunnels(d: &Device) -> BTreeSet<u32> {
         .collect()
 }
 
+/// What `show ip|ipv6 cef [vrf <name>] adjacency <interface> <address>` prints where the line ends
+/// at the address: `% No adjacency for <address> on <interface>`, unless the interface holds an
+/// adjacency for it. vswitch holds no neighbours, so the adjacencies are IOS's own, which print
+/// nothing: 225.0.0.0 on a PIM interface or Null0 where multicast routing runs, 0.0.0.0 on the PIM
+/// register decapsulation tunnel (the last of `pim_tunnels` where the switch is its own RP) and
+/// FF0E:: on Null0. The lab C9200L-48T-4G (17.15.6, network-advantage) printed the message for its
+/// own address, a broadcast, 0.0.0.0, 226.1.1.1, and 225.0.0.0 on an interface without PIM; a
+/// neighbour's ARP entry listed the prefixes through it. None for another line.
+fn no_adjacency(items: &[Item], d: &Device) -> Option<(Vec<String>, Result)> {
+    let values: Vec<&str> = items
+        .iter()
+        .map(|i| match i {
+            Item::Kw { kw, .. } => kw.as_str(),
+            Item::Arg { value, .. } => value.as_str(),
+        })
+        .collect();
+    let (family, rest) = match values.as_slice() {
+        [
+            "show",
+            family @ ("ip" | "ipv6"),
+            "cef",
+            "vrf",
+            _,
+            "adjacency",
+            rest @ ..,
+        ]
+        | [
+            "show",
+            family @ ("ip" | "ipv6"),
+            "cef",
+            "adjacency",
+            rest @ ..,
+        ] => (*family, rest),
+        _ => return None,
+    };
+    let (address, port) = rest.split_last()?;
+    let (ty, number, _) = cli::interface_name(port.first()?, port.get(1).copied())?;
+    let address: std::net::IpAddr = address.parse().ok()?;
+    if (family == "ipv6") != address.is_ipv6() {
+        return None;
+    }
+    let port = format!("{ty}{number}");
+    let multicast = d
+        .global
+        .iter()
+        .any(|e| e.text.trim_end() == "ip multicast-routing");
+    let pim = d.blocks.iter().any(|b| {
+        b.header == format!("interface {port}")
+            && b.lines.iter().any(|e| e.text.trim().starts_with("ip pim "))
+    });
+    let own_rp = d.global.iter().any(|e| {
+        e.text.strip_prefix("ip pim rp-address ").is_some_and(|r| {
+            let rp = r.split_whitespace().next();
+            d.blocks.iter().any(|b| {
+                b.lines.iter().any(|e| {
+                    e.text
+                        .trim()
+                        .strip_prefix("ip address ")
+                        .and_then(|a| a.split_whitespace().next())
+                        == rp
+                })
+            })
+        })
+    });
+    let decap = own_rp
+        .then(|| pim_tunnels(d).last().copied())
+        .flatten()
+        .is_some_and(|n| port == format!("Tunnel{n}"));
+    let held = match address.to_string().as_str() {
+        "225.0.0.0" => multicast && (pim || port == "Null0"),
+        "0.0.0.0" => decap,
+        "ff0e::" => port == "Null0",
+        _ => false,
+    };
+    if held {
+        return Some((vec![], Result::Ok));
+    }
+    let shown = match address {
+        std::net::IpAddr::V6(a) => a.to_string().to_uppercase(),
+        a => a.to_string(),
+    };
+    Some((
+        vec![format!("% No adjacency for {shown} on {port}")],
+        Result::Error,
+    ))
+}
+
 /// How far a mode read a line before refusing it: to the refused word, or past its end for a line
 /// that was all words of the mode but incomplete. An ambiguous word reads nothing.
 fn reach(o: &Outcome, line: &str) -> usize {
@@ -6063,6 +6160,187 @@ mod tests {
         assert_eq!(r, Result::Error, "{out:?}");
         assert_eq!(caret_at(&out), "Switch(config)#router ".len());
         assert_eq!(s.mode(), "config");
+    }
+
+    #[test]
+    fn a_cef_adjacency_line_prints_no_adjacency_but_for_the_adjacencies_ios_keeps_itself() {
+        // the lab C9200L-48T-4G (17.15.6): its own RP on Loopback0, PIM on Vlan10, Tunnel0
+        // configured, so PIM's register tunnels are Tunnel1 and Tunnel2, the decapsulation one
+        let r = crate::release::Release::parse("17.15").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.boot_level = Some("network-advantage".into());
+        for line in [
+            "enable",
+            "configure terminal",
+            "ip multicast-routing",
+            "interface Loopback0",
+            "ip address 192.0.2.1 255.255.255.255",
+            "interface Vlan10",
+            "ip address 198.51.100.2 255.255.255.0",
+            "ip pim sparse-mode",
+            "interface Vlan20",
+            "ip address 203.0.113.1 255.255.255.0",
+            "interface Tunnel0",
+            "exit",
+            "ip pim rp-address 192.0.2.1",
+            "end",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        for (line, said) in [
+            (
+                "show ip cef adjacency Vlan10 198.51.100.1",
+                "% No adjacency for 198.51.100.1 on Vlan10",
+            ),
+            // the switch's own address, a multicast group, 225.0.0.0 off PIM, 0.0.0.0 elsewhere
+            (
+                "show ip cef adjacency Vlan10 198.51.100.2",
+                "% No adjacency for 198.51.100.2 on Vlan10",
+            ),
+            (
+                "show ip cef adjacency Vlan10 226.1.1.1",
+                "% No adjacency for 226.1.1.1 on Vlan10",
+            ),
+            (
+                "show ip cef adjacency Vlan20 225.0.0.0",
+                "% No adjacency for 225.0.0.0 on Vlan20",
+            ),
+            (
+                "show ip cef adjacency Tunnel0 0.0.0.0",
+                "% No adjacency for 0.0.0.0 on Tunnel0",
+            ),
+            (
+                "show ip cef adjacency GigabitEthernet1/0/1 198.51.100.1",
+                "% No adjacency for 198.51.100.1 on GigabitEthernet1/0/1",
+            ),
+        ] {
+            assert_eq!(
+                s.type_line(line),
+                (vec![said.to_string()], Result::Error),
+                "{line}"
+            );
+        }
+        for line in [
+            "show ip cef adjacency Vlan10 225.0.0.0",
+            "show ip cef adjacency Null0 225.0.0.0",
+            "show ip cef adjacency Tunnel2 0.0.0.0",
+        ] {
+            assert_eq!(s.type_line(line), (vec![], Result::Ok), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_deprecated_lisp_show_prints_its_banner_then_the_table_it_reads_on_the_c9200_at_17_15() {
+        // the lab C9200L-48T-4G (17.15.6) at network-advantage on an empty `router lisp`
+        let session = |release: &str| {
+            let r = crate::release::Release::parse(release).unwrap();
+            Engine::new(crate::grammars::grammar("c9200", r).unwrap())
+        };
+        let e = session("17.15");
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack.clone()));
+        s.boot_level = Some("network-advantage".into());
+        // with no `router lisp` every LISP line of the sweep printed `% LISP is not running.`, a
+        // deprecated one with no banner, a VRF or VLAN named bare read first (the essentials base)
+        assert_eq!(s.type_line("enable").1, Result::Ok);
+        for line in [
+            "show ip lisp database",
+            "show ipv6 lisp",
+            "show lisp site",
+            "show ip lisp eid-table default map-cache 10.1.1.1",
+            "show lisp session",
+        ] {
+            assert_eq!(
+                s.type_line(line),
+                (vec!["% LISP is not running.".to_string()], Result::Error),
+                "{line}"
+            );
+        }
+        for (line, said) in [
+            ("show lisp locator-table 10", "% Invalid VRF name!"),
+            ("show lisp eid-table vlan 1", "% Invalid VLAN ID!"),
+        ] {
+            assert_eq!(s.type_line(line).0, [said], "{line}");
+        }
+        assert_eq!(
+            s.type_line("show lisp extranet summary").0,
+            ["% Incomplete command.", ""]
+        );
+        for line in ["configure terminal", "router lisp", "end"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let rule = "============================================================";
+        let no_model = |line: &str| format!("% vswitch has no output model for '{line}' yet");
+        for (line, deprecated, after) in [
+            (
+                "show ip lisp database",
+                " <show ip/ipv6 lisp (instance-id <0-16777200>) database",
+                "% Could not find EID table instance ID 0 in LISP 0.".to_string(),
+            ),
+            (
+                "show ip lisp eid-table default map-cache 10.1.1.1",
+                " <show ip/ipv6 lisp (instance-id <0-16777200>)",
+                "% Could not find EID or RLOC table for specified VRF default.".into(),
+            ),
+            (
+                "show lisp site 10.1.1.0/24",
+                " <show lisp (instance-id <0-16777200>) site",
+                "% Could not find EID table instance ID 0 in LISP 0.".into(),
+            ),
+            // the switch printed its LISP summary, which vswitch does not model
+            (
+                "show ip lisp",
+                " <show ip/ipv6 lisp (instance-id <0-16777200>)>",
+                no_model("show ip lisp"),
+            ),
+            (
+                "show ipv6 lisp",
+                " <show ip/ipv6 lisp (instance-id <0-16777200>)>",
+                no_model("show ipv6 lisp"),
+            ),
+        ] {
+            let (out, _) = s.type_line(line);
+            assert_eq!(
+                out.first().map(String::as_str),
+                Some(rule),
+                "{line}: {out:?}"
+            );
+            assert_eq!(
+                out.get(2).map(String::as_str),
+                Some(deprecated),
+                "{line}: {out:?}"
+            );
+            assert_eq!(out.last(), Some(&after), "{line}: {out:?}");
+            let closing = out.iter().skip(1).position(|l| l == rule).unwrap() + 1;
+            assert_eq!(out[closing + 1], "", "{line}: {out:?}");
+        }
+        // instance 0's table held: the banner, then the output vswitch does not model
+        for line in [
+            "configure terminal",
+            "router lisp",
+            "instance-id 0",
+            "service ipv4",
+            "eid-table default",
+            "end",
+        ] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, _) = s.type_line("show ip lisp database");
+        assert_eq!(out.first().map(String::as_str), Some(rule));
+        assert_eq!(out.last(), Some(&no_model("show ip lisp database")));
+        // a line no entry fits, and the 17.6 image, print no banner
+        let (out, _) = s.type_line("show lisp instance-id 0 ipv4 database");
+        assert_ne!(out.first().map(String::as_str), Some(rule), "{out:?}");
+        let e = session("17.6");
+        let mut s = Session::new(&e, Device::new(stack));
+        s.boot_level = Some("network-advantage".into());
+        for line in ["enable", "configure terminal", "router lisp", "end"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, _) = s.type_line("show ip lisp database");
+        assert_ne!(out.first().map(String::as_str), Some(rule), "{out:?}");
     }
 
     #[test]

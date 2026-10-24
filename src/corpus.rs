@@ -165,8 +165,8 @@ impl Source {
 pub struct CrawlLog {
     pub book: String,
     pub release: String,
-    /// `crawl`, or `crawl-<name>` beside it for the same image at another level; `sweep` and
-    /// `sweep-<name>` alike
+    /// `crawl`, or `crawl-<name>` beside it for the same image at another level or the same one;
+    /// `sweep` and `sweep-<name>` alike
     pub folder: String,
     pub level: String,
     pub text: String,
@@ -1244,7 +1244,7 @@ impl Deny {
         }
         // words a site's free text shares with ordinary use, and the lab's own test names and
         // addresses, which name nothing of a site
-        const GENERIC: [&str; 45] = [
+        const GENERIC: [&str; 50] = [
             "vswitch",
             "classic",
             "print",
@@ -1273,6 +1273,11 @@ impl Deny {
             "10.0.0.7",
             "10.0.0.9",
             "10.1.0.0",
+            "10.99.15.1",
+            "10.99.20.1",
+            "10.99.20.255",
+            "10.99.255.1",
+            "226.1.1.1",
             "proxmox",
             "bond0",
             "bond1",

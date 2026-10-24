@@ -918,9 +918,9 @@ pub(crate) fn made(word: &str, what: &str) -> bool {
 /// The token a word typed after a `?` answer is: a keyword row it spells whole, as the row prints
 /// it; else the first value row it fits, in this order: an interface type with its number, a
 /// decimal range, a hexadecimal range, `A.B.C.D/nn`, an IPv4 address (`A.B.C.D`, `Hostname`),
-/// `X:X:X:X::X/<0-128>`, an IPv6 address (bare where only the prefix row stands: the lab C9300-24T,
-/// 17.6.4, answered `show ipv6 route 2001:DB8:97::`), `H.H.H`, `WORD`, `LINE`. A key's characterized
-/// address (`«ipv4»`) reads as an address.
+/// `X:X:X:X::X/<0-128>`, an IPv6 address (`X:X:X:X::X`, `Hostname or X:X:X:X::X`, bare where only
+/// the prefix row stands: the lab C9300-24T, 17.6.4, answered `show ipv6 route 2001:DB8:97::`),
+/// `H.H.H`, `WORD`, `LINE`. A key's characterized address (`«ipv4»`) reads as an address.
 fn fit(word: &str, answer: &[String]) -> Result<String, Left> {
     let w = match word {
         "«ipv4»" => "192.0.2.1",
@@ -974,12 +974,16 @@ fn fit(word: &str, answer: &[String]) -> Result<String, Left> {
         }
     }
     let has = |name: &str| rows.iter().any(|(r, _)| *r == name);
+    // `Hostname or X:X:X:X::X`, its word `Hostname` (`show ipv6 cef adjacency Vlan10 ?`)
+    let named_v6 = rows
+        .iter()
+        .any(|(r, what)| *r == "Hostname" && what.starts_with("or X:X:X:X::X"));
     let checks = [
         (has("A.B.C.D/nn"), ArgKind::Ipv4Prefix, "<ipv4/len>"),
         (has("A.B.C.D") || has("Hostname"), ArgKind::Ipv4, "<ipv4>"),
         (has("X:X:X:X::X/<0-128>"), ArgKind::Ipv6Prefix, "<ipv6/len>"),
         (
-            has("X:X:X:X::X") || has("X:X:X:X::X/<0-128>"),
+            has("X:X:X:X::X") || has("X:X:X:X::X/<0-128>") || named_v6,
             ArgKind::Ipv6,
             "<ipv6>",
         ),

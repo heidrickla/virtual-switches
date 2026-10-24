@@ -642,11 +642,11 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 
 | State message | Prints where the configuration has no |
 |---|---|
-| `% LISP is not running.` | `router lisp` |
+| `% LISP is not running.` | `router lisp`: every LISP line (`show lisp ...`, `show ip\|ipv6 lisp ...`) a form takes prints it after the form's notices, with no banner, whatever it prints where one runs; a VRF or VLAN the line names bare is read first, and `show lisp extranet summary` is incomplete (the lab C9200L-48T-4G, 17.15.6, for every LISP line of its sweep) |
 | `% Could not find EID table instance ID 0 in LISP 0.` | EID table for LISP instance 0 under a running `router lisp`: `instance-id 0` with `service ipv4`, or `eid-table <vrf> instance-id 0`; a line naming another instance or LISP router prints without it (the lab C9200L-48T-4G, 17.6.4 and 17.15.6, on an empty `router lisp`, as the rest of the LISP rows) |
 | `% Could not find EID or RLOC table for specified VRF <vrf>.` (17.15), `% Could not find EID table for specified VRF <vrf>.` (17.6) | EID table for the VRF the line names, `default` where it names none, under a running `router lisp`: its `eid-table` line in an instance's `service ipv4`, or one naming an instance |
-| `% Invalid VRF name!` | `vrf definition <name>` or `ip vrf <name>` for the VRF a LISP EID table line names bare (`show lisp eid-table <name>`) |
-| `% Invalid VLAN ID!` | `eid-table vlan <n>` in a LISP instance's `service ethernet`, under a running `router lisp` |
+| `% Invalid VRF name!` | `vrf definition <name>` or `ip vrf <name>` for the VRF a LISP line names bare (`show lisp eid-table <name>`, `show lisp locator-table <name>`), read before `router lisp` |
+| `% Invalid VLAN ID!` | `eid-table vlan <n>` in a LISP instance's `service ethernet`, read before `router lisp` (the lab C9200L-48T-4G, 17.15.6) |
 | `% DDT functionality is currently NOT ENABLED.` | `ddt` under a running `router lisp` |
 | `% There is no prefix list to display.`, `% Prefix list <name> does not exist.` | `prefix-list` (`prefix-list <name>` where the line names one) under a running `router lisp` |
 | `%No active Subscriber Sessions`, `%No active services` | subscriber session: always, as vswitch holds none |
@@ -669,6 +669,20 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 | `% Network not in table` | on an EVPN line, `address-family l2vpn evpn` in a running `router bgp` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6); another family's line prints without it |
 | `% Unknown EVI` | `l2vpn evpn instance <n>` for the instance the line names, where a `router bgp` runs |
 | `%Prefix not found` | the IPv4 prefix the line names in the global CEF table (`vrf Default` names it too): IOS's own entries, a running interface's subnet and its address, network and broadcast, and a static route whose interface runs or whose next hop the table reaches (the lab C9200L-48T-4G, 17.6.4, held a Null0 route's prefix and not a down SVI's subnet) |
+| `% No adjacency for <address> on <interface>` | adjacency on the interface for the address a `show ip\|ipv6 cef [vrf <name>] adjacency <interface> <address>` line ends at; vswitch holds no neighbours, so only IOS's own: 225.0.0.0 on a PIM interface or Null0 where `ip multicast-routing` runs, 0.0.0.0 on the PIM register decapsulation tunnel where the switch is its own RP, FF0E:: on Null0 (the lab C9200L-48T-4G, 17.15.6, printed it for its own address, a broadcast, 0.0.0.0 and 226.1.1.1); the address prints as typed, IPv6 in capitals |
+
+### Deprecated LISP shows
+
+On the C9200 image at 17.15, `show ip lisp ...`, `show ipv6 lisp ...` and `show lisp site ...` print a deprecation banner first: a row of 60 `=`, the text naming the deprecated form and the one to use, a closing row and a blank line. The lab C9200L-48T-4G printed 23 banners for 33 subcommands at 17.15.6, and none at 17.6.4. `src/show.rs` holds them (`LISP_DEPRECATED`, `LISP_BANNERS`), by subcommand and value kind (an address, a prefix, a word). `show ipv6 lisp` takes the `show ip lisp` banners: the banners name both families, and only the bare `show ipv6 lisp` was measured. The obsolete notice prints before the banner where the form holds it. A banner prints where `router lisp` runs; without one the line prints `% LISP is not running.` alone (Measured show messages).
+
+After the banner, a line that reads an EID table prints that table's state message where the configuration lacks the table:
+
+| The line names | Message |
+|---|---|
+| `eid-table default` or `eid-table vrf <vrf>` | `% Could not find EID or RLOC table for specified VRF <vrf>.` |
+| `instance-id <n>`, or a subcommand that reads an instance's table (`database`, `map-cache`, `away`, `route-import`, `smr`, `site <address>`, ...) | `% Could not find EID table instance ID 0 in LISP 0.` |
+
+The rest, `show ip lisp` itself, `eid-table summary`, `statistics`, and `show lisp site` bare or with `detail`, `name` or `summary`, printed their tables (`NO LOCATOR-TABLE`), which vswitch does not model: the banner, then the no-output-model line.
 
 ## Padding and unmodelled commands
 

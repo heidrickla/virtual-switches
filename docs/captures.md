@@ -152,7 +152,8 @@ The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl 
 
 ### Crawl folders
 
-- The log is `<book>-<release>/crawl/crawl.log`, or `crawl-<name>/crawl.log` beside it for the same image at another level.
+- The log is `<book>-<release>/crawl/crawl.log`, or `crawl-<name>/crawl.log` beside it for the same image at another level or the same one.
+- Folders at one level are read as one, in name order: an answer the first holds stands (`crawl-advantage` before `crawl-advantage-probe`, the C9200 17.15 probes of 2026-10-23).
 - The folder's `level` file names the license level the switch ran at on its first line: lowercase letters, digits and `-` (`network-advantage`, `network-essentials`, `lanbase`).
 - A crawl folder without a level is named by `vswitch corpus` as not read.
 - The log is read for its answers, and for the keywords it offers (Site words).
@@ -353,7 +354,7 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 
 ### Sweep folders
 
-- The log is `<book>-<release>/sweep/enter.log`, or `sweep-<name>/enter.log` beside it for the same image at another level, with a `level` file as a crawl folder has.
+- The log is `<book>-<release>/sweep/enter.log`, or `sweep-<name>/enter.log` beside it for the same image at another level or the same one, with a `level` file as a crawl folder has. Folders at one level add their lines.
 - Each line is written after its prompt. After it stands nothing where the switch answered with output or nothing, the `%` lines it printed before any output where it answered with a message, else the caret line and `% Invalid input detected at '^' marker.`, `% Incomplete command.`, or `% Ambiguous command:  "<line>"`.
 - The caret's column counts the prompt and the line as typed. A caret before the first word stands at its start.
 - A line the switch answered `% Unrecognized command` gives no row, as no data says how vswitch prints that answer.
@@ -370,7 +371,7 @@ An answered line becomes a form: its words, each value a typed argument. Each wo
 | `<hex:lo-hi>` | a hexadecimal number in the range | `<0-FFFFFFFF>` and its kin |
 | `<interface:Type>` | that type and a number, by IOS's abbreviations where vswitch models the type; the session's stack decides which ports exist | an interface type's row (`GigabitEthernet`, `Vlan`, `nve`) |
 | `<ipv4>`, `<ipv4/len>` | an IPv4 address, a prefix | `A.B.C.D`, `Hostname`; `A.B.C.D/nn` |
-| `<ipv6>`, `<ipv6/len>` | an IPv6 address, a prefix | `X:X:X:X::X`; `X:X:X:X::X/<0-128>` |
+| `<ipv6>`, `<ipv6/len>` | an IPv6 address, a prefix | `X:X:X:X::X`, `Hostname or X:X:X:X::X`; `X:X:X:X::X/<0-128>` |
 | `<mac>` | a MAC address | `H.H.H` |
 | `<word>`, `<line>` | any word, the rest of the line | `WORD`, `LINE` |
 
