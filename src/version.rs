@@ -291,6 +291,81 @@ pub fn show_version(d: &Device, now: u64, booted: u64) -> Vec<String> {
     out
 }
 
+/// Whether `show switch` and `show module` are modelled: a C9200, C9200L or C9200B at 17.6 that
+/// stacks no other member, present or provisioned, as the lab C9200L-48T-4G (17.6.4) printed them.
+fn lone_c9200(d: &Device) -> bool {
+    use crate::platform::Family;
+    matches!(
+        d.stack.family(),
+        Some(Family::C9200 | Family::C9200L | Family::C9200B)
+    ) && d.release == "17.6"
+        && d.stack.members.len() == 1
+        && d.stack.members[0].number == 1
+        && !d.stack.members[0].absent
+}
+
+/// The hardware version `show switch` and `show module` print: the lab unit's.
+const HW_VERSION: &str = "V02";
+
+/// `show switch` on a lone C9200 at 17.6, as the lab C9200L-48T-4G (17.6.4) printed it: the active
+/// member, then each member unprovisioned since the boot.
+pub fn show_switch(d: &Device) -> Option<Vec<String>> {
+    if !lone_c9200(d) {
+        return None;
+    }
+    let mut out = vec![
+        format!("Switch/Stack Mac Address : {} - Local Mac Address", d.mac),
+        "Mac persistency wait time: Indefinite".into(),
+        "                                             H/W   Current".into(),
+        "Switch#   Role    Mac Address     Priority Version  State ".into(),
+        "-".repeat(85),
+        format!(
+            "*{:<8}{:<9}{:<19}{:<7}{HW_VERSION:<8}{:<36}",
+            1,
+            "Active",
+            d.mac.to_string(),
+            1,
+            "Ready"
+        ),
+    ];
+    for n in d.unprovisioned.iter().filter(|&&n| n != 1) {
+        out.push(format!(
+            " {n:<8}{:<9}{:<19}{:<7}{:<8}{:<36}",
+            "Member", "0000.0000.0000", 0, "", "Unprovisioned"
+        ));
+    }
+    out.extend([String::new(), String::new(), String::new()]);
+    Some(out)
+}
+
+/// `show module` on a lone C9200 at 17.6, as the lab C9200L-48T-4G (17.6.4) printed it: its ports,
+/// the management port left out, its serial number and base MAC address.
+pub fn show_module(d: &Device) -> Option<Vec<String>> {
+    if !lone_c9200(d) {
+        return None;
+    }
+    let ports = d
+        .stack
+        .physical()
+        .iter()
+        .filter(|p| Some(p.as_str()) != d.stack.management())
+        .count();
+    Some(vec![
+        "Switch  Ports    Model                Serial No.   MAC address     Hw Ver.       Sw Ver. "
+            .into(),
+        "------  -----   ---------             -----------  --------------  -------       --------"
+            .into(),
+        format!(
+            " {:<8}{ports:<7}{:<22}{:<13}{:<16}{HW_VERSION:<14}{:<14}",
+            1,
+            d.stack.members[0].model,
+            serial(d, "system"),
+            d.mac.to_string(),
+            "17.06.04"
+        ),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

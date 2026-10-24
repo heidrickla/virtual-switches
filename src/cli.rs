@@ -676,6 +676,9 @@ pub struct Engine {
     measured: BTreeMap<String, Vec<usize>>,
     /// the measured forms' keywords, lowercase and sorted
     measured_keywords: Vec<String>,
+    /// the command a configuration line the image's own crawl reads whole runs as, after the
+    /// measured forms: it runs in no mode, and the shell reads its lines (`shell::Session::crawled`)
+    crawled: usize,
 }
 
 /// Which commands a line is read against: the books', a level's measured forms, or both.
@@ -769,6 +772,7 @@ impl Engine {
             books,
             measured: BTreeMap::new(),
             measured_keywords: vec![],
+            crawled: 0,
         };
         // the mode each command enters, from the example lines that changed the prompt: seen at
         // least twice, into a mode some command runs in (one-off prompts like `(config-f)` are typos).
@@ -869,12 +873,30 @@ impl Engine {
         }
         e.measured_keywords.sort_unstable();
         e.measured_keywords.dedup();
+        e.crawled = e.grammar.commands.len();
+        e.grammar.commands.push(Command {
+            name: "(crawled)".into(),
+            source: "the image's own crawl".into(),
+            modes: vec![],
+            lines: vec![],
+            args: BTreeMap::new(),
+            examples: vec![],
+            enters: None,
+            evidence: None,
+            help: BTreeMap::new(),
+            no_value: false,
+        });
         e
     }
 
     /// Whether a parse's command is a measured form (`swept::commands`), not a book's.
     pub fn is_measured(&self, command: usize) -> bool {
-        command >= self.books
+        command >= self.books && command != self.crawled
+    }
+
+    /// The command a line the image's own crawl reads whole runs as (`shell::Session::crawled`).
+    pub fn crawled(&self) -> usize {
+        self.crawled
     }
 
     /// The mode a parsed line enters: its form's own where its examples show one (`forms`), else its

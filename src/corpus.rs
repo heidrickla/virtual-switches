@@ -33,6 +33,9 @@ pub struct Source {
     /// each sweep folder's `enter.log`, the show lines a sweep typed at the privileged prompt and the
     /// switch's parser answer to each on Enter, at the level its `level` file names
     pub sweeps: Vec<CrawlLog>,
+    /// each lines folder's `lines.log`, configuration lines typed at the switch one after another
+    /// from its own prompts, at the level its `level` file names: read for the submodes they entered
+    pub lines: Vec<CrawlLog>,
     /// the site's own designs and scripts, beside the captures folder (`../designs`): read only for
     /// the names they give
     pub designs: Vec<String>,
@@ -73,6 +76,7 @@ impl Source {
         src.crawls = Source::read_crawls(dir);
         src.unleveled = Source::unleveled_crawls(dir);
         src.sweeps = Source::read_sweeps(dir);
+        src.lines = Source::read_lines(dir);
         if let Ok(designs) = std::fs::read_dir(dir.join("../designs")) {
             for f in designs.flatten() {
                 if let Ok(text) = std::fs::read_to_string(f.path()) {
@@ -98,6 +102,12 @@ impl Source {
     /// names its level, sorted as `read_crawls` sorts.
     pub fn read_sweeps(dir: &Path) -> Vec<CrawlLog> {
         Source::read_logs(dir, "sweep", "enter.log")
+    }
+
+    /// The `lines.log` of every lines folder (`lines`, `lines-<name>`) under `dir` whose `level` file
+    /// names its level, sorted as `read_crawls` sorts.
+    pub fn read_lines(dir: &Path) -> Vec<CrawlLog> {
+        Source::read_logs(dir, "lines", "lines.log")
     }
 
     fn read_logs(dir: &Path, stem: &str, log: &str) -> Vec<CrawlLog> {
@@ -150,6 +160,7 @@ impl Source {
             crawls: Source::read_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             unleveled: Source::unleveled_crawls(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             sweeps: Source::read_sweeps(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
+            lines: Source::read_lines(Path::new(env!("VSWITCH_CAPTURES_DIR"))),
             designs: std::fs::read_dir(concat!(env!("VSWITCH_CAPTURES_DIR"), "/../designs"))
                 .into_iter()
                 .flatten()
@@ -166,7 +177,7 @@ pub struct CrawlLog {
     pub book: String,
     pub release: String,
     /// `crawl`, or `crawl-<name>` beside it for the same image at another level or the same one;
-    /// `sweep` and `sweep-<name>` alike
+    /// `sweep`, `sweep-<name>`, `lines` and `lines-<name>` alike
     pub folder: String,
     pub level: String,
     pub text: String,
@@ -221,6 +232,14 @@ pub struct HeldTable {
     /// it; absent from a corpus without one
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "interned")]
     pub crawl: Vec<CrawlRow>,
+    /// (license level, context, mode) of each submode a crawl's or a lines folder's log typed a line
+    /// in, at that level: the context its entering lines give it (`context::of`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entered: Vec<(String, String, String)>,
+    /// (license level, mode, context, `context::key` of the line) of each configuration line a
+    /// lines folder's log typed that the switch took without a word
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taken: Vec<(String, String, String, String)>,
     /// (license level, form or refused line, how the switch took it: `swept::Taken::write`, the
     /// `%` lines an answered form printed before any output, one per line: `swept::said`) from a
     /// sweep's Enter log at that level, read against the crawl's answers at the same level
@@ -439,6 +458,27 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
                 .or_insert(answer);
         }
     }
+    let entered: BTreeSet<(String, String, String)> = src
+        .crawls
+        .iter()
+        .chain(&src.lines)
+        .filter(|f| f.book == book && f.release == release)
+        .flat_map(|f| {
+            entered_modes(&f.text)
+                .into_iter()
+                .map(|(context, mode)| (f.level.clone(), context, mode))
+        })
+        .collect();
+    let taken: BTreeSet<(String, String, String, String)> = src
+        .lines
+        .iter()
+        .filter(|f| f.book == book && f.release == release)
+        .flat_map(|f| {
+            taken_lines(&f.text)
+                .into_iter()
+                .map(|(mode, context, key)| (f.level.clone(), mode, context, key))
+        })
+        .collect();
     let mut swept: BTreeSet<(String, String, String)> = BTreeSet::new();
     let mut answered: BTreeMap<String, Vec<crate::swept::Answer>> = BTreeMap::new();
     let mut swept_left: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -480,6 +520,8 @@ fn held_table(src: &Source, book: &str, release: &str) -> HeldTable {
             .into_iter()
             .map(|((l, m, c, k), a)| (l, m, c, k, a))
             .collect(),
+        entered: entered.into_iter().collect(),
+        taken: taken.into_iter().collect(),
         swept: {
             let said = crate::swept::said(&answered);
             swept
@@ -683,6 +725,55 @@ pub(crate) fn crawled_help(text: &str) -> Vec<(String, String, String, Vec<Strin
     }
     out.extend(through_do);
     out
+}
+
+/// The (context, mode) of each configuration submode a log typed a line in: the mode its prompt
+/// showed and the context its entering lines give it. A line at the switch's own prompt there is
+/// read whether it asked `?` or was entered, so a submode a line entered and left without asking
+/// counts.
+pub(crate) fn entered_modes(text: &str) -> BTreeSet<(String, String)> {
+    let Some((_, exchanges)) = crate::capture::exchanges(text) else {
+        return BTreeSet::new();
+    };
+    exchanges
+        .into_iter()
+        .filter(|e| crate::cli::is_config(&e.mode))
+        .filter_map(|e| Some((e.context.filter(|c| !c.is_empty())?, e.mode)))
+        .collect()
+}
+
+/// The (mode, context, `context::key`) of each configuration line a log typed that the switch took
+/// without a word, or asked first whether to convert the 802.1X configuration to new-style (the
+/// lab C9200L-48T-4G took the line on `yes`): a configuration prompt after it. A `?` probe, Ctrl-Z
+/// and a line whose context is unknown are not read.
+pub(crate) fn taken_lines(text: &str) -> BTreeSet<(String, String, String)> {
+    let Some((_, exchanges)) = crate::capture::exchanges(text) else {
+        return BTreeSet::new();
+    };
+    let complete = exchanges.len().saturating_sub(1);
+    let next_config: Vec<bool> = exchanges
+        .iter()
+        .skip(1)
+        .map(|e| crate::cli::is_config(&e.mode))
+        .collect();
+    exchanges
+        .into_iter()
+        .take(complete)
+        .zip(next_config)
+        .filter(|(e, next)| {
+            *next
+                && crate::cli::is_config(&e.mode)
+                && !e.command.trim().is_empty()
+                && !e.command.ends_with('?')
+                && !e.command.starts_with('^')
+                && (e.output.iter().all(|l| l.trim().is_empty())
+                    || e.output.first().map(String::as_str) == Some(crate::shell::CONVERT_SAY))
+        })
+        .filter_map(|(e, _)| {
+            let context = e.context?;
+            Some((e.mode, context, crate::context::key(&e.command)))
+        })
+        .collect()
 }
 
 /// The indentation every capture at a release printed a block's own lines with, by the block's first
@@ -1680,6 +1771,13 @@ pub fn filtered(mut c: Corpus, deny: &Deny) -> Corpus {
         });
         // a measured line naming the site goes whole: its words are the line the switch read
         t.swept.retain(|s| !swept_names(deny, book, release, s));
+        t.taken.retain(|r| {
+            !taken_names(deny, book, release, r)
+                && !crate::context::holds_address(&r.3)
+                && !crate::context::holds_address(&r.2)
+        });
+        t.entered
+            .retain(|(_, c, _)| !deny.hits(c) && !crate::context::holds_address(c));
         // the lines that gave no row are the corpus command's report, not the corpus
         t.swept_left.clear();
         let n = t.captures.len();
@@ -1719,6 +1817,17 @@ fn crawl_names(deny: &Deny, book: &str, release: &str, row: &CrawlRow) -> bool {
         || answer
             .iter()
             .any(|r| deny.row_hits(images, mode, Some(context), key, r))
+}
+
+/// Whether a line a lines folder's switch took names the site, its words read as a crawl's key is.
+fn taken_names(
+    deny: &Deny,
+    book: &str,
+    release: &str,
+    row: &(String, String, String, String),
+) -> bool {
+    let (_, mode, context, key) = row;
+    deny.line_hits(Images::One(book, release), mode, Some(context), key) || deny.hits(context)
 }
 
 /// Whether a session log's `?` answer names the site, read as a crawl's is.
@@ -1783,6 +1892,13 @@ pub fn leaks(c: &Corpus, deny: &Deny) -> Vec<String> {
         {
             out.push(s.1.clone());
         }
+        for r in t.taken.iter().filter(|r| {
+            taken_names(deny, book, release, r)
+                || crate::context::holds_address(&r.3)
+                || crate::context::holds_address(&r.2)
+        }) {
+            out.push(format!("{} {}", r.2, r.3));
+        }
     }
     for d in c.described.iter().filter(|d| described_names(deny, d)) {
         out.push(d.2.clone());
@@ -1790,7 +1906,7 @@ pub fn leaks(c: &Corpus, deny: &Deny) -> Vec<String> {
     if let Some(held) = json.get_mut("held").and_then(|h| h.as_array_mut()) {
         for table in held.iter_mut().filter_map(|h| h.get_mut(2)) {
             if let Some(t) = table.as_object_mut() {
-                for field in ["crawl", "help", "swept"] {
+                for field in ["crawl", "help", "swept", "taken"] {
                     t.remove(field);
                 }
             }
@@ -2122,12 +2238,13 @@ mod tests {
     }
 
     /// Addresses IOS's own `?` rows print as examples (`e.g., 192.168.0.0/16`,
-    /// `tftp://223.255.254.254/...`, `(aabb.ccdd.eeff ...)`), held only inside crawl answers; none
-    /// is in a site capture.
+    /// `tftp://223.255.254.254/...`, `(aabb.ccdd.eeff ...)`, `macro auto mac-address list`'s `(e.g.
+    /// 1111.1111.1111)`), held only inside crawl answers; none is in a site capture.
     const IOS_HELP_EXAMPLES: &[&str] = &[
         "10.0.0.0",
         "10.10.0.0",
         "10.10.10.10",
+        "1111.1111.1111",
         "127.0.0.0",
         "192.168.0.0",
         "223.255.254.254",

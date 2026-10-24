@@ -60,6 +60,12 @@ pub struct Device {
     pub last_change: Option<u64>,
     /// the user the replayed line named (`... 2026 by admin`); none once a line is typed here
     pub last_change_by: Option<String>,
+    /// members whose provisioning `no switch <n> provision` took back since the boot, which `show
+    /// switch` lists as unprovisioned (the lab C9200L-48T-4G, 17.6.4)
+    pub unprovisioned: std::collections::BTreeSet<u32>,
+    /// the address `ip address dhcp` took the place of, by interface header: the interface keeps it
+    /// while no lease comes (the lab C9200L-48T-4G, 17.6.4: Vlan20 kept 10.99.20.1)
+    pub dhcp_kept: std::collections::BTreeMap<String, String>,
 }
 
 /// A switch's own printed configuration as replayed: its top-level lines in order, the `!`, comment
@@ -310,6 +316,12 @@ const MULTI: &[(&str, Names)] = &[
     ("snmp-server user", Names::All),
     ("snmp-server group", Names::All),
     ("spanning-tree vlan", Names::First(1)),
+    // an MST instance's priority, and a port's cost and priority in one, per instance (the lab
+    // C9200L-48T-4G, 17.6.4, and the lab C9300-24T: `spanning-tree mst 0 priority 24576` beside
+    // `spanning-tree mst 1 priority 8192`)
+    ("spanning-tree mst priority", Names::First(1)),
+    ("spanning-tree mst cost", Names::First(1)),
+    ("spanning-tree mst port-priority", Names::First(1)),
     ("switch", Names::First(1)),
     ("ip access-list", Names::All),
     ("access-list", Names::All),
@@ -686,15 +698,59 @@ fn root_priority(p: &Parse) -> Option<&'static str> {
     }
 }
 
-/// A global `spanning-tree vlan <list> root primary|secondary`: its VLAN list and whether it is
-/// `primary`.
-pub(crate) fn root_request(p: &Parse) -> Option<(String, bool)> {
-    let primary = root_priority(p)? == "24576";
-    let list = p.items.iter().find_map(|i| match i {
-        Item::Arg { value, .. } => Some(value.clone()),
-        Item::Kw { .. } => None,
-    })?;
-    Some((list, primary))
+/// A global `spanning-tree vlan <list> root primary|secondary [diameter <d> [hello-time <h>]]`: its
+/// VLAN list, whether it is `primary`, and the diameter and hello time it gives.
+pub(crate) fn root_request(p: &Parse) -> Option<(String, bool, Option<u32>, Option<u32>)> {
+    let words = keywords(p);
+    let primary = match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["spanning-tree", "vlan", "root", "primary", ref rest @ ..]
+            if rest.iter().all(|k| matches!(*k, "diameter" | "hello-time")) =>
+        {
+            true
+        }
+        ["spanning-tree", "vlan", "root", "secondary", ref rest @ ..]
+            if rest.iter().all(|k| matches!(*k, "diameter" | "hello-time")) =>
+        {
+            false
+        }
+        _ => return None,
+    };
+    let list = first_arg(p)?;
+    // the number after a keyword
+    let after = |kw: &str| {
+        let i = p
+            .items
+            .iter()
+            .position(|i| matches!(i, Item::Kw { kw: k, .. } if k.eq_ignore_ascii_case(kw)))?;
+        match p.items.get(i + 1) {
+            Some(Item::Arg { value, .. }) => value.parse().ok(),
+            _ => None,
+        }
+    };
+    Some((list, primary, after("diameter"), after("hello-time")))
+}
+
+/// A global `spanning-tree mst <list> root primary|secondary`: its instance list and whether it is
+/// `primary`; none with a diameter.
+pub(crate) fn mst_root_request(p: &Parse) -> Option<(String, bool)> {
+    let words = keywords(p);
+    let primary = match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["spanning-tree", "mst", "root", "primary"] => true,
+        ["spanning-tree", "mst", "root", "secondary"] => false,
+        _ => return None,
+    };
+    (!p.negated)
+        .then(|| first_arg(p))
+        .flatten()
+        .map(|list| (list, primary))
+}
+
+/// A global `no spanning-tree vlan <list> root ...`: its VLAN list.
+pub(crate) fn root_withdrawn(p: &Parse) -> Option<String> {
+    let words = keywords(p);
+    (p.negated && words.len() >= 3 && words[..3] == ["spanning-tree", "vlan", "root"])
+        .then(|| first_arg(p))
+        .flatten()
 }
 
 /// A global `spanning-tree vlan <list> priority|forward-time|hello-time|max-age [<value>]`: its VLAN
@@ -719,36 +775,6 @@ pub(crate) fn vlan_setting(p: &Parse) -> Option<(String, String, Option<String>)
         return None;
     }
     Some((list, setting.to_string(), value))
-}
-
-/// The line `spanning-tree vlan <list> priority <priority>` a root request stores for some of its
-/// VLANs.
-pub(crate) fn as_priority(p: &Parse, list: &str, priority: u32) -> Parse {
-    let mut q = p.clone();
-    for i in q.items.iter_mut() {
-        if let Item::Arg { value, .. } = i {
-            *value = list.to_string();
-            break;
-        }
-    }
-    let n = q.items.len();
-    let tok = match &q.items[n - 2] {
-        Item::Kw { tok, .. } => *tok,
-        Item::Arg { .. } => 0,
-    };
-    q.items.truncate(n - 2);
-    q.items.push(Item::Kw {
-        kw: "priority".into(),
-        tok,
-        exact: true,
-    });
-    q.items.push(Item::Arg {
-        name: "priority".into(),
-        value: priority.to_string(),
-        tok: tok + 1,
-        typed: true,
-    });
-    q
 }
 
 fn first_arg(p: &Parse) -> Option<String> {
@@ -779,6 +805,8 @@ impl Device {
             layout: None,
             last_change: None,
             last_change_by: None,
+            unprovisioned: Default::default(),
+            dhcp_kept: Default::default(),
         }
     }
 
@@ -942,6 +970,7 @@ impl Device {
                 return;
             }
             members.retain(|m| m.number != n);
+            self.unprovisioned.insert(n);
             self.blocks.retain(|b| {
                 let Some(name) = b.header.strip_prefix("interface ") else {
                     return true;
@@ -957,6 +986,7 @@ impl Device {
             return;
         }
         let at = members.partition_point(|m| m.number < n);
+        self.unprovisioned.remove(&n);
         members.insert(
             at,
             crate::platform::Member {
@@ -1009,6 +1039,24 @@ impl Device {
                             && routed(&self.blocks[b].header, &self.blocks[b].lines)
                 }
             };
+        // the address `ip address dhcp` takes the place of stays the interface's; another address
+        // line, or `no`, ends that
+        if let Some(b) = at
+            && (k == "ip address" || k == "ip address dhcp")
+        {
+            let header = self.blocks[b].header.clone();
+            let old = self.blocks[b]
+                .lines
+                .iter()
+                .find(|e| e.key == "ip address")
+                .and_then(|e| e.text.strip_prefix("ip address "))
+                .map(str::to_string);
+            if k != "ip address dhcp" || p.negated {
+                self.dhcp_kept.remove(&header);
+            } else if let Some(old) = old {
+                self.dhcp_kept.insert(header, old);
+            }
+        }
         let vlan = at.is_some_and(|b| self.blocks[b].header.starts_with("vlan "));
         let lines = match at {
             Some(b) => &mut self.blocks[b].lines,
@@ -1021,9 +1069,18 @@ impl Device {
             return;
         }
         // an interface has one primary address: `ip address dhcp`, an address or `no ip address`
-        // replaces the other (the lab C9300, 17.6.4: Vlan1's `no ip address`, then `ip address dhcp`)
+        // replaces the other, in its place (the lab C9300, 17.6.4: Vlan1's `no ip address`, then
+        // `ip address dhcp`; the lab C9200L-48T-4G, 17.6.4: ` ip address dhcp` where Vlan20's
+        // address stood, before its VRRP group)
         if at.is_some() && (k == "ip address" || k == "ip address dhcp") {
-            lines.retain(|e| e.key == k || (e.key != "ip address" && e.key != "ip address dhcp"));
+            let other =
+                |e: &Entry| e.key != k && (e.key == "ip address" || e.key == "ip address dhcp");
+            if !lines.iter().any(|e| e.key == k)
+                && let Some(e) = lines.iter_mut().find(|e| other(e))
+            {
+                e.key = k.clone();
+            }
+            lines.retain(|e| !other(e));
         }
         if at.is_some() && k == "switchport" {
             if p.negated {

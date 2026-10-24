@@ -2029,7 +2029,7 @@ fn run(args: &[String]) -> Result<bool, String> {
             for f in &src.unleveled {
                 println!("{f}: no level file, not read");
             }
-            for f in &src.sweeps {
+            for f in src.sweeps.iter().chain(&src.lines) {
                 println!("{}-{}/{}: {}", f.book, f.release, f.folder, f.level);
             }
             let built = corpus::with_forms(corpus::build(&src), &src)?;

@@ -23,13 +23,15 @@ The caret stands under the refused word of the line as typed, spaces and `do` in
 | an argument could stand there | at the start of the word |
 | a number past the range offered | under the digit that takes it past the top (`terminal length 600` under the last `0`) |
 | a number below the range, or a word where only a number stands | at the start of the word |
-| an interface the stack does not have | classic IOS: under the start of its number (`GigabitEthernet9/0/1` under the `9`). IOS XE: past the start the word shares with another row of `?`, the type it names not counted (`interface gigabitethernet4/0/1` on a one-member C9300-24T under the `g`, and under the `i` where `GMPLS` is listed); a number going on past a port the stack has, under the `/` after that port (`GigabitEthernet1/0/13/0`), and one departing from the management port's number, past their shared start (`gigabitethernet 0/1` under the `1`), as the lab C9200L-48T-4G (17.6.4) put them; a module no member's ports of the type carry, under it (`gigabitethernet 6/2` and `2/3/0` under the `2` and the `3`, the lab C9300-24T and C9200L-48T-4G); on a C9200, a member past the stack's most, under it (`gigabitethernet 9/0/6` under the `9`). A port channel, VLAN, loopback or tunnel typed with its number, under the digit that takes it past the top (`Po10` on a 2960G under the `0`) |
+| an interface the stack does not have | classic IOS: under the start of its number (`GigabitEthernet9/0/1` under the `9`). IOS XE: past the start the word shares with another row of `?`, the type it names not counted (`interface gigabitethernet4/0/1` on a one-member C9300-24T under the `g`, and under the `i` where `GMPLS` is listed); a number going on past a port the stack has, under the `/` after that port (`GigabitEthernet1/0/13/0`), and one departing from the management port's number, past their shared start (`gigabitethernet 0/1` under the `1`), as the lab C9200L-48T-4G (17.6.4) put them; a module no member's ports of the type carry, under it (`gigabitethernet 6/2` and `2/3/0` under the `2` and the `3`, the lab C9300-24T and C9200L-48T-4G); on a C9200, a member past the stack's most, under it (`gigabitethernet 9/0/6` under the `9`); on IOS XE a port past the most ports of its type have at that level, under the first digit that begins no port up to it (`GigabitEthernet1/0/49` under the `9` on the lab C9200L-48T-4G, 17.6.4, whose uplinks number to 4), and a range's end alike (`interface range GigabitEthernet1/0/47 - 49` under the `9`). A port channel, VLAN, loopback or tunnel typed with its number, under the first digit that begins no number of its range, as IOS reads a bounded number while its digits can still reach one (`Po10` on a 2960G under the `0`; `Port-channel128` under the `8` against `<1-48>` and `Vlan0` under the `0` against `<1-4094>`, the lab C9200L-48T-4G, 17.6.4) |
 
 The place of the caret in a word comes from a 2960-X session, checked against the words its own `?` offered where a capture has them.
 
-- The keywords are the rows of the `?` answer a real switch gave there, else the books'. A heading (`Configure commands:`, `VLAN configuration commands:`) offers none: `configure terminal` in global configuration is refused under the `e` that `configuration` leaves.
+- The keywords are the rows of the `?` answer a real switch gave there, else the books'. A real switch's answer gains the books' words it hid where the switch takes the line (`context::unjudged`): `eid-table vrf red` in a LISP instance, refused under the `i` past the `e` the hidden `exit` begins (the lab C9200L-48T-4G, 17.15.6). A heading (`Configure commands:`, `VLAN configuration commands:`) offers none: `configure terminal` in global configuration is refused under the `e` that `configuration` leaves.
 - Among two or more interface types, a word in capitals is a type (`PROTECTION_GROUP`, `BDI`), and no argument stands there.
 - A word running past a listed type's whole name into no type's is refused past the name, though a host name could stand there: `show ip ospf neighbor Tunnel-tp` at a level whose `?` lists `Tunnel` alone, under the `-`.
+
+A loopback refuses `ip address dhcp` under `dhcp` (the lab C9200L-48T-4G, 17.6.4; other IOS XE platforms inferred alike).
 
 `vlan <n>` past 4094 answers two lines with no caret: `Command rejected: Bad VLAN list - character #<k> (EOL) delimits a VLAN` (k the position after the number) and `number which is out of the range 1..4094.`.
 
@@ -49,7 +51,7 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | `no switchport`, `switchport mode dot1q-tunnel\|private-vlan promiscuous` on an interface | `authentication port-control` on the port (the lab C9200L-48T-4G, 17.6.4 and 17.15.6) | `Command rejected: Conflict with Authentication. ` and `Authentication must be disabled before changing port mode ` |
 | `ip admission <name>` on an interface, on the C9200 at 17.6 and 17.15 (the lab C9200L-48T-4G at 17.6.4 and 17.15.6) | no `ip admission name <name>` | `%Auth-proxy name <name> is not defined` and a blank line |
 | `class <name>` in a policy map | no class map of the name | `class map <name> not configured` |
-| `service-policy input\|output <name>` on an interface | no policy map of the name | `% policy map <name> not configured` |
+| `service-policy input\|output <name>` on an interface or the control plane | no policy map of the name | `% policy map <name> not configured` |
 | `service-export mdns-sd controller <name>` | another controller | `Only one Controller is allowed` and a blank line |
 | a line naming a VRF (`vrf forwarding`, `ip multicast-routing vrf`, `ip mroute vrf`, `ntp server vrf`, `snmp-server host ... vrf`, a BGP or OSPFv3 address family; in EXEC `show ip route\|arp vrf`, `show ip vrf detail\|interfaces`, `show ip bgp vpnv4 vrf`, `show mpls forwarding-table vrf`, `show mpls static binding ipv4 vrf`) | no `vrf definition` or `ip vrf` of the name; `Mgmt-vrf` is in the factory default | the command family's own (`% VRF V1 not configured`, `% VPN Routing instance V1 does not exist.`) |
 | `router ospf <n> vrf <name>` | no `vrf definition` or `ip vrf` of the name | `Unknown VRF specified` |
@@ -107,19 +109,76 @@ On IOS XE a line the configuration so far does not let the switch take prints th
 | `ipv6 address dhcp ...` on an interface | `ipv6 dhcp server` there | `% Interface is in DHCP server mode` |
 | `ntp trusted-key <n>` | the key trusted | `%NTP trusted-key is invalid : key already configured ` |
 | `track <n> ...` | track `<n>` of another kind (interface, `ip route`, `ip sla`, list) | `% Cannot change tracked object <n> - delete old config first` |
-| `offset-list <n> in\|out ...` in a router | `<n>` not a standard list number (1-99, 1300-1999) | `% Invalid access list name.` |
+| `offset-list <n> in\|out ...` in a router | `<n>` not 0, which offsets every network, or a standard list number (1-99, 1300-1999) | `% Invalid access list name.` |
 | `ip msdp redistribute list <n>` | `<n>` not an extended list number (100-199, 2000-2699) | `% Invalid access list name.` |
 | `rep stcn ...` on an interface | no `switchport mode trunk` | `Command rejected: conflict with the current Switchport Mode` and a blank line |
+| `vlan <list>` | VTP version 3 server, which vswitch makes no primary server (the lab C9200L-48T-4G, 17.6.4) | `VTP VLAN configuration not allowed when device is not the primary server for vlan database.` |
+| leaving the VLAN submode of an extended VLAN (1006-4094) | a VTP version 1 or 2 server (the lab C9200L-48T-4G, 17.6.4: `vlan 4000`, `name LABEXT`, `exit`; 17.15 inferred alike). Its examples sessions at 17.6.4 and 17.15.6, a version 1 server whose `vlan.dat` failed (`%Error exiting config-vlan mode 47: NV storage failure`), took `vlan 1755`, `vlan 2000` and `vlan 2508` silently, which vswitch, with no such failure, does not model | `% Failed to create VLANs <list>`, `Extended VLAN(s) not allowed in current VTP mode.` and `%Failed to commit extended VLAN(s) changes.`; no VLAN is made |
+| `vtp mode server` | below version 3, an extended VLAN exists | `Device mode cannot be VTP Server for VLANS because extended VLAN(s) exist` |
+| `vtp version 2` | a server holding an extended VLAN | `Extended VLAN(s) exist,VTP version 2 cannot be changed unless extended VLAN(s) removed` |
+| `vtp pruning`, `no vtp pruning` | VTP mode not server | `Cannot modify pruning unless in VTP server mode` |
 | `show ip ospf interface ... topology <name>` | no OSPF process with `topology <name>` | `%OSPF: Specified topology not found for any OSPF process` |
 | `show ip bgp neighbors <peer> <keyword> ...` | no `neighbor <peer>` in `router bgp` | `% No such neighbor or address family` |
 | `show ip wccp ...` | no `ip wccp` line | `% WCCP version 2 is not enabled` |
 | `show spanning-tree mst <instance> ...` | spanning-tree mode not MST | `% Switch is not in mst mode` and a blank line |
+
+The lab C9200L-48T-4G's sample lines (17.6.4 and 17.15.6 at network-advantage: a line for each keyword of each submode its crawls entered, typed from the probe base) printed these, and the running configuration kept no line. IOS XE prints them likewise:
+
+| Line | State | Message |
+|---|---|---|
+| `network <address> <wildcard> area <area>` in `router ospf` | the wildcard is contiguous neither as a wildcard nor as a mask (17.6.4 took `255.240.0.0` in an example) | `% OSPF: Invalid address/mask combination` |
+| `aggregate-address <address> <mask> ...` in `router bgp` or its address family | the mask is not contiguous | `% BGP: Non-Contiguous mask Configured` |
+| `maximum-paths eibgp <n>` in `router bgp` or its address family | | `%BGP: This may cause traffic loop if not used properly (command accepted)` |
+| `path-attribute discard 1 in` in a peer-session template | | `% BGP : cannot configure path-attributefiltering for well-known non-optional attribute ORIGIN nbr: ` |
+| `announce rpki state` in a peer-policy template | no `send-community extended\|both` there | `% Configure send-community extended on the same neighbor or template first` |
+| `next-hop-unchanged ...` in a peer-policy template | `next-hop-self` there | `%BGP: Cannot co-exist with nexthop-self, Deconfigure first` |
+| `filter-as ...` in a peer-policy template (17.6.4; 17.15.6 typed none) | | `% BGP: Invalid command - <line>` |
+| `process-min-time ...` in OSPFv3 | | `%OSPFv3: The process-min-time command is deprecated and has no effect` |
+| `redistribute bgp <asn> ...` in `ipv6 router ospf`, before 17.15 (17.15.6 took it) | another BGP AS runs | `BGP is already running; AS is <running>` and `% Failed to create routing protocol bgp` |
+| `domain delimiter <d>` in `aaa server radius dynamic-author` | more than one character | `% Too many RADIUS domain delimiters.` |
+| `cdp enable` on an NVE interface | | `% CDP is not supported on this interface, or for this encapsulation` |
+| `link ...` on `interface nve<n>` | | `Command rejected: interface nv<n> does not support the command` |
+| `mac-address <mac>` on an NVE interface | | `% "mac-address" not valid on this interface` |
+| `network-policy <n>` on an NVE interface | | `Command rejected: Network Policy cannot be configured on this interface ` |
+| `vrf forwarding <name>` on `interface nve<n>` | | `% 'vrf forwarding' command not available on interface nve<n>` |
+| `member vni <list> ...` on an NVE interface | a VNI outside 4096-16777215 | `% Valid VNI Range is 4096-16777215.` |
+| `mcast-group <group> ...` under an NVE interface's VNI | the group is no IPv4 multicast address | `% Invalid mcast address` |
+| `bfd jitter` on an interface (17.6.4) | no `bfd interval` or `bfd template` there | the obsolete notice, a blank line and ` BFD: BFD must be enabled first` |
+| `macro apply <name>` on an interface | no `macro name <name>` | `% Macro '<name>' does not exist.` |
+| `umbrella\|opendns in direct-cloud-access ...` on an interface | no `token` or `api-key` in `parameter-map type umbrella global` | `%Umbrella mandatory parameter 'token' or 'api-key/secret/orgid' not configured` |
+| `attribute` alone in `aaa attribute list` | | `%AAA: attr type "invalid attribute" is invalid` |
+| `operation-packet-priority high`, `optimize timestamp` in an IP SLA jitter probe | no `precision microseconds` | `%This configuration allowed only on microsecond precision probe` |
+| `vrf <name>` in an IP SLA jitter probe, before 17.15 (17.15.6 took it) | no `vrf definition` or `ip vrf` of the name | `%VRF: <name> does not exist` |
+| `address <ipv6>` in a VRRP group | a global address without its prefix | `% You must specify a prefix for a non link-local address.` |
+| `encapsulation lisp` in `router lisp`'s IPv4 or IPv6 service, on the C9200 image | | `% lisp encapsulation is not supported.` |
+| `first-packet-petr\|mr-use-petr remote-locator-set <name> ...` in a LISP service | no `remote-locator-set <name>` | `% No remote-locator-set named '<name>'.` |
+| `import database site-registration ...` in `router lisp`'s IPv4 or IPv6 service | no `locator default-set` there | `% Locator default-set is not configured.` |
+| `proxy-itr ...` in `router lisp`'s IPv4 or IPv6 service | `itr` there | `% Disable ITR functionality first.` |
+| `decapsulation filter rloc source locator-set <name>` in a LISP instance, `database-mapping ... locator-set <name> ...` in a dynamic EID | no `locator-set <name>` | `% No locator-set named '<name>'.` |
+| `map-notify-group <group> ...` in a dynamic EID | an IPv4 group that is no multicast address | `% Not a multicast address (<group>)` |
+| `eid-record-subscriber instance-id <id> ...` in a LISP extranet | `eid-record-provider instance-id <id>` there | `% Subscriber instance <id> cannot be same as provider instance` |
+| `ip-interface ...` in a LISP locator set (17.6.4) | | the obsolete notice, a blank line, `%  To convert existing LISP configuration enter commands "service <name>" or` and `% "instance-id <iid> in "router lisp" submode.` |
+| `url <url>` in `stealthwatch-cloud-monitor` | no `://` | `% Invalid URL` |
+| `query-response mode on-demand` in `mdns-sd gateway` (17.15.6) | `active-response timer` there | `%Warning: active-response timer is not applicable in on-demand mode.` and `Please remove active-response timer('no active-response timer') before changing to on-demand mode` |
+| `source-interface <name>` in `mdns-sd gateway` (17.15.6) | no VLAN interface | `%Error: Only SVI interface is allowed to be configured as source interface` |
+| `mdns-sd gateway` on an interface (17.15.6) | no global `mdns-sd gateway` | `%Error: Not-Allowed, first configure "mdns-sd gateway" in global config mode` |
+| `service-routing mdns-sd` on an interface (17.15.6) | no global `service-routing mdns-sd` | `%Error: Not-Allowed, first configure "service-routing mdns-sd" in global config mode` |
+| `match location-group <n> vlan <v>` in `mdns-sd location-filter` (17.15.6) | no `mdns-sd location-group <n> vlan <v>` | `%Error: Location-group <n> under vlan <v> doesn't exist` |
+| `service-policy <name>` in a VLAN configuration's or an interface's `mdns-sd gateway` (17.15.6) | no `mdns-sd service-policy <name>` | `%Error: '<name>' service-policy does not exist` |
+| `vrf <name>` in `cts sxp export-list` | `binding-source` there | `% Remove binding-source configuration before enabling vrf` |
+| `key-hash <type> ...` under `ip ssh pubkey-chain` | a type starting neither `ssh-` nor `ecdsa-` | `% SSH: keytype not supported <type>` |
+| `consent ...` in a web authentication parameter map | no `type consent` | `% First configure "type consent"` |
 
 These lines are taken with a warning first:
 
 | Line | State | Warning |
 |---|---|---|
 | `mka policy <name>` | the policy exists | a blank line, `% MKA Policy "<name>" may have associated active MKA Sessions.`, a blank line, `  Changes to MKA Policy "<name>" values`, `  will cause all associated active MKA Sessions to be cleared.`, a blank line |
+| `neighbor <peer> ao <chain> ...` in `router bgp`, `ao <chain> ...` in a peer-session template | no `key chain <chain>` (the lab C9200L-48T-4G's sample lines, as the rows to `mdns-sd` below) | `%BGP: Key chain does not exist` |
+| `neighbor <address>` in `router ospf` | the interface whose subnet holds the address runs a broadcast network type | `% OSPF: Configured Nbr <address> is incompatible with OSPF network type on <interface>` |
+| `active-query timer <n>` in a VLAN configuration's `mdns-sd gateway` | | `%Warning: Ensure all the specified VLAN(s) have source-interface configured for active-query to work` |
+| `sdg-agent <address>`, `source-interface ...` in a VLAN configuration's `mdns-sd gateway` | | `%Warning: Configuration accepted. Use global mdns-sd gateway mode to configure "sdg-agent" address.`; `... to configure "source-interface".` |
+| `spanning-tree mode <mode>`, on the C9200 at 17.6 | the mode changes (the lab C9200L-48T-4G, 17.6.4, from rapid-pvst to MST; the other changes inferred alike, and the 17.15 image, unmeasured, left silent) | `Warning: Changing STP mode can disrupt the traffic and make system unstable` and `Recommend to change STP mode only during maintenance window` |
 | `policy-map type control subscriber <name>` | the policy map exists | `%Warning, modifying policy-map "<name>" may impact sessions hosted on ports for which "<name>" has already been applied.` |
 | `show spanning-tree mst configuration [digest]` | spanning-tree mode not MST | `% Switch is not in mst mode` |
 | `standby [<group>] ip <address>` | the interface's subnets do not hold the address | `% Warning: address is not within a subnet on this interface` |
@@ -133,6 +192,33 @@ These lines are taken with a warning first:
 | `cts role-based sgt-map 0.0.0.0/0 ...` | no `ip route 0.0.0.0 0.0.0.0` | `%Please ensure default route is created using ip route 0.0.0.0 command` |
 | `spanning-tree portfast [trunk]` | PortFast changes | `%Warning: portfast should only be enabled on ports connected to a single`, ` host. Connecting hubs, concentrators, switches, bridges, etc... to this`, ` interface  when portfast is enabled, can cause temporary bridging loops.`, ` Use with CAUTION`, a blank line; without `trunk` then `%Portfast has been configured on <port> but will only` and ` have effect when the interface is in a non-trunking mode.` |
 | `authentication host-mode\|port-control\|control-direction\|open` on an interface, `authentication mac-move` | the configuration is new-style: it holds a line of `shell::NEW_STYLE` (`policy-map type control subscriber`, `access-session ...`, `autoconf enable`); the lab C9200L-48T-4G (17.6.4), legacy, took them silently | `%Command deprecated (<line>) - use access-session instead` and a blank line |
+
+### VTP lines
+
+IOS XE says what these lines did (the lab C9200L-48T-4G and C9300-24T, 17.6.4). The refusals are in the first table.
+
+| Line | Message |
+|---|---|
+| `vtp mode <mode>` | `Setting device to VTP <Mode> mode for VLANS.` (`Server`, `Client`, `Transparent`, `Off`); the mode already set: `Device mode already VTP <Mode> for VLANS.` |
+| `no vtp mode` on a server | `Device mode already VTP server for VLAN feature` and `Resetting device to VTP SERVER mode.` |
+| `vtp domain <name>` | `Changing VTP domain name from <old> to <name>`, `NULL` for no domain; the domain already set: `Domain name already set to <name>.` |
+| `vtp version <n>` | the version already run: `VTP version is already in V<n>.`, and no `vtp version` line is kept |
+| `vtp password <password>` | `Setting device VTP password to <password>`; `hidden` below version 3: `Device is operating in VTP version <n>. hidden option is allowed from VTP version 3 only.`, the password set before kept (the lab C2960G) |
+| `no vtp password` | `Clearing device VTP password.`; none set: `No password currently set.` |
+| `vtp pruning`, `no vtp pruning` on a server | `Pruning switched on`, `Pruning switched off` |
+
+### Converting 802.1X to new-style
+
+On IOS XE the first line that needs the 802.1X configuration new-style, typed while it is legacy, prints `This operation will permanently convert all relevant authentication commands to their CPL control-policy equivalents. As this conversion is irreversible and will disable the conversion CLI 'authentication display [legacy|new-style]', you are strongly advised to back up your current configuration before proceeding. ` and asks `Do you wish to continue? [yes]: ` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the lab C9300-24T's crawl, 17.6.4). Those lines are `shell::NEW_STYLE`: `policy-map` and `class-map type control subscriber`, `parameter-map type webauth|subscriber`, `autoconf enable`, `subscriber aging` and `access-session host-mode|closed|port-control|control-direction|inherit`.
+
+- `yes`, a start of it, or Enter converts the configuration and takes the line. Another answer takes neither.
+- The conversion adds `access-session mac-move deny`, the default service templates and the control class maps IOS makes (`CPL_DEFAULTS`, as `show archive config differences` printed them), after the last certificate chain. An identity policy becomes the service template of its name, in its place (17.15.6; 17.6.4 inferred).
+- A legacy port's `authentication port-control`, `host-mode` and `open` lines become `access-session port-control`, `access-session host-mode` (single-host where none was set) and `access-session closed` (left out under `authentication open`, inferred), printed after the port's `switchport` lines, and `service-policy type control subscriber POLICY_<port>`. The port keeps `mab` and `dot1x pae`.
+- `POLICY_<port>` is the policy the lab switch made for a port with `authentication port-control auto`, `mab` and `dot1x pae authenticator`: dot1x, then MAB (`CPL_PORT_POLICY`). The running configuration prints each class of it twice and `show policy-map` once. The lab switch converted none of a port's other `authentication` lines (order, priority, timers, events).
+- A parameter map typed at the console prints after the service templates.
+- A converted configuration asks no more, even after `configure replace` to legacy lines.
+- `authentication display config-mode` prints `Current configuration mode is legacy ` or `Current configuration mode is new-style `, then a blank line. Once the configuration is new-style, `authentication display legacy|new-style` is refused at its start, and `?` after `authentication display` offers `config-mode` alone (the lab C9200L-48T-4G, 17.6.4 and 17.15.6).
+- An `event <name>` typed alone in a control policy is `event <name> match-all`, and prints so (the lab C9200L-48T-4G, 17.6.4 and 17.15.6: `event aaa-available`).
 
 ## Help and Tab
 
@@ -148,6 +234,8 @@ These lines are taken with a warning first:
 - A description wraps under its column at the console's width. With piped input the help is fitted to `terminal width` when it was set to a number.
 - Right after a word, `?` prints the keywords the word begins, two spaces apart, wrapped before the console's last column.
 - After `do` or `do-exec` (each by any unique start) `?` and Tab answer as the privileged prompt does. `?` right after them prints the crawl's `do-exec ?` for the mode where one is held, which leaves out the commands that change mode.
+- IOS XE answers `?` after `interface` and a type, or after a port's number short of its port, with the numbers that come next: `  <lo-hi>  <Type> interface number` and a blank line. A logical type gives its range (`interface Port-channel ?`: `<1-48>` on a C9200), a port type its members from 0 to the family's most (`<0-8>` on a C9200), and a port's number ending in `/` the most ports of the type at that level from 0 (`GigabitEthernet1/0/?` and `GigabitEthernet1/1/?`: `<0-48>`). Measured on the lab C9200L-48T-4G (17.6.4); other IOS XE platforms are inferred to answer alike.
+- `switch <n> provision ?` offers the models the crawl's switch 1 was offered, whatever the member (the lab C9200L-48T-4G, 17.6.4, answered switch 2 alike).
 - Tab completes the one keyword or interface type a word begins, whole keywords included (`ip` beside `ipv6` completes nothing), and nothing after a held refusal.
 
 ## Privilege levels
@@ -227,6 +315,7 @@ A configuration a switch printed (one with a `version` line) keeps its layout wh
 - A command that takes several instances keeps one line per instance, named by the arguments that name it (`username`, `ntp server`, `ip route`, `neighbor`, `network`, `monitor session` by its session), and `no` naming an instance removes it whatever it sets.
 - A default turned back on prints nothing, while an interface keeps `no cdp enable`, `no lldp transmit` and `receive`, `no keepalive`, `no ip redirects`, `no ip proxy-arp` and `no ip unreachables`.
 - `no switchport` drops a port's switchport lines and `switchport` its addresses.
+- `ip address dhcp` takes the place of the interface's `ip address` line, and an address line that of `ip address dhcp` (the lab C9300, 17.6.4: Vlan1's `no ip address`, then `ip address dhcp`; the lab C9200L-48T-4G, 17.6.4: Vlan20's address, before its VRRP group).
 - A member's `channel-group` makes its port-channel with the member's switch port lines.
 
 ### The no lines IOS keeps
@@ -246,20 +335,24 @@ These come from captured Catalyst 9400 running configurations at 17.5, and the l
 
 ### Spanning-tree lines
 
-- `spanning-tree vlan` lines print in VLAN order.
+- `spanning-tree vlan` lines print a setting at a time, the priorities first, then hello-time, forward-time and max-age, each in VLAN order whatever order they were typed in (the lab C9300 and C9200L-48T-4G, 17.6.4; hello-time's place inferred).
 - A VLAN's priority, forward-time, hello-time and max-age are kept per VLAN. VLANs holding one value print on one line (`spanning-tree vlan 1,10 priority 4096`); `no spanning-tree vlan 10 priority` then leaves `spanning-tree vlan 1 priority 4096`.
 - `spanning-tree vlan <list> root primary` is kept as `priority 24576` where that makes the switch the root, else as the highest multiple of 4096 that beats the current root; `root secondary` as `priority 28672`. VLANs taking one priority share a line.
-- `spanning-tree mst configuration` enters its submode, and `instance <n> vlan <list>` prints with `vlan`.
+- A root request's `diameter <d>` also keeps the timers IEEE 802.1D gives the diameter at the hello time: a max age of 4 hellos and twice the diameter less 2, a forward delay of half of 4 hellos and 3 diameters, rounded up (diameter 3 at hello 2 keeps `forward-time 9` and `max-age 12`, the lab C9200L-48T-4G, 17.6.4). Its `hello-time <h>` is kept as given, and a timer at its default prints nothing (inferred).
+- `no spanning-tree vlan <list> root` takes back the priority and the timers the request set (the lab C9200L-48T-4G, 17.6.4; `hello-time` inferred alike).
+- `spanning-tree mst <list> root secondary` is kept as `spanning-tree mst <list> priority 28672` (the lab C9200L-48T-4G, 17.6.4), `root primary` as `priority 24576` (inferred).
+- An MST instance's priority, and a port's MST cost and port priority, are kept per instance. The MST lines print the region's settings first (`hello-time`, `max-hops`), then each instance's in instance order, whatever order they were typed in (the lab C9300-24T and C9200L-48T-4G, 17.6.4).
+- `spanning-tree mst configuration` enters its submode, and `instance <n> vlan <list>` prints with `vlan`. Its block prints before the first `spanning-tree mst` line after the hostname, `!` before it (c2960 15.2(6)E capture 3; the lab C9300-24T and C9200L-48T-4G, 17.6.4), else among the other blocks. A region the captures hold for the platform and release prints where its switch printed it, as a held block does (two c2960 15.2(6)E captures).
 - Classic IOS's first `no spanning-tree mst configuration` returns the region to its defaults and keeps the header line; the second removes it. IOS XE removes it at the first.
 - A member's `channel-group <n>` gives a new or empty port-channel interface the member's switch port lines.
 
 ### VLAN and VTP lines
 
-- VLANs and VTP lines print only in VTP transparent or off mode. A VTP server or client keeps them in vlan.dat.
+- VLANs and VTP lines print only in VTP transparent or off mode. A VTP server or client keeps them in vlan.dat, which holds the normal range alone: below version 3 its extended VLANs, as a loaded configuration makes them, print here (the lab C9200L-48T-4G, 17.6.4: `vlan 4000` and its name, a version 1 server).
 - The VLANs with nothing under them print as runs split at each VLAN with lines, each list compressed and ending with a space (`vlan 100-119 `, `vlan 120` with its name, `vlan 121-139 `). A VLAN with lines prints its own block, one given lines after a range named it included, the blocks in order of their first VLAN.
 - `state suspend` prints under its VLAN; `state active`, the default, prints nothing.
 - The VTP lines print together: `vtp domain`, `vtp mode`, then `vtp version` and `vtp password`.
-- `vtp version` prints whatever the VTP mode, but for mode off, which prints none (17.6.4, versions 1 and 3).
+- `vtp version` prints whatever the VTP mode, but for mode off, which prints none (17.6.4, versions 1 and 3). The version VTP already runs, typed, stores no line (the lab C9200L-48T-4G, 17.6.4).
 - `vlan access-map` blocks print whatever the VTP mode. A `vlan configuration` with nothing under it is not kept.
 
 ### Section order
@@ -402,6 +495,8 @@ The columns and rows follow the Catalyst 9400 captures (17.5), cabled as they ra
 | 1004 | `fdnet` | `ieee` | 100000 plus the number | 1500 |
 | 1005 | `trnet` | `ibm` | 100000 plus the number | 1500 |
 
+`show vlan id <n>` for a VLAN the switch has prints its rows of `show vlan`, its ports wrapped onto lines of their own, then `Remote SPAN VLAN` and `Disabled`, and the private VLAN table, empty (the lab C9200L-48T-4G, 17.6.4). A VLAN with lines besides its name and state is not modelled.
+
 ## show interfaces switchport
 
 A block per switchport as the show techs of 39 switches print it, a blank line between. `show interfaces <port> switchport` prints one port's block alone with no blank line after it.
@@ -471,20 +566,20 @@ Versions 1 and 2 print the MD5 digest in two rows of eight `0xNN ` bytes. It is 
 - The VLANs count with 1 and 1002-1005; versions 1 and 2 leave out the extended VLANs.
 - Device ID is the switch's base MAC address, as `show version` names it on every capture that prints both.
 - A new database shows `0.0.0.0 at 0-0-00 00:00:00` at revision 0.
-- A version 1 or 2 server counts one revision per VLAN database change typed at the console, once the VLAN submode is left, and stamps the updater and the switch's clock (`10-16-26 18:30:17`: month and day unpadded). A replayed configuration counts nothing.
+- A version 1 or 2 server counts one revision per VLAN database change typed at the console, once the VLAN submode is left, and stamps the updater and the switch's clock (`10-16-26 18:30:17`: month and day unpadded). A change of version below 3, or of pruning, counts one too (the lab C9200L-48T-4G, 17.6.4: `vtp version 2`, `vtp pruning`, `no vtp pruning` and `vtp version 1` each counted one, `vtp password` none). A replayed configuration counts nothing.
 - A new domain, transparent or off mode and version 3 start the revision at 0.
 - Both digest lines end with a space on every platform.
 - The updater is the lowest-numbered VLAN interface with an address. It skips a VLAN interface with no address (DHCP with no lease); with none, the first layer 3 interface with an address prints (`on interface Lo0 (first layer3 interface found)`). A transparent switch and VTP mode off name no updater.
 - From IOS XE 17.6 the pruning line adds its operational state (`Enabled (Operationally Enabled)`); the 9400 at 17.5 prints `Enabled` alone.
-- A 2960-Plus supports 255 VLANs locally and an IE-3300 259.
+- A 2960-Plus supports 255 VLANs locally, an IE-3300 259 and a C9200L 1024 (the lab C9200L-48T-4G, 17.6.4, at versions 1 and 3); the other IOS XE families are inferred to hold the lab C9300's 4096.
 
-Version 3 prints no last change or updater, then a Feature VLAN block: the mode, the VLANs, the extended VLANs and 4096 VLANs supported. A server or client adds the revision, `Primary ID` `0000.0000.0000`, an empty `Primary Description` and an empty `MD5 digest`, as vswitch models no primary server; its revision stays 0. Feature MST and Feature UNKNOWN blocks follow, each Transparent, and a blank line ends the output.
+Version 3 prints no last change or updater, then a Feature VLAN block: the mode, the VLANs, the extended VLANs and the VLANs supported. A server or client adds the revision, `Primary ID` `0000.0000.0000`, an empty `Primary Description` and an empty `MD5 digest`, as vswitch models no primary server; its revision stays 0. Feature MST and Feature UNKNOWN blocks follow, each Transparent, and a blank line ends the output.
 
 ## show vtp counters and show vtp password
 
 - `show vtp counters` prints every advertisement and error count at 0, then the pruning table with a row per trunking port (`Gi1/1/1`, `Po10`), its three counts at 0.
-- `show vtp password` prints `The VTP password is not configured.`, or `VTP Password: <password>` as typed.
-- `vtp password <password>` prints `Setting device VTP password to <password>`, `no vtp password` prints `Clearing device VTP password.`, and `hidden` below version 3 prints `Device is operating in VTP version 1. hidden option is allowed from VTP version 3 only.` and keeps the password set before (the lab C2960G).
+- `show vtp password` prints `The VTP password is not configured.` where none is set. Where one is, classic IOS prints `VTP Password: <password>` as typed, and IOS XE `VTP Password is configured.` for a plain password and `VTP Password: <secret>` for a hidden one, the secret as 32 hex digits (the lab C9300-24T and C9200L-48T-4G, 17.6.4).
+- The VTP lines' own messages are under Messages the configuration gives.
 
 ## show spanning-tree
 
@@ -557,13 +652,15 @@ A Catalyst 9400's ports and a classic stack's port-channels have no known number
 | `interface <port>`, `interface <port> portfast` | the port's row per instance; `enabled` or `disabled` per instance |
 | `mst`, `mst <n>` | MST mode: each instance's or one instance's bridge, root, regional root, hops and ports |
 | `mst configuration` | the name, revision and VLANs per instance, in any mode |
+| `show pending`, in `spanning-tree mst configuration` | `Pending MST configuration`, then the region as edited so far, which vswitch takes as each line is typed (the lab C9200L-48T-4G, 17.6.4); `show current`, the region before the edit, is not modelled |
 
 - A bridge that is not the root adds `Cost` and `Port <n> (<name>)` under the root's address. Under MST the cost is the CIST's external one, the internal one where the CIST's root is in the region (inferred), and an MSTI's internal one.
 - IOS XE pads the summary's labels to two widths and lists EtherChannel misconfig guard first. Classic IOS pads them to one width and lists it after Loopguard Default.
 - The summary counts `1 vlan` and `1 mst` in the singular.
 - UplinkFast and BackboneFast set outside PVST print `enabled but inactive in <mode> mode`.
-- A port in no tree prints `no spanning tree info available for <port> `; a VLAN list with no instance prints `Spanning tree instance(s) for vlan <list> does not exist.`
-- `detail`, `interface <port> detail`, `mst interface <port>`, `mst configuration digest`, MST forms outside MST mode and a switch with no instance print the no-output-model line. No BPDU counter, topology change or age is invented.
+- A port in no tree prints `no spanning tree info available for <port> `, `detail` or not; a VLAN list with no instance prints `Spanning tree instance(s) for vlan <list> does not exist.`
+- A switch with no port up runs no instance (the lab C9200L-48T-4G, 17.6.4, in rapid-pvst and MST mode). `show spanning-tree`, `active` and `detail` print `No spanning tree instance exists.` between blank lines, `root` and `bridge` print nothing, and `summary` and `summary totals` end with one `Total` row of zeros. In MST mode `mst` and `mst detail` print `No mst information available.`, `mst <n>` `No mst information available for instance(s) <n>.` and `mst interface <port>` `No mst information available on interface <port>.`, each between blank lines.
+- `detail`, `interface <port> detail`, `mst interface <port>`, `mst configuration digest` and MST forms outside MST mode print the no-output-model line where an instance runs. No BPDU counter, topology change or age is invented.
 - Aging Time is `mac address-table aging-time` for the VLAN or the switch, else 300; MST blocks print none.
 
 ## show ip interface brief
@@ -578,6 +675,7 @@ The layout and column widths follow C9200L captures at 17.6 and 17.15, with no b
 - Up: a loopback, an AppGigabitEthernet port, a cabled port, a port-channel with a bundled member, and a VLAN interface whose VLAN a running port carries. A VLAN interface whose VLAN exists with no running port carrying it is up, its protocol down.
 - Method is `NVRAM` where a loaded configuration gives an address or `no ip address`, `manual` for an address typed at the console and for `no ip address` typed after it, and `DHCP` for `ip address dhcp` in a loaded configuration.
 - `ip address dhcp` typed at the console reads `manual` while the interface is down and `DHCP` once it is up, with or without a lease.
+- An interface given `ip address dhcp` keeps the address the line took the place of while no lease comes (the lab C9200L-48T-4G, 17.6.4: Vlan20 kept 10.99.20.1, down). Another address line, or `no ip address`, ends that.
 - Method is `unset` on a front-panel switch port however configured, on a loopback with no address, and for the factory default's `no ip address`.
 - IOS XE prints a name wider than 22 short (Te1/1/1, Fo1/1/1, Ap1/0/1). Classic IOS prints a name of 22 characters or more whole, followed by one space.
 - Protocol is padded to 8. The IE-3300 pads Protocol to its header's width.
@@ -611,6 +709,17 @@ The layout and column widths follow C9200L captures at 17.6 and 17.15, with no b
 - An expression ending in a lone backslash is refused, as is any malformed one.
 - The expression is the rest of the line as typed. A space at the end is part of it (`| include Gi1/0/2 ` skips Gi1/0/20).
 - A missing expression answers `% Incomplete command.`.
+
+## show mac address-table aging-time
+
+IOS XE prints `Global Aging Time: ` and `mac address-table aging-time`, else 300, right-aligned in four columns, then the heading `Vlan    Aging Time` and its rule (the lab C9200L-48T-4G, 17.6.4). A VLAN's own aging time and classic IOS's answer are not modelled.
+
+## show switch and show module
+
+A C9200, C9200L or C9200B at IOS XE 17.6 that stacks no other member, present or provisioned, prints them as the lab C9200L-48T-4G at 17.6.4 did. Other platforms, releases and stacks answer the no-output-model line.
+
+- `show switch`: `Switch/Stack Mac Address : <base MAC address> - Local Mac Address`, `Mac persistency wait time: Indefinite`, the table's heading, member 1 `Active` with priority 1, hardware version `V02` and `Ready`, then each member that `no switch <n> provision` took back since the boot as a `Member` of MAC address `0000.0000.0000` and priority 0, `Unprovisioned`, and three blank lines.
+- `show module`: the heading, then member 1's row: its ports, the management port left out, the model, the system serial number, the base MAC address, `V02` and `17.06.04`.
 
 ## show version and show license summary
 
@@ -666,7 +775,7 @@ A privileged line a form of the session's level takes prints the `%` lines the s
 | `% dampening not enabled for base` | `bgp dampening` directly under `router bgp` or in its `address-family ipv4 [unicast]`, a VRF's not counting, where a `router bgp` runs |
 | `% No such peer-group` | `neighbor <name> peer-group` for the group named, in the VRF's address family where the line names a VRF and outside every VRF's otherwise, where a `router bgp` runs |
 | `%No Tlv-list exists. `, `%Tlv-list name does not exists.` | `cdp tlv-list` (for `*`), `cdp tlv-list <name>` (for a name) |
-| `% Network not in table` | on an EVPN line, `address-family l2vpn evpn` in a running `router bgp` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6); another family's line prints without it |
+| `% Network not in table` | on an EVPN line, a route in the EVPN table, which vswitch never holds, where a `router bgp` runs (the lab C9200L-48T-4G, 17.6.4 and 17.15.6, printed it with an empty `address-family l2vpn evpn`); another family's line prints without it |
 | `% Unknown EVI` | `l2vpn evpn instance <n>` for the instance the line names, where a `router bgp` runs |
 | `%Prefix not found` | the IPv4 prefix the line names in the global CEF table (`vrf Default` names it too): IOS's own entries, a running interface's subnet and its address, network and broadcast, and a static route whose interface runs or whose next hop the table reaches (the lab C9200L-48T-4G, 17.6.4, held a Null0 route's prefix and not a down SVI's subnet) |
 | `% No adjacency for <address> on <interface>` | adjacency on the interface for the address a `show ip\|ipv6 cef [vrf <name>] adjacency <interface> <address>` line ends at; vswitch holds no neighbours, so only IOS's own: 225.0.0.0 on a PIM interface or Null0 where `ip multicast-routing` runs, 0.0.0.0 on the PIM register decapsulation tunnel where the switch is its own RP, FF0E:: on Null0 (the lab C9200L-48T-4G, 17.15.6, printed it for its own address, a broadcast, 0.0.0.0 and 226.1.1.1); the address prints as typed, IPv6 in capitals |

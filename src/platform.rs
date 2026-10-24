@@ -3020,6 +3020,16 @@ impl Stack {
             {
                 Some((1, 6))
             }
+            // `interface Port-channel ?` answers `<1-48>`, and `Port-channel49` is refused (the lab
+            // C9200L-48T-4G, 17.6.4); the C9200 and C9200B are inferred to share it
+            "Port-channel"
+                if matches!(
+                    self.family(),
+                    Some(Family::C9200 | Family::C9200L | Family::C9200B)
+                ) =>
+            {
+                Some((1, 48))
+            }
             // channel-group numbers 1-128 (command reference, channel-group)
             "Port-channel" => Some((1, 128)),
             "Vlan" => Some((1, 4094)),
@@ -3027,6 +3037,16 @@ impl Stack {
             // `interface nve ?` answers `<1-32>` (the lab C9300-24T, 17.6.4); other families are
             // inferred to lack it
             "nve" if matches!(self.family(), Some(Family::C9300 | Family::C9300X)) => Some((1, 32)),
+            // `interface nve ?` answers `<1-4096>` on the lab C9200L-48T-4G at network-advantage
+            // (17.6.4 and 17.15.6); the C9200 and C9200B are inferred to share it
+            "nve"
+                if matches!(
+                    self.family(),
+                    Some(Family::C9200 | Family::C9200L | Family::C9200B)
+                ) =>
+            {
+                Some((1, 4096))
+            }
             _ => None,
         }
     }
@@ -3064,6 +3084,14 @@ mod tests {
         assert!(s.has("GigabitEthernet0/0"));
         assert!(s.has("Port-channel128") && !s.has("Port-channel129"));
         assert!(s.has("Vlan450") && !s.has("Vlan4095"));
+    }
+
+    #[test]
+    fn a_c9200l_numbers_its_port_channels_to_48() {
+        // the lab C9200L-48T-4G, 17.6.4: `<1-48>`, `Port-channel49` refused
+        let s = parse_stack("C9200L-48T-4G").unwrap();
+        assert_eq!(s.numbered("Port-channel"), Some((1, 48)));
+        assert!(s.has("Port-channel48") && !s.has("Port-channel49"));
     }
 
     #[test]

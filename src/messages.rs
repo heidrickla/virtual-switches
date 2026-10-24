@@ -778,13 +778,8 @@ impl Config {
                 Some(name) if name != "*" => !self.has(&format!("cdp tlv-list {name}")),
                 _ => !self.top("cdp tlv-list "),
             },
-            Rule::EvpnTable => {
-                has_kw("evpn")
-                    && self.top("router bgp ")
-                    && !self
-                        .lines_under("router bgp ")
-                        .any(|(l, _)| l == "address-family l2vpn evpn")
-            }
+            // vswitch holds no EVPN route: an empty `address-family l2vpn evpn` printed it too
+            Rule::EvpnTable => has_kw("evpn") && self.top("router bgp "),
             Rule::Evi => after("evi").is_some_and(|n| {
                 let header = format!("l2vpn evpn instance {n}");
                 self.top("router bgp ")
@@ -1267,14 +1262,14 @@ mod tests {
                 "router lisp\n prefix-list wired",
                 &["router lisp\n prefix-list 10"],
             ),
-            // a `router bgp` with neither an EVPN family nor the instance (the lab C9200L-48T-4G,
-            // 17.6.4 and 17.15.6)
+            // a `router bgp` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6, printed it on bases
+            // holding an empty `address-family l2vpn evpn`; with none inferred alike)
             (
                 "% Network not in table",
                 "show bgp l2vpn evpn route-type ethernet-segment",
                 "show bgp l2vpn evpn route-type ethernet-segment",
                 "router bgp 1\n address-family ipv4",
-                &["router bgp 1\n address-family l2vpn evpn", ""],
+                &[""],
             ),
             (
                 "% Unknown EVI",
@@ -1318,6 +1313,13 @@ mod tests {
             "show bgp ipv4 unicast <word>",
             "show bgp ipv4 unicast 10.1.1.0/24",
             "router bgp 1"
+        ));
+        // an empty EVPN family holds no route either
+        assert!(stands(
+            "% Network not in table",
+            "show bgp l2vpn evpn route-type ethernet-segment",
+            "show bgp l2vpn evpn route-type ethernet-segment",
+            "router bgp 1\n address-family l2vpn evpn\n exit-address-family"
         ));
         // vswitch holds no subscriber session
         assert!(stands(

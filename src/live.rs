@@ -41,6 +41,14 @@ pub struct Held {
     pub help: BTreeMap<(String, String), Vec<String>>,
     /// what crawls of a switch of this image printed for `?`, by the license level it ran at
     pub crawls: BTreeMap<String, Crawl>,
+    /// the configuration mode this image's own crawl at a level asked `?` in under each context
+    /// (`context::of`), or a line of a crawl or a lines folder was typed in (`corpus::entered_modes`),
+    /// by (level, context): the submode its last entering line entered; none where the context stands
+    /// in two modes
+    pub entered: BTreeMap<(String, String), Option<String>>,
+    /// the configuration lines a lines folder's switch of this image took without a word, by
+    /// (level, mode, context, `context::key` of the line)
+    pub taken: BTreeSet<(String, String, String, String)>,
     /// by a session's level, the crawl of another image that answers where this image's own
     /// answers hold none (`license::DONORS`), for the levels whose mapping is enabled
     pub donors: BTreeMap<String, Crawl>,
@@ -452,6 +460,24 @@ impl Held {
                 .iter()
                 .map(|(m, k, a)| ((m.clone(), k.clone()), a.clone()))
                 .collect();
+            let mut enter = |l: &String, c: &String, m: &String| {
+                if !c.is_empty() && crate::cli::is_config(m) {
+                    let e = h
+                        .entered
+                        .entry((l.clone(), c.clone()))
+                        .or_insert_with(|| Some(m.clone()));
+                    if e.as_deref().is_some_and(|x| x != m) {
+                        *e = None;
+                    }
+                }
+            };
+            for (l, m, c, _, _) in &t.crawl {
+                enter(l, c, m);
+            }
+            for (l, c, m) in &t.entered {
+                enter(l, c, m);
+            }
+            h.taken.extend(t.taken.iter().cloned());
             for (l, m, c, k, a) in &t.crawl {
                 h.crawls
                     .entry(l.clone())
@@ -684,6 +710,49 @@ impl Held {
         both(&sibling)
     }
 
+    /// Whether a lines folder's switch of this image at `level` took `line` without a word in `mode`
+    /// under `context`, the line read as typed (`context::key`).
+    pub fn took(&self, level: &str, mode: &str, context: &str, line: &str) -> bool {
+        self.taken.contains(&(
+            level.to_string(),
+            mode.to_string(),
+            context.to_string(),
+            crate::context::key(line.trim()),
+        ))
+    }
+
+    /// The configuration mode this image's own crawl at `level` asked `?` in under `context`, or a
+    /// line of a crawl or lines folder was typed in: the one the context's last entering line
+    /// entered.
+    pub fn entered(&self, level: &str, context: &str) -> Option<&str> {
+        self.entered
+            .get(&(level.to_string(), context.to_string()))?
+            .as_deref()
+    }
+
+    /// The first word this image's own crawl at `level` typed after `text` (`context::key`) in
+    /// `mode` and `context`, of those `fits` takes, with an answer held after it: the value a line
+    /// typed otherwise is read on as (`shell::Session::crawled`).
+    pub fn crawled_after(
+        &self,
+        level: &str,
+        mode: &str,
+        context: &str,
+        text: &str,
+        fits: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        let crawl = self.crawls.get(level)?;
+        let prefix = crate::context::key(text);
+        crawl
+            .range((mode.to_string(), prefix.clone())..)
+            .take_while(|((m, k), _)| m == mode && k.starts_with(&prefix))
+            .filter(|(_, v)| v.iter().any(|(c, _)| c == context))
+            .find_map(|((_, k), _)| {
+                let w = k[prefix.len()..].strip_suffix(' ')?;
+                (!w.is_empty() && !w.contains(' ') && fits(w)).then(|| w.to_string())
+            })
+    }
+
     /// The value the image's own crawl at `level` typed where `text` ends in a value, and answered
     /// `?` after: a number of the same `<lo-hi>` row of the answer held after the words before it,
     /// or a list of numbers where both fill its numbered-list row (`value_of_row`). The lab
@@ -744,7 +813,7 @@ impl Held {
                 (!w.contains(' ')
                     && w != typed
                     && value_of_row(row, what, w)
-                    && !crate::context::stale(k, configured))
+                    && !crate::context::stale(mode, k, configured))
                 .then_some((w, a))
             })
             .collect();
@@ -904,7 +973,7 @@ impl<'a> Answers<'a> {
             None => help,
             Some(answers) => {
                 let (_, a) = answers.iter().find(|(c, _)| Some(c.as_str()) == context)?;
-                (!crate::context::stale(&crawled.1, configured)).then_some(a)
+                (!crate::context::stale(mode, &crawled.1, configured)).then_some(a)
             }
         }
     }

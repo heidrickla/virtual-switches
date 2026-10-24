@@ -212,9 +212,9 @@ A patch reaches every command of its name. `compile` lists the overrides a relea
 | Use | Example |
 |---|---|
 | A hardware document the release books do not cover | the supervisor installation note's `enable` on the 9400 |
-| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command; the submodes `coap proxy`, a key chain's `key`, a TCP key chain and `police` enter on the Catalyst 9200, where an interface's `mka policy` enters none; the LISP submodes (an instance, the IPv4 and Ethernet services under `router lisp` and under an instance, a dynamic EID, a locator set, a prefix list, an extranet and its provider) and the lines the C9200L took in them, which the 9200 books give no mode |
+| A mode the lab switch ran a command in that its books do not give | `show license summary` at `#` on the Catalyst 9300, where the release has the command; the submodes `coap proxy`, a key chain's `key`, a TCP key chain and `police` enter on the Catalyst 9200, where an interface's `mka policy` enters none; the LISP submodes (an instance, the IPv4 and Ethernet services under `router lisp` and under an instance, a dynamic EID, a locator set, a prefix list, an extranet and its provider) and the lines the C9200L took in them, which the 9200 books give no mode; a control policy's `event` and its `class` on the Catalyst 9200, entering the class and action modes, each event offering `match-all` and `match-first` where the guide's `match-any` stood |
 | A correction to every release of one book | the 2960-X `channel-group`; the 9200 policy server's `address`, whose book names its IPv4 and IPv6 addresses one free word |
-| A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables`, `key-hash` and `service unsupported-transceiver` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960; `ip ospf area`, `eigrp stub`, `ip dhcp client client-id`, `set tag`, `fallback profile`, an interface's OSPF timers, a global `version`, `router lisp` and its `ipv4 map-cache-limit`, and `fqdn ttl-timeout-factor` on the Catalyst 9200 |
+| A line a platform's lab switch took that its books omit | `length (line)`, `width (line)`, `speed (line)`, `ip unreachables`, `key-hash` and `service unsupported-transceiver` on the Catalyst 9300; `username (ssh pubkey-chain)`, `key-hash` and `show running-config interface` on the Catalyst 2960; `ip ospf area`, `eigrp stub`, `ip dhcp client client-id`, `set tag`, `fallback profile`, an interface's OSPF timers, a global `version`, `router lisp` and its `ipv4 map-cache-limit`, `fqdn ttl-timeout-factor` and `authentication display` on the Catalyst 9200 |
 
 ## Matching
 
@@ -282,11 +282,13 @@ These are overrides as the security reference's Syntax Descriptions give them an
 
 ## Certificates
 
-A certificate's hex after `certificate` in a `crypto pki certificate chain` is read as IOS reads it, line by line until `quit`.
+A certificate's hex after `certificate` in a `crypto pki certificate chain`, and a CRL's after `crl`, is read as IOS reads it, line by line until `quit` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6).
 
 | Rule | Detail |
 |---|---|
-| Lines read | hex digits and spaces, and `quit`, which ends the certificate; any other line ends it and is typed as itself |
+| Lines read | hex digits and spaces, and `quit`, which ends the certificate |
+| A mode of its own | where the line enters `config-pki-hexmode` for the hex, IOS first prints `Enter the certificate in hexidecimal representation....`, for a CRL `Enter the CRL in hexidecimal representation....`. There any other line is refused at its first character that is no hex digit, `exit`, `end` and `configure terminal` too; a blank line does nothing, Ctrl-Z prints the same prompt again, and `quit` returns to the chain's mode |
+| The chain's own mode | where the chain's mode reads the hex, any other line ends the certificate and is typed as itself |
 | Print | as typed; with no indentation typed, two spaces in and `quit` after a tab, as switches print it |
 | Submode names | the PKI, crypto and DHCP families (`ca-trustpoint`, `cs-server`, `cfg-crypto-trans`, `dhcp-config`) |
 

@@ -1015,6 +1015,12 @@ fn summary(sp: &Spanning, d: &Device, totals: bool) -> Vec<String> {
             blk + fwd
         )
     };
+    // with no instance, one `Total` line, `totals` or not (the lab C9200L-48T-4G, 17.6.4, in both
+    // rapid-pvst and MST mode)
+    if trees.is_empty() {
+        out.push(line("Total", 0, 0));
+        return out;
+    }
     // `summary totals` keeps the header and the total line alone (inferred: no capture holds it)
     let (mut blk, mut fwd) = (0, 0);
     for (v, t) in &trees {
@@ -1297,7 +1303,7 @@ fn mst(sp: &Spanning, d: &Device, only: Option<Instance>) -> Option<Vec<String>>
 
 /// `show spanning-tree mst configuration`, as the lab C9300 (17.6.4) and 2960G (15.0(2)SE11) print
 /// it; each instance's VLANs on one line (inferred for a list longer than measured).
-fn mst_configuration(d: &Device) -> Vec<String> {
+pub(crate) fn mst_configuration(d: &Device) -> Vec<String> {
     let m = Mst::of(d);
     let mut out = vec![
         format!("Name      [{}]", m.name),
@@ -1350,8 +1356,9 @@ fn interface(sp: &Spanning, d: &Device, c: &str, words: &[&str]) -> Vec<String> 
                 .collect()
         })
         .unwrap_or_default();
+    // a port in no tree says so, `detail` or not (the lab C9200L-48T-4G, 17.6.4)
     if states.is_empty() {
-        return if exists && rest.is_empty() {
+        return if exists && matches!(rest, [] | ["detail"]) {
             vec![
                 format!("no spanning tree info available for {name} "),
                 String::new(),
@@ -1444,7 +1451,29 @@ pub fn show(local: &Device, view: Option<&LabView>, c: &str) -> Option<Vec<Strin
     let words: Vec<&str> = rest.split_whitespace().collect();
     let sp = Spanning::of(local, view);
     let mst_mode = sp.mst.is_some();
+    // a switch with no port up runs no instance, and says so (the lab C9200L-48T-4G, 17.6.4)
+    let none = sp.trees().is_empty();
+    let said = |s: String| vec![String::new(), s, String::new()];
     let out = match words[..] {
+        [] | ["active"] | ["detail"] if none => said("No spanning tree instance exists.".into()),
+        ["root"] | ["bridge"] if none => vec![],
+        ["mst"] | ["mst", "detail"] if mst_mode && none => {
+            said("No mst information available.".into())
+        }
+        ["mst", "interface", ref port @ ..] if mst_mode && none => {
+            let Some((ty, num, _)) = crate::cli::interface_name(
+                port.first().copied().unwrap_or(""),
+                port.get(1).copied(),
+            ) else {
+                return Some(no_model(c));
+            };
+            said(format!(
+                "No mst information available on interface {ty}{num}."
+            ))
+        }
+        ["mst", n] if mst_mode && none && n.parse::<Instance>().is_ok() => {
+            said(format!("No mst information available for instance(s) {n}."))
+        }
         [] | ["active"] => blocks(&sp, local, c, None),
         ["vlan", list] => blocks(&sp, local, c, Some(list)),
         // the bridge table for the instances a list maps to (inferred: no capture holds it)
@@ -1623,7 +1652,7 @@ mod tests {
         );
         assert_eq!(
             shown(&mut s, "show spanning-tree"),
-            ["% vswitch has no output model for 'show spanning-tree' yet"]
+            ["", "No spanning tree instance exists.", ""]
         );
     }
 

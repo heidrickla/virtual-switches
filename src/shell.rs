@@ -96,6 +96,12 @@ pub struct Session<'a> {
     certificate: Option<usize>,
     /// a public key's text typed after `key-string` in `ip ssh pubkey-chain`, until `exit`
     pubkey: Option<String>,
+    /// a line that needs the 802.1X configuration new-style, held while IOS XE asks whether to
+    /// convert it
+    converting: Option<String>,
+    /// the 802.1X configuration was converted to new-style at the console, which IOS cannot undo:
+    /// no line asks again, after a configuration replaced to legacy lines too
+    converted: bool,
     /// the top-level line or block header written last, as the running configuration prints it: a
     /// line a real switch held prints after the line typed before it
     last_top: Option<String>,
@@ -233,6 +239,8 @@ impl<'a> Session<'a> {
             accepted: vec![],
             banner: None,
             certificate: None,
+            converting: None,
+            converted: false,
             pubkey: None,
             last_top: None,
             raw: String::new(),
@@ -291,7 +299,7 @@ impl<'a> Session<'a> {
     /// one revision and stamps the updater and the clock once the VLAN submode is left (the lab
     /// C9300, 17.6.4: `vlan 140`, `exit`, revision 1). A replayed configuration is the boot state
     /// and counts nothing.
-    fn vtp_after(&mut self, before: (String, String, String)) {
+    fn vtp_after(&mut self, before: (String, String, String), pruned: bool) {
         let (version, mode, domain) = self.device.vtp_settings();
         if domain != before.2
             || (mode != before.1 && matches!(mode.as_str(), "transparent" | "off"))
@@ -305,7 +313,13 @@ impl<'a> Session<'a> {
             return;
         }
         let contents = self.device.vlan_contents();
-        let changed = self.vlans_seen.as_ref().is_some_and(|s| *s != contents);
+        // a change of version below 3, or of pruning, counts too (the lab C9200L-48T-4G, 17.6.4:
+        // `vtp version 2`, `vtp pruning`, `no vtp pruning` and `vtp version 1` each raised a
+        // server's revision; `vtp password` did not)
+        let below_3 = |v: &str| matches!(v, "1" | "2");
+        let changed = self.vlans_seen.as_ref().is_some_and(|s| *s != contents)
+            || (version != before.0 && below_3(&version) && below_3(&before.0))
+            || self.pruning() != pruned;
         // a version 3 server is no primary server, which vswitch does not model: its revision stays
         // (inferred)
         if changed && !self.redacted && mode == "server" && version != "3" {
@@ -315,6 +329,132 @@ impl<'a> Session<'a> {
             self.device.vtp.modified_at = vtp_stamp(self.now());
         }
         self.vlans_seen = Some(contents);
+    }
+
+    /// Whether VTP pruning is on.
+    fn pruning(&self) -> bool {
+        self.device.global.iter().any(|e| e.text == "vtp pruning")
+    }
+
+    /// Whether the VLAN database holds an extended VLAN (1006 to 4094).
+    fn has_extended_vlan(&self) -> bool {
+        self.device.blocks.iter().any(|b| {
+            show::vlan_ids_of(&b.header).is_some_and(|l| {
+                crate::generate::vlan_ids(l)
+                    .iter()
+                    .any(|v| (1006..=4094).contains(v))
+            })
+        })
+    }
+
+    /// What IOS XE says of a global VTP line in the state before it, and whether it takes the line
+    /// (the lab C9200L-48T-4G and C9300-24T, 17.6.4): a mode, domain or version as set or as already
+    /// so, pruning switched on or off by a server alone, and a version 1 or 2 server's refusals while
+    /// an extended VLAN exists. None for a line it says nothing of here.
+    fn vtp_said(&self, canonical: &str) -> Option<(Vec<String>, bool)> {
+        let (version, mode, domain) = self.device.vtp_settings();
+        let said = |s: String| Some((vec![s], true));
+        let refused = |s: &str| Some((vec![s.to_string()], false));
+        let named = |m: &str| match m {
+            "server" => "Server",
+            "client" => "Client",
+            "transparent" => "Transparent",
+            _ => "Off",
+        };
+        if let Some(to) = canonical.strip_prefix("vtp mode ") {
+            if !matches!(to, "server" | "client" | "transparent" | "off") {
+                return None;
+            }
+            if to == mode {
+                return said(format!("Device mode already VTP {} for VLANS.", named(to)));
+            }
+            if to == "server" && version != "3" && self.has_extended_vlan() {
+                return refused(
+                    "Device mode cannot be VTP Server for VLANS because extended VLAN(s) exist",
+                );
+            }
+            return said(format!(
+                "Setting device to VTP {} mode for VLANS.",
+                named(to)
+            ));
+        }
+        if canonical == "no vtp mode" && mode == "server" {
+            return Some((
+                vec![
+                    "Device mode already VTP server for VLAN feature".into(),
+                    "Resetting device to VTP SERVER mode.".into(),
+                ],
+                true,
+            ));
+        }
+        if let Some(to) = canonical.strip_prefix("vtp domain ") {
+            if to == domain {
+                return said(format!("Domain name already set to {to}."));
+            }
+            let from = if domain.is_empty() { "NULL" } else { &domain };
+            return said(format!("Changing VTP domain name from {from} to {to}"));
+        }
+        if let Some(to) = canonical.strip_prefix("vtp version ") {
+            if to == version {
+                return said(format!("VTP version is already in V{to}."));
+            }
+            if to == "2" && mode == "server" && self.has_extended_vlan() {
+                return refused(
+                    "Extended VLAN(s) exist,VTP version 2 cannot be changed unless extended VLAN(s) removed",
+                );
+            }
+            return None;
+        }
+        if canonical == "no vtp password" && self.device.global_value("vtp password ").is_none() {
+            return said("No password currently set.".into());
+        }
+        if canonical == "vtp pruning" || canonical == "no vtp pruning" {
+            if mode != "server" {
+                return refused("Cannot modify pruning unless in VTP server mode");
+            }
+            let on = if canonical.starts_with("no ") {
+                "off"
+            } else {
+                "on"
+            };
+            return said(format!("Pruning switched {on}"));
+        }
+        None
+    }
+
+    /// The extended VLANs a version 1 or 2 server's VLAN submode is making, with the blocks that
+    /// hold them, which it makes none of when it is left.
+    fn extended_pending(&self) -> Option<(Vec<String>, Vec<u32>)> {
+        let (version, mode, _) = self.device.vtp_settings();
+        let top = self.frames.last()?;
+        if top.mode != "config-vlan" || mode != "server" || version == "3" || self.redacted {
+            return None;
+        }
+        let headers: Vec<String> = (top.blocks.iter())
+            .map(|&b| self.device.blocks[b].header.clone())
+            .collect();
+        let ids: Vec<u32> = (headers.iter())
+            .filter_map(|h| show::vlan_ids_of(h))
+            .flat_map(crate::generate::vlan_ids)
+            .filter(|v| (1006..=4094).contains(v))
+            .collect();
+        (!ids.is_empty()).then_some((headers, ids))
+    }
+
+    /// Drops a block the frames may hold, each frame's later blocks moved down one.
+    fn drop_block(&mut self, header: &str) {
+        let Some(i) = self.device.blocks.iter().position(|b| b.header == header) else {
+            return;
+        };
+        self.device.blocks.remove(i);
+        for f in &mut self.frames {
+            f.blocks.retain(|&b| b != i);
+            for b in &mut f.blocks {
+                if *b > i {
+                    *b -= 1;
+                }
+            }
+        }
     }
 
     /// The forced speeds of the ports a `no speed` is about to clear, by full name.
@@ -948,11 +1088,15 @@ impl<'a> Session<'a> {
     /// Ctrl-C at a question (`copy`'s destination): the question is dropped and nothing is saved.
     pub fn cancel(&mut self) {
         self.asking = false;
+        self.converting = None;
     }
 
     pub fn prompt(&self) -> String {
         if self.asking {
             return DESTINATION.into();
+        }
+        if self.converting.is_some() {
+            return CONVERT_ASK.into();
         }
         let h = &self.device.hostname;
         match self.mode() {
@@ -982,10 +1126,25 @@ impl<'a> Session<'a> {
             .held_help(self.mode(), &line[..at])
             .filter(|a| !crate::live::is_refusal(a));
         let mut words: Vec<String> = match held {
-            Some(lines) => crate::live::answer_rows(lines)
-                .into_iter()
-                .map(|(w, _)| w.to_string())
-                .collect(),
+            Some(lines) => {
+                let mut words: Vec<String> = crate::live::answer_rows(lines)
+                    .into_iter()
+                    .map(|(w, _)| w.to_string())
+                    .collect();
+                // and the books' words `?` hid where the switch takes the line
+                // (`context::unjudged`): the lab C9200L-48T-4G (17.15.6) refused `eid-table vrf
+                // red` in a LISP instance past the `e` its hidden `exit` begins
+                let configured = |l: &str| self.running_has(l);
+                for o in self.offered_at(self.mode(), &toks[..i]).0 {
+                    let typed = format!("{}{}", &line[..at], o.shown);
+                    if !words.contains(&o.shown)
+                        && crate::context::unjudged(self.mode(), &typed, configured)
+                    {
+                        words.push(o.shown);
+                    }
+                }
+                words
+            }
             None => self
                 .offered_at(self.mode(), &toks[..i])
                 .0
@@ -1115,9 +1274,33 @@ impl<'a> Session<'a> {
             self.vlans_seen = Some(self.device.vlan_contents());
         }
         let before = self.device.vtp_settings();
+        let pruned = self.pruning();
         let taken = self.accepted.len();
-        let out = self.typed(line);
-        self.vtp_after(before);
+        let pending = self.extended_pending();
+        let mut out = self.typed(line);
+        // a version 1 or 2 server makes no extended VLAN: the VLAN submode says so when it is left,
+        // and the VLAN is not made (the lab C9200L-48T-4G, 17.6.4: `vlan 4000`, `name LABEXT`,
+        // `exit`, and `no vtp pruning` typed in the submode)
+        if let Some((headers, ids)) = pending {
+            let left = !self.frames.last().is_some_and(|f| {
+                f.mode == "config-vlan"
+                    && (f.blocks.iter()).any(|&b| headers.contains(&self.device.blocks[b].header))
+            });
+            if left {
+                for h in &headers {
+                    self.drop_block(h);
+                }
+                let list = crate::target::ios_list(&ids.into_iter().collect());
+                let said = [
+                    format!("% Failed to create VLANs {list}"),
+                    "Extended VLAN(s) not allowed in current VTP mode.".into(),
+                    "%Failed to commit extended VLAN(s) changes.".into(),
+                    String::new(),
+                ];
+                out.0.splice(0..0, said);
+            }
+        }
+        self.vtp_after(before, pruned);
         // a line taken at the console is the configuration's last change
         if !self.redacted && self.accepted.len() > taken {
             self.device.last_change = Some(self.now());
@@ -1130,6 +1313,7 @@ impl<'a> Session<'a> {
     /// in the current mode; none for the text a banner, certificate, key or question takes.
     pub fn warning(&self, line: &str) -> Option<String> {
         if self.asking
+            || self.converting.is_some()
             || self.banner.is_some()
             || self.certificate.is_some()
             || self.pubkey.is_some()
@@ -1172,6 +1356,16 @@ impl<'a> Session<'a> {
                 Result::Error,
             );
         }
+        // whether to convert the 802.1X configuration: `yes`, or nothing for the default, converts
+        // it and takes the line held; `no` takes neither (the lab C9200L-48T-4G, 17.6.4 and 17.15.6)
+        if let Some(held) = self.converting.take() {
+            let answer = line.trim().to_lowercase();
+            if answer.is_empty() || "yes".starts_with(&answer) {
+                self.convert_to_new_style();
+                return self.typed(&held);
+            }
+            return (vec![], Result::Ok);
+        }
         if let Some((at, delim)) = self.banner.take() {
             let text = line.trim_end_matches(['\r', '\n']);
             let e = &mut self.device.global[at];
@@ -1191,7 +1385,7 @@ impl<'a> Session<'a> {
         if let Some(done) = self.banner_start(line) {
             return done;
         }
-        if let Some(done) = self.certificate_data(line) {
+        if let Some(done) = self.certificate_data(line, lead) {
             return done;
         }
         if let Some(done) = self.pubkey_data(line) {
@@ -1550,6 +1744,41 @@ impl<'a> Session<'a> {
             let out: Vec<String> = said.lines().map(str::to_string).collect();
             return (out, Result::Error);
         }
+        // a new-style 802.1X configuration is shown in no other style: the style is refused at its
+        // start, where `config-mode` is the one word left (the lab C9200L-48T-4G, 17.6.4 and
+        // 17.15.6, after converting)
+        if self.new_style() && matches!(self.display_style(&mode, &p), Some("legacy" | "new-style"))
+        {
+            let at = cli::tokens(trimmed).get(2).map_or(0, |t| t.at);
+            let column = trimmed[..at].chars().count();
+            return (
+                vec![
+                    format!("{}^", " ".repeat(prompt_len + column)),
+                    "% Invalid input detected at '^' marker.".into(),
+                    String::new(),
+                ],
+                Result::Error,
+            );
+        }
+        // a loopback takes no address from DHCP: refused at `dhcp` (the lab C9200L-48T-4G, 17.6.4);
+        // other IOS XE platforms are inferred to refuse it alike
+        if mode == "config-if"
+            && !p.negated
+            && !self.device.stack.classic()
+            && p.canonical().starts_with("ip address dhcp")
+            && self.block_header().starts_with("interface Loopback")
+        {
+            let at = cli::tokens(trimmed).get(2).map_or(0, |t| t.at);
+            let column = trimmed[..at].chars().count();
+            return (
+                vec![
+                    format!("{}^", " ".repeat(prompt_len + column)),
+                    "% Invalid input detected at '^' marker.".into(),
+                    String::new(),
+                ],
+                Result::Error,
+            );
+        }
         // the expression keeps a space typed at the end of the line, as the lab C9300 (17.6.4) does
         let typed = line.trim_end_matches(['\r', '\n']);
         let modifier = match bar.map(|b| crate::filter::parse(&typed[b + 1..], b + 1)) {
@@ -1655,6 +1884,51 @@ impl<'a> Session<'a> {
                 );
             }
         }
+        // IOS XE asks before it takes the first line that needs the 802.1X configuration
+        // new-style (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the lab C9300-24T's crawl, 17.6.4)
+        if cli::is_config(&mode)
+            && !self.redacted
+            && !p.negated
+            && !self.device.stack.classic()
+            && !self.new_style()
+            && NEW_STYLE.iter().any(|s| canonical.starts_with(s))
+        {
+            self.converting = Some(line.to_string());
+            return (vec![CONVERT_SAY.into()], Result::Ok);
+        }
+        // what IOS XE says of a VTP line; a line it refuses with a word changes nothing
+        let vtp_note = (mode == "config" && !self.redacted && !self.device.stack.classic())
+            .then(|| self.vtp_said(&canonical))
+            .flatten();
+        if let Some((said, false)) = &vtp_note {
+            return (said.clone(), Result::Error);
+        }
+        // the version VTP already runs changes nothing and stores no line (the lab C9200L-48T-4G,
+        // 17.6.4: `vtp version 1` at version 1 left the running configuration without one)
+        if let Some((said, true)) = &vtp_note
+            && canonical.starts_with("vtp version ")
+            && said.iter().any(|l| l.starts_with("VTP version is already"))
+        {
+            return (said.clone(), Result::Ok);
+        }
+        // a version 3 server is no primary server here, and takes no VLAN (the lab C9200L-48T-4G,
+        // 17.6.4: `vlan 34`)
+        if mode == "config"
+            && !self.redacted
+            && !self.device.stack.classic()
+            && !p.negated
+            && self.device.vtp_settings().0 == "3"
+            && self.device.vtp_settings().1 == "server"
+            && show::vlan_ids_of(&canonical).is_some()
+        {
+            return (
+                vec![
+                    "VTP VLAN configuration not allowed when device is not the primary server for vlan database."
+                        .into(),
+                ],
+                Result::Error,
+            );
+        }
         // a line that only moves between modes or runs EXEC (`exit`, `end`, `do`) configures
         // nothing; an `exit-` line closes its section, which IOS prints
         let navigates = matches!(
@@ -1671,6 +1945,7 @@ impl<'a> Session<'a> {
         }
         let speeds = self.forced_speeds(&p);
         let warned = self.taken_with_warning(&mode, &p);
+        let stp_mode = crate::spanning::mode(&self.device).to_string();
         let (mut out, r) = self.run(&mode, trimmed, &p);
         if r == Result::Ok
             && !self.redacted
@@ -1690,13 +1965,33 @@ impl<'a> Session<'a> {
         {
             out.insert(0, made);
         }
-        // and says what a VTP password line did (on IOS XE inferred)
+        // and says what a VTP password line did (the lab C9200L-48T-4G, 17.6.4), and what VTP
+        // made of the line
         if r == Result::Ok && !self.redacted && mode == "config" {
             if let Some(pw) = vtp_password {
                 out.insert(0, format!("Setting device VTP password to {pw}"));
+            } else if let Some((said, _)) = vtp_note {
+                out.splice(0..0, said);
             } else if canonical == "no vtp password" {
                 out.insert(0, "Clearing device VTP password.".into());
             }
+        }
+        // a line that changes the spanning-tree mode warns (the lab C9200L-48T-4G, 17.6.4, from
+        // rapid-pvst to MST; the other changes inferred alike, and the 17.15 image, unmeasured,
+        // left silent)
+        if r == Result::Ok
+            && !self.redacted
+            && self.runs(crate::context::C9200_17_6)
+            && crate::spanning::mode(&self.device) != stp_mode
+        {
+            out.splice(
+                0..0,
+                [
+                    "Warning: Changing STP mode can disrupt the traffic and make system unstable",
+                    "Recommend to change STP mode only during maintenance window",
+                ]
+                .map(String::from),
+            );
         }
         // a legacy 802.1X line IOS XE takes and calls deprecated once the configuration is
         // new-style (the lab C9300-24T, 17.6.4); a legacy one takes it silently (the lab C9200L)
@@ -1704,7 +1999,7 @@ impl<'a> Session<'a> {
             && !self.redacted
             && !p.negated
             && !self.device.stack.classic()
-            && new_style(&self.device)
+            && self.new_style()
             && DEPRECATED
                 .iter()
                 .any(|(m, start)| *m == mode && canonical.starts_with(start))
@@ -1731,13 +2026,32 @@ impl<'a> Session<'a> {
                 .unwrap_or_default();
             self.device.manual.extend(typed);
         }
-        // IOS reads a certificate's hex after `certificate` in a chain, until `quit`
+        // IOS reads a certificate's hex after `certificate` in a chain, and a CRL's after `crl`,
+        // until `quit`; where the line enters a mode of its own for the hex, IOS first says what it
+        // reads (the lab C9200L-48T-4G, 17.6.4 and 17.15.6)
+        let first = match p.items.first() {
+            Some(Item::Kw { kw, .. }) => kw.as_str(),
+            _ => "",
+        };
+        let reads = if self.engine.grammar.commands[p.command].name == "certificate"
+            || first == "certificate"
+        {
+            Some("certificate")
+        } else {
+            (first == "crl").then_some("CRL")
+        };
         if r == Result::Ok
             && mode == "config-cert-chain"
             && !p.negated
-            && self.engine.grammar.commands[p.command].name == "certificate"
+            && let Some(what) = reads
         {
             self.certificate = self.frames.last().and_then(|f| f.blocks.first().copied());
+            if self.mode() == "config-pki-hexmode" {
+                out.insert(
+                    0,
+                    format!("Enter the {what} in hexidecimal representation...."),
+                );
+            }
         }
         match modifier {
             Some(m) if r == Result::Ok => (crate::filter::apply(&m, out), r),
@@ -1809,9 +2123,11 @@ impl<'a> Session<'a> {
                 .iter()
                 .any(|b| b.header.strip_prefix(prefix) == Some(name))
         };
-        // a policy map an interface names before it exists, its removal too
+        // a policy map an interface or the control plane names before it exists, its removal too
+        // (the lab C9200L-48T-4G, 17.6.4 and 17.15.6: `% policy map 10 not configured` at
+        // (config-cp)#)
         if let (
-            "config-if",
+            "config-if" | "config-cp",
             ["service-policy", "input" | "output", name]
             | ["no", "service-policy", "input" | "output", name],
         ) = (mode, words.as_slice())
@@ -2266,10 +2582,12 @@ impl<'a> Session<'a> {
                     ));
                 }
             }
-            // a numbered list of the wrong kind: offset lists take standard, MSDP extended
+            // a numbered list of the wrong kind: offset lists take standard, 0 for every network
+            // (`<0-99>`, the lab C9200L-48T-4G, 17.6.4 and 17.15.6, took `offset-list 0 in 0`),
+            // MSDP extended
             ("config-router", ["offset-list", n, "in" | "out", ..])
                 if n.parse::<u32>()
-                    .is_ok_and(|n| !matches!(n, 1..=99 | 1300..=1999)) =>
+                    .is_ok_and(|n| !matches!(n, 0..=99 | 1300..=1999)) =>
             {
                 return Some("% Invalid access list name.".into());
             }
@@ -2617,6 +2935,360 @@ impl<'a> Session<'a> {
                     )
                 });
             }
+            // the lab C9200L-48T-4G's sample lines (17.6.4 and 17.15.6 at network-advantage, one
+            // line per keyword of each submode the crawls entered, from the probe base), each
+            // refused with its message and left out of the running configuration: an OSPF network
+            // whose wildcard is contiguous neither as a wildcard nor as a mask (17.6.4 refused
+            // `10.1.1.1 10.1.1.1` and took `10.1.1.1 255.240.0.0` in an example), a BGP
+            // aggregate's non-contiguous mask
+            ("config-router", ["network", _, wildcard, "area", _])
+                if header.starts_with("router ospf ")
+                    && v4(wildcard).is_some_and(|w| {
+                        w & w.wrapping_add(1) != 0 && !w & (!w).wrapping_add(1) != 0
+                    }) =>
+            {
+                return Some("% OSPF: Invalid address/mask combination".into());
+            }
+            ("config-router" | "config-router-af", ["aggregate-address", _, mask, ..])
+                if header.starts_with("router bgp ")
+                    && v4(mask).is_some_and(|m| !m & (!m).wrapping_add(1) != 0) =>
+            {
+                return Some("% BGP: Non-Contiguous mask Configured".into());
+            }
+            // said as taken, yet the running configuration holds no such line
+            ("config-router" | "config-router-af", ["maximum-paths", "eibgp", _])
+                if header.starts_with("router bgp ") =>
+            {
+                return Some(
+                    "%BGP: This may cause traffic loop if not used properly (command accepted)"
+                        .into(),
+                );
+            }
+            // a peer template's line its other lines exclude, or one IOS takes only beside another;
+            // ORIGIN (1) is a well-known mandatory attribute, and the template names no neighbor
+            ("config-router-stmp", ["path-attribute", "discard", "1", "in"]) => {
+                return Some(
+                    "% BGP : cannot configure path-attributefiltering for well-known non-optional \
+                     attribute ORIGIN nbr: "
+                        .into(),
+                );
+            }
+            ("config-router-ptmp", ["announce", "rpki", "state"])
+                if !self
+                    .own_lines(mode)
+                    .iter()
+                    .any(|l| matches!(*l, "send-community extended" | "send-community both")) =>
+            {
+                return Some(
+                    "% Configure send-community extended on the same neighbor or template first"
+                        .into(),
+                );
+            }
+            ("config-router-ptmp", ["next-hop-unchanged", ..])
+                if self
+                    .own_lines(mode)
+                    .iter()
+                    .any(|l| l.starts_with("next-hop-self")) =>
+            {
+                return Some("%BGP: Cannot co-exist with nexthop-self, Deconfigure first".into());
+            }
+            // a peer-policy template's AS filter (17.6.4; 17.15.6 typed none)
+            ("config-router-ptmp", ["filter-as", ..]) => {
+                return Some(format!("% BGP: Invalid command - {canonical}"));
+            }
+            ("config-router-af" | "config-rtr", ["process-min-time", ..])
+                if header.starts_with("router ospfv3 ")
+                    || header.starts_with("ipv6 router ospf ") =>
+            {
+                return Some(
+                    "%OSPFv3: The process-min-time command is deprecated and has no effect".into(),
+                );
+            }
+            // OSPFv3 redistributing another BGP AS than the one running (17.6.4; 17.15.6 took it)
+            ("config-rtr", ["redistribute", "bgp", asn, ..]) if !self.since("17.15") => {
+                let running = self.device.blocks.iter().find_map(|b| {
+                    b.header
+                        .strip_prefix("router bgp ")
+                        .filter(|n| !n.contains(' '))
+                })?;
+                if running != *asn {
+                    return Some(format!(
+                        "BGP is already running; AS is {running}\n% Failed to create routing \
+                         protocol bgp"
+                    ));
+                }
+            }
+            // the answer offers one of `@ / $ % \ # -`: `domain delimiter 10` was too many
+            ("config-locsvr-da-radius", ["domain", "delimiter", d]) if d.chars().count() > 1 => {
+                return Some("% Too many RADIUS domain delimiters.".into());
+            }
+            // an NVE interface refuses the switchport's and routed port's lines; IOS names it
+            // `nv<n>` once
+            ("config-if", ["cdp", "enable"]) if header.starts_with("interface nve") => {
+                return Some(
+                    "% CDP is not supported on this interface, or for this encapsulation".into(),
+                );
+            }
+            ("config-if", ["link", ..]) if header.starts_with("interface nve") => {
+                let n = header.strip_prefix("interface nve")?;
+                return Some(format!(
+                    "Command rejected: interface nv{n} does not support the command"
+                ));
+            }
+            ("config-if", ["mac-address", _]) if header.starts_with("interface nve") => {
+                return Some("% \"mac-address\" not valid on this interface".into());
+            }
+            ("config-if", ["network-policy", _]) if header.starts_with("interface nve") => {
+                return Some(
+                    "Command rejected: Network Policy cannot be configured on this interface "
+                        .into(),
+                );
+            }
+            ("config-if", ["vrf", "forwarding", _]) if header.starts_with("interface nve") => {
+                let name = header.strip_prefix("interface ")?;
+                return Some(format!(
+                    "% 'vrf forwarding' command not available on interface {name}"
+                ));
+            }
+            ("config-if", ["member", "vni", vni, ..])
+                if header.starts_with("interface nve")
+                    && !vni.split('-').all(|v| {
+                        v.parse::<u32>()
+                            .is_ok_and(|v| (4096..=16_777_215).contains(&v))
+                    }) =>
+            {
+                return Some("% Valid VNI Range is 4096-16777215.".into());
+            }
+            ("config-if-nve-vni", ["mcast-group", group, ..])
+                if !v4(group).is_some_and(|g| g >> 28 == 0xe) =>
+            {
+                return Some("% Invalid mcast address".into());
+            }
+            // BFD's timers before BFD runs on the interface (17.6.4)
+            ("config-if", ["bfd", "jitter"])
+                if !block.is_some_and(|b| {
+                    b.lines.iter().any(|e| {
+                        let t = e.text.trim();
+                        t.starts_with("bfd interval ") || t.starts_with("bfd template ")
+                    })
+                }) =>
+            {
+                return Some(
+                    "% Command accepted but obsolete, unreleased or unsupported; see \
+                     documentation.\n\n BFD: BFD must be enabled first"
+                        .into(),
+                );
+            }
+            ("config-if", ["macro", "apply", name, ..]) if !named("macro name ", name) => {
+                return Some(format!("% Macro '{name}' does not exist."));
+            }
+            ("config-if", ["umbrella" | "opendns", "in", "direct-cloud-access", ..])
+                if !self.device.blocks.iter().any(|b| {
+                    b.header == "parameter-map type umbrella global"
+                        && b.lines.iter().any(|e| {
+                            let t = e.text.trim();
+                            t.starts_with("token ") || t.starts_with("api-key ")
+                        })
+                }) =>
+            {
+                return Some(
+                    "%Umbrella mandatory parameter 'token' or 'api-key/secret/orgid' not configured"
+                        .into(),
+                );
+            }
+            // an attribute list's `attribute` with no type
+            ("config-attr-list", ["attribute"]) => {
+                return Some("%AAA: attr type \"invalid attribute\" is invalid".into());
+            }
+            (
+                "config-ip-sla-jitter",
+                ["operation-packet-priority", "high"] | ["optimize", "timestamp"],
+            ) if !holds("precision microseconds")
+                && !self.own_lines(mode).contains(&"precision microseconds") =>
+            {
+                return Some(
+                    "%This configuration allowed only on microsecond precision probe".into(),
+                );
+            }
+            // a probe's VRF the switch does not hold (17.6.4; 17.15.6 took it)
+            ("config-ip-sla-jitter", ["vrf", name]) if !self.since("17.15") && !vrf(name) => {
+                return Some(format!("%VRF: {name} does not exist"));
+            }
+            // an IPv6 VRRP group's global address needs its prefix
+            ("config-if-vrrp", ["address", address, ..])
+                if address.contains(':') && !address.contains('/') && !link_local(address) =>
+            {
+                return Some("% You must specify a prefix for a non link-local address.".into());
+            }
+            // LISP on the C9200 image: no LISP encapsulation, a PETR or map resolver naming a
+            // remote locator set `router lisp` lacks, a site-registration import before the default
+            // locator set, a proxy ITR beside the service's own ITR, a locator set `router lisp`
+            // lacks, a dynamic EID's notify group that is no multicast address, an extranet's
+            // subscriber in its provider's instance, and 17.6.4's obsolete locator interface
+            ("config-lisp-srv-ipv4" | "config-lisp-srv-ipv6", ["encapsulation", "lisp"])
+                if self.c9200() =>
+            {
+                return Some("% lisp encapsulation is not supported.".into());
+            }
+            (
+                "config-lisp-srv-ipv4"
+                | "config-lisp-srv-ipv6"
+                | "config-lisp-srv-eth"
+                | "config-lisp-inst-srv-ipv4"
+                | "config-lisp-inst-srv-ipv6"
+                | "config-lisp-inst-srv-eth",
+                [
+                    "first-packet-petr" | "mr-use-petr",
+                    "remote-locator-set",
+                    name,
+                    ..,
+                ],
+            ) if !holds(&format!("remote-locator-set {name}")) => {
+                return Some(format!("% No remote-locator-set named '{name}'."));
+            }
+            (
+                "config-lisp-srv-ipv4" | "config-lisp-srv-ipv6",
+                ["import", "database", "site-registration", ..],
+            ) if !block.is_some_and(|b| {
+                b.lines
+                    .iter()
+                    .any(|e| e.text.trim().starts_with("locator default-set "))
+            }) =>
+            {
+                return Some("% Locator default-set is not configured.".into());
+            }
+            ("config-lisp-srv-ipv4" | "config-lisp-srv-ipv6", ["proxy-itr", ..])
+                if self.own_lines(mode).contains(&"itr") =>
+            {
+                return Some("% Disable ITR functionality first.".into());
+            }
+            (
+                "config-lisp-inst",
+                [
+                    "decapsulation",
+                    "filter",
+                    "rloc",
+                    "source",
+                    "locator-set",
+                    name,
+                ],
+            )
+            | ("config-lisp-inst-dyn-eid", ["database-mapping", _, "locator-set", name, ..])
+                if !holds(&format!("locator-set {name}")) =>
+            {
+                return Some(format!("% No locator-set named '{name}'."));
+            }
+            ("config-lisp-inst-dyn-eid", ["map-notify-group", group, ..])
+                if v4(group).is_some_and(|g| g >> 28 != 0xe) =>
+            {
+                return Some(format!("% Not a multicast address ({group})"));
+            }
+            ("config-router-lisp-extranet", ["eid-record-subscriber", "instance-id", id, ..])
+                if self
+                    .own_lines(mode)
+                    .iter()
+                    .any(|l| *l == format!("eid-record-provider instance-id {id}")) =>
+            {
+                return Some(format!(
+                    "% Subscriber instance {id} cannot be same as provider instance"
+                ));
+            }
+            ("config-router-lisp-locator-set", ["ip-interface", ..]) => {
+                return Some(
+                    "% Command accepted but obsolete, unreleased or unsupported; see \
+                     documentation.\n\n%  To convert existing LISP configuration enter commands \
+                     \"service <name>\" or\n% \"instance-id <iid> in \"router lisp\" submode."
+                        .into(),
+                );
+            }
+            // a Stealthwatch Cloud monitor's server is a URL
+            ("config-swc-monitor", ["url", url]) if !url.contains("://") => {
+                return Some("% Invalid URL".into());
+            }
+            // mDNS (17.15.6): on-demand query responses beside an active-response timer, a source
+            // interface other than an SVI, an interface's gateway or service routing before the
+            // global one, a location group or service policy the switch lacks
+            ("config-mdns-sd", ["query-response", "mode", "on-demand"])
+                if self
+                    .own_lines(mode)
+                    .iter()
+                    .any(|l| l.starts_with("active-response timer ")) =>
+            {
+                return Some(
+                    "%Warning: active-response timer is not applicable in on-demand mode.\nPlease \
+                     remove active-response timer('no active-response timer') before changing to \
+                     on-demand mode"
+                        .into(),
+                );
+            }
+            ("config-mdns-sd", ["source-interface", name, ..])
+                if !name.to_lowercase().starts_with("vl") =>
+            {
+                return Some(
+                    "%Error: Only SVI interface is allowed to be configured as source interface"
+                        .into(),
+                );
+            }
+            ("config-if", ["mdns-sd", "gateway"])
+                if !self
+                    .device
+                    .blocks
+                    .iter()
+                    .any(|b| b.header == "mdns-sd gateway") =>
+            {
+                return Some(
+                    "%Error: Not-Allowed, first configure \"mdns-sd gateway\" in global config mode"
+                        .into(),
+                );
+            }
+            ("config-if", ["service-routing", "mdns-sd"])
+                if !self
+                    .device
+                    .blocks
+                    .iter()
+                    .any(|b| b.header == "service-routing mdns-sd")
+                    && !self
+                        .device
+                        .global
+                        .iter()
+                        .any(|e| e.text == "service-routing mdns-sd") =>
+            {
+                return Some(
+                    "%Error: Not-Allowed, first configure \"service-routing mdns-sd\" in global \
+                     config mode"
+                        .into(),
+                );
+            }
+            ("config-mdns-location-filter", ["match", "location-group", n, "vlan", v, ..])
+                if !named("mdns-sd location-group ", &format!("{n} vlan {v}")) =>
+            {
+                return Some(format!(
+                    "%Error: Location-group {n} under vlan {v} doesn't exist"
+                ));
+            }
+            ("config-vlan-mdns-sd" | "config-if-mdns-sd", ["service-policy", name])
+                if !named("mdns-sd service-policy ", name) =>
+            {
+                return Some(format!("%Error: '{name}' service-policy does not exist"));
+            }
+            ("config-export-list", ["vrf", _])
+                if self
+                    .own_lines(mode)
+                    .iter()
+                    .any(|l| l.starts_with("binding-source")) =>
+            {
+                return Some("% Remove binding-source configuration before enabling vrf".into());
+            }
+            // an SSH public key's hash names its key type
+            ("conf-ssh-pubkey-user" | "conf-ssh-pubkey-server", ["key-hash", kind, ..])
+                if !kind.starts_with("ssh-") && !kind.starts_with("ecdsa-") =>
+            {
+                return Some(format!("% SSH: keytype not supported {kind}"));
+            }
+            // a web authentication parameter map's consent lines before its consent type
+            ("config-params-parameter-map", ["consent", ..]) if !holds("type consent") => {
+                return Some("% First configure \"type consent\"".into());
+            }
             ("config", ["interface", ..]) => {
                 let pim = pim_tunnels(&self.device);
                 for h in headers(p) {
@@ -2681,7 +3353,58 @@ impl<'a> Session<'a> {
             .and_then(|f| f.blocks.first())
             .and_then(|&b| self.device.blocks.get(b));
         let again = block.is_some_and(|b| b.lines.iter().any(|e| e.text.trim() == canonical));
+        let header = block.map_or("", |b| b.header.as_str());
         match (mode, words.as_slice()) {
+            // the lab C9200L-48T-4G's sample lines (17.6.4 and 17.15.6), each kept: a BGP peer's
+            // or session template's TCP-AO key chain the switch lacks, an OSPF neighbor on an
+            // interface whose network type takes none, a VLAN's mDNS lines the global gateway
+            // mode sets
+            ("config-router", ["neighbor", _, "ao", chain, ..])
+            | ("config-router-stmp", ["ao", chain, ..])
+                if header.starts_with("router bgp ")
+                    && !self
+                        .device
+                        .blocks
+                        .iter()
+                        .any(|b| b.header == format!("key chain {chain}")) =>
+            {
+                Some("%BGP: Key chain does not exist".into())
+            }
+            ("config-router", ["neighbor", peer]) if header.starts_with("router ospf ") => {
+                let a = v4(peer)?;
+                let on = self.device.blocks.iter().find(|b| {
+                    b.header.starts_with("interface ")
+                        && b.lines
+                            .iter()
+                            .filter_map(|e| ip_address(e.text.trim()))
+                            .any(|(n, m)| a & m == n & m)
+                })?;
+                let broadcast = !on.lines.iter().any(|e| {
+                    matches!(
+                        e.text.trim(),
+                        "ip ospf network non-broadcast" | "ip ospf network point-to-multipoint non-broadcast"
+                    )
+                });
+                let name = on.header.strip_prefix("interface ")?;
+                broadcast.then(|| {
+                    format!("% OSPF: Configured Nbr {peer} is incompatible with OSPF network type on {name}")
+                })
+            }
+            ("config-vlan-mdns-sd", ["active-query", "timer", _]) => Some(
+                "%Warning: Ensure all the specified VLAN(s) have source-interface configured for \
+                 active-query to work"
+                    .into(),
+            ),
+            ("config-vlan-mdns-sd", ["sdg-agent", _]) => Some(
+                "%Warning: Configuration accepted. Use global mdns-sd gateway mode to configure \
+                 \"sdg-agent\" address."
+                    .into(),
+            ),
+            ("config-vlan-mdns-sd", ["source-interface", ..]) => Some(
+                "%Warning: Configuration accepted. Use global mdns-sd gateway mode to configure \
+                 \"source-interface\"."
+                    .into(),
+            ),
             ("config", ["mka", "policy", name]) if exists() => Some(format!(
                 "\n% MKA Policy \"{name}\" may have associated active MKA Sessions.\n\n  Changes to \
                  MKA Policy \"{name}\" values\n  will cause all associated active MKA Sessions to be \
@@ -2828,13 +3551,39 @@ impl<'a> Session<'a> {
     }
 
     /// A line of the certificate being typed: hex, or `quit`, which ends it. Kept in the chain's
-    /// block as typed, else as switches print it (two spaces in, `quit` after a tab); any other
-    /// line ends the certificate and is typed as itself.
-    fn certificate_data(&mut self, line: &str) -> Option<(Vec<String>, Result)> {
+    /// block as typed, else as switches print it (two spaces in, `quit` after a tab). In
+    /// `config-pki-hexmode` any other line is refused at its first character that is no hex digit,
+    /// `exit`, `end` and `configure terminal` too, and a blank line does nothing (the lab
+    /// C9200L-48T-4G, 17.6.4 and 17.15.6); where the chain's own mode reads the hex, any other line
+    /// ends the certificate and is typed as itself.
+    fn certificate_data(
+        &mut self,
+        line: &str,
+        lead: Option<usize>,
+    ) -> Option<(Vec<String>, Result)> {
         let b = self.certificate?;
+        let hexmode = self.mode() == "config-pki-hexmode";
         let t = line.trim();
         let quit = t.eq_ignore_ascii_case("quit");
         let hex = !t.is_empty() && t.chars().all(|c| c.is_ascii_hexdigit() || c == ' ');
+        if hexmode && t.is_empty() {
+            return Some((vec![], Result::Ok));
+        }
+        if hexmode && !(quit || hex) {
+            let prompt_len = lead.unwrap_or_else(|| self.prompt().chars().count());
+            let at = line
+                .chars()
+                .position(|c| !(c.is_ascii_hexdigit() || c == ' ' || c == '\t'))
+                .unwrap_or(0);
+            return Some((
+                vec![
+                    format!("{}^", " ".repeat(prompt_len + at)),
+                    "% Invalid input detected at '^' marker.".into(),
+                    String::new(),
+                ],
+                Result::Error,
+            ));
+        }
         if !(quit || hex) {
             self.certificate = None;
             return None;
@@ -2857,8 +3606,258 @@ impl<'a> Session<'a> {
         lines.push(Entry { key, text: stored });
         if quit {
             self.certificate = None;
+            // `quit` leaves the hex's mode for the chain's
+            if hexmode {
+                self.frames.pop();
+            }
         }
         Some((vec![], Result::Ok))
+    }
+
+    /// Whether the 802.1X configuration is new-style: its lines are (`NEW_STYLE`), or it was
+    /// converted.
+    fn new_style(&self) -> bool {
+        self.converted || new_style(&self.device)
+    }
+
+    /// The keyword after `authentication display` in a privileged line that is one.
+    fn display_style<'p>(&self, mode: &str, p: &'p Parse) -> Option<&'p str> {
+        let kws: Vec<&str> = (p.items.iter())
+            .filter_map(|i| match i {
+                Item::Kw { kw, .. } => Some(kw.as_str()),
+                Item::Arg { .. } => None,
+            })
+            .collect();
+        match kws[..] {
+            ["authentication", "display", w]
+                if mode == "privileged" && !p.negated && !self.device.stack.classic() =>
+            {
+                Some(w)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `?` after `text` asks what `authentication display` takes once the 802.1X
+    /// configuration is new-style: `config-mode` alone (the lab C9200L-48T-4G, 17.6.4).
+    fn asks_display_style(&self, mode: &str, text: &str) -> bool {
+        let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+        mode == "privileged"
+            && text.ends_with(' ')
+            && self.new_style()
+            && !self.device.stack.classic()
+            && matches!(&words[..], [a, d] if "authentication".starts_with(a.as_str())
+                && "display".starts_with(d.as_str()))
+    }
+
+    /// Converts the 802.1X configuration to new-style as IOS XE does on `yes` (the lab
+    /// C9200L-48T-4G, 17.6.4 and 17.15.6): an identity policy becomes the service template of its
+    /// name (17.15.6; 17.6.4 inferred), `CPL_DEFAULTS` are added, and a legacy port's
+    /// `authentication` lines become `access-session` lines and a control policy of its own,
+    /// `CPL_PORT_POLICY`, its classes printed twice; the port keeps `mab` and `dot1x pae`.
+    fn convert_to_new_style(&mut self) {
+        self.converted = true;
+        let anchor = self.service_templates_after();
+        let identity = |t: &str| t.strip_prefix("identity policy ").map(str::to_string);
+        let mut lines: Vec<String> = (self.device.global.iter().map(|e| e.text.as_str()))
+            .chain(self.device.blocks.iter().map(|b| b.header.as_str()))
+            .filter_map(identity)
+            .map(|name| format!("service-template {name}"))
+            .collect();
+        self.device
+            .global
+            .retain(|e| !e.text.starts_with("identity policy "));
+        self.device
+            .blocks
+            .retain(|b| !b.header.starts_with("identity policy "));
+        lines.extend(CPL_DEFAULTS.iter().map(|l| l.to_string()));
+        let mut ports = vec![];
+        for b in &mut self.device.blocks {
+            let Some(port) = b.header.strip_prefix("interface ") else {
+                continue;
+            };
+            let said = |start: &str| {
+                b.lines
+                    .iter()
+                    .find_map(|e| e.text.trim().strip_prefix(start).map(str::to_string))
+            };
+            let Some(control) = said("authentication port-control ") else {
+                continue;
+            };
+            // a legacy port's host mode is single-host, and it is closed but for `authentication
+            // open` (inferred from the lab port's, which named neither)
+            let host = said("authentication host-mode ").unwrap_or("single-host".into());
+            let open = said("authentication open").is_some();
+            b.lines.retain(|e| {
+                let t = e.text.trim();
+                !(t.starts_with("authentication port-control ")
+                    || t.starts_with("authentication host-mode ")
+                    || t == "authentication open")
+            });
+            ports.push((port.to_string(), control, host, open));
+        }
+        let mut policies = vec![];
+        for (port, ..) in &ports {
+            let policy = format!(
+                "policy-map type control subscriber POLICY_{}",
+                show::short(port)
+            );
+            lines.push(policy.clone());
+            policies.push(policy);
+        }
+        for (port, control, host, open) in &ports {
+            lines.push(format!("interface {port}"));
+            lines.push(format!(" access-session host-mode {host}"));
+            if !open {
+                lines.push(" access-session closed".into());
+            }
+            lines.push(format!(" access-session port-control {control}"));
+            lines.push(format!(
+                " service-policy type control subscriber POLICY_{}",
+                show::short(port)
+            ));
+        }
+        self.configure_quietly(&lines);
+        // `access-session mac-move deny`, then the service templates where an identity policy
+        // prints, each after the one before, and the parameter maps typed next (the lab
+        // C9200L-48T-4G, 17.6.4 and 17.15.6, `show running-config | section`)
+        let mut prev = anchor;
+        let placed = lines
+            .iter()
+            .filter(|l| *l == "access-session mac-move deny" || l.starts_with("service-template "));
+        for l in placed {
+            self.device.held_top.insert(l.clone());
+            if let Some(p) = prev {
+                self.device.held_after.insert(l.clone(), p);
+            }
+            prev = Some(l.clone());
+        }
+        // a port's `access-session` lines print after its `switchport` lines, before `mab`, and stay
+        // there, as no capture orders them
+        for (port, ..) in &ports {
+            let header = format!("interface {port}");
+            let Some(b) = self.device.blocks.iter_mut().find(|b| b.header == header) else {
+                continue;
+            };
+            let (moved, mut rest): (Vec<Entry>, Vec<Entry>) = std::mem::take(&mut b.lines)
+                .into_iter()
+                .partition(|e| e.text.trim_start().starts_with("access-session "));
+            let word = |e: &Entry, w: &str| e.text.trim_start().starts_with(w);
+            let at = match rest.iter().rposition(|e| word(e, "switchport ")) {
+                Some(i) => i + 1,
+                None => (rest.iter())
+                    .position(|e| word(e, "mab") || word(e, "dot1x "))
+                    .unwrap_or(rest.len()),
+            };
+            rest.splice(at..at, moved);
+            b.lines = rest;
+        }
+        // `inactivity-timer` prints with a space after it (17.6.4)
+        if let Some(b) = self
+            .device
+            .blocks
+            .iter_mut()
+            .find(|b| b.header == "service-template webauth-global-inactive")
+        {
+            for e in &mut b.lines {
+                if e.text.trim() == "inactivity-timer 3600" {
+                    e.text = format!("{} ", e.text.trim_end());
+                }
+            }
+        }
+        // a converted port's policy as the switch printed it, each class twice (17.6.4 and
+        // 17.15.6). Its lines are written, not typed: the crawls asked `?` under `event
+        // session-started match-all` alone, and the actions differ by event (the switch offered no
+        // `terminate` there, and its policy terminates under two other events)
+        for policy in policies {
+            let b = self.device.block(&policy);
+            let mut new = vec![];
+            let mut class: Vec<Entry> = vec![];
+            let flush = |class: &mut Vec<Entry>, new: &mut Vec<Entry>| {
+                let again: Vec<Entry> = (class.iter())
+                    .map(|e| Entry {
+                        key: format!("{} @again", e.key),
+                        text: e.text.clone(),
+                    })
+                    .collect();
+                new.append(class);
+                new.extend(again);
+            };
+            // a block keeps its lines one space shallower than it prints them: events at no
+            // indent, classes at one, actions at two; a class is keyed by its event too, as a
+            // section in a section is
+            let mut event = String::new();
+            for l in CPL_PORT_POLICY {
+                let text = l[1..].to_string();
+                let depth = text.len() - text.trim_start().len();
+                if depth == 0 || (depth == 1 && !class.is_empty()) {
+                    flush(&mut class, &mut new);
+                }
+                let key = match depth {
+                    0 => text.clone(),
+                    1 => format!("{text} @{event}"),
+                    _ => text.clone(),
+                };
+                if depth == 0 {
+                    event = text.clone();
+                    new.push(Entry { key, text });
+                } else {
+                    class.push(Entry { key, text });
+                }
+            }
+            flush(&mut class, &mut new);
+            self.device.blocks[b].lines = new;
+        }
+    }
+
+    /// The top-level line the service templates print after: the one before an identity policy, else
+    /// the last certificate chain, which 17.15.6 follows with `license boot level` (the lab
+    /// C9200L-48T-4G's bases, 17.6.4 and 17.15.6).
+    fn service_templates_after(&self) -> Option<String> {
+        let shown = show::configuration(&self.device);
+        let top = |l: &&String| !l.starts_with([' ', '\t']) && *l != "!" && !l.is_empty();
+        if let Some(at) = shown.iter().position(|l| l.starts_with("identity policy ")) {
+            return shown[..at].iter().rev().find(top).cloned();
+        }
+        let license = shown
+            .iter()
+            .find(|l| l.starts_with("license boot level "))
+            .filter(|_| self.since("17.15"));
+        license
+            .or_else(|| {
+                shown
+                    .iter()
+                    .rev()
+                    .find(|l| l.starts_with("crypto pki certificate chain "))
+            })
+            .cloned()
+    }
+
+    /// Types configuration lines from `(config)#` as a replayed configuration's, out of what the
+    /// session records as typed; the modes typed in stay as they were.
+    fn configure_quietly(&mut self, lines: &[String]) {
+        let frames = std::mem::replace(
+            &mut self.frames,
+            vec![
+                Frame::top("exec"),
+                Frame::top("privileged"),
+                Frame::top("config"),
+            ],
+        );
+        let was = std::mem::replace(&mut self.redacted, true);
+        let taken = self.accepted.len();
+        for l in lines {
+            self.type_line(l);
+        }
+        self.accepted.truncate(taken);
+        self.redacted = was;
+        self.frames = frames;
+    }
+
+    /// Whether a certificate's hex is being read in a mode of its own, which takes Ctrl-Z as no
+    /// `end` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6: `^Z` and the same prompt).
+    pub fn in_hex(&self) -> bool {
+        self.certificate.is_some() && self.mode() == "config-pki-hexmode"
     }
 
     /// A line of the public key being typed after `key-string`: IOS reads every line as the key's
@@ -2945,8 +3944,17 @@ impl<'a> Session<'a> {
     fn run(&mut self, mode: &str, line: &str, p: &Parse) -> (Vec<String>, Result) {
         self.raw = line.to_string();
         let cmd = &self.engine.grammar.commands[p.command];
-        let name = cmd.name.as_str();
-        let mut enters = self.engine.enters(p).map(str::to_string);
+        // a line the crawl read runs as its first keyword's command (`exit-address-family`), into
+        // the mode the crawl asked in under the context it adds
+        let crawled = p.command == self.engine.crawled();
+        let name = match p.items.first() {
+            Some(Item::Kw { kw, .. }) if crawled => kw.as_str(),
+            _ => cmd.name.as_str(),
+        };
+        let mut enters = self.crawled_enters(mode, line).or_else(|| {
+            (!crawled && !self.stays(mode, line))
+                .then(|| self.engine.enters(p).map(str::to_string))?
+        });
         // a subinterface opens its own mode, where `encapsulation dot1Q` runs (the lab C9300-24T,
         // 17.6.4: `interface GigabitEthernet1/0/7.10`)
         if enters.as_deref() == Some("config-if")
@@ -2955,6 +3963,29 @@ impl<'a> Session<'a> {
                 .is_some_and(|h| h.starts_with("interface ") && h.contains('.'))
         {
             enters = Some("config-subif".into());
+        }
+        // the region as edited so far, which vswitch takes as each line is typed (the lab
+        // C9200L-48T-4G, 17.6.4); `show current`, the region before the edit, is not modelled
+        if mode == "config-mst" && !p.negated && p.canonical() == "show pending" {
+            let mut out = vec!["Pending MST configuration".to_string()];
+            out.extend(crate::spanning::mst_configuration(&self.device));
+            return (out, Result::Ok);
+        }
+        // the style the 802.1X configuration is in, a space after it (the lab C9200L-48T-4G, 17.6.4
+        // and 17.15.6)
+        if self.display_style(mode, p) == Some("config-mode") {
+            let style = if self.new_style() {
+                "new-style"
+            } else {
+                "legacy"
+            };
+            return (
+                vec![
+                    format!("Current configuration mode is {style} "),
+                    String::new(),
+                ],
+                Result::Ok,
+            );
         }
         match name {
             "do" => {
@@ -3148,6 +4179,17 @@ impl<'a> Session<'a> {
                         }
                     }
                 }
+                // a parameter map typed at the console prints after the service templates (the lab
+                // C9200L-48T-4G, 17.6.4, `show running-config | section`)
+                let templates = (self.device.blocks.iter().rev())
+                    .find(|b| b.header.starts_with("service-template "))
+                    .map(|b| b.header.clone());
+                for h in hs.iter().filter(|h| h.starts_with("parameter-map type ")) {
+                    if let Some(t) = templates.clone().filter(|_| !self.redacted) {
+                        self.device.held_top.insert(h.clone());
+                        self.device.held_after.insert(h.clone(), t);
+                    }
+                }
                 let blocks = hs.iter().map(|h| self.device.block(h)).collect();
                 self.frames.push(Frame {
                     mode: sub.into(),
@@ -3207,7 +4249,16 @@ impl<'a> Session<'a> {
             Some(sub) if cli::is_config(sub) => {
                 // a submode inside a block opens an indented section (address-family), which IOS
                 // closes with its `exit-` line however the mode is left (c9200 17.12 capture 1's empty ones)
-                let header = headers(p).remove(0);
+                let mut header = headers(p).remove(0);
+                let mut entered = line.trim().to_string();
+                // a control policy's event evaluates all its classes unless told otherwise, and
+                // prints so (the lab C9200L-48T-4G, 17.6.4 and 17.15.6: `event aaa-available`); its
+                // class mode reads as under the line printed
+                if sub == "config-class-control-policymap" && header.split_whitespace().count() == 2
+                {
+                    header.push_str(" match-all");
+                    entered.push_str(" match-all");
+                }
                 let close = self.closes(sub, &header);
                 // a public key's lines make the `key-hash` IOS prints in place of `key-string`
                 let key_string = sub == "conf-ssh-pubkey-data";
@@ -3245,7 +4296,7 @@ impl<'a> Session<'a> {
                     blocks: top.blocks.clone(),
                     prefix: format!("{} ", top.prefix),
                     section: Some(key),
-                    entered: line.trim().to_string(),
+                    entered,
                 });
             }
             _ => self.write(p),
@@ -3471,6 +4522,17 @@ impl<'a> Session<'a> {
             Some(rest) => self.help_in("privileged", Some(""), rest),
             None => self.help_in(self.mode(), self.context().as_deref(), text),
         };
+        let (mode, rest) = match self.after_do(text) {
+            Some(rest) => ("privileged", rest),
+            None => (self.mode(), text),
+        };
+        let answer = if self.asks_display_style(mode, rest) {
+            (answer.into_iter())
+                .filter(|l| !matches!(l.split_whitespace().next(), Some("legacy" | "new-style")))
+                .collect()
+        } else {
+            answer
+        };
         crate::live::refusal_for(text, answer)
     }
 
@@ -3593,6 +4655,19 @@ impl<'a> Session<'a> {
             .held_refusal(i, mode, line)
             .filter(|(_, unrecognized)| taken || !unrecognized)
             .map(|(o, _)| o);
+        // a line the books refuse and neither refusal holds that the image's own crawl reads whole,
+        // in the mode it is typed in or in global configuration, which every submode hands a line
+        // it does not know (the lab C9200L-48T-4G, 17.6.4, ran its `router bgp 65000` after a
+        // submode): an enclosing submode's crawl was asked in another state (the same switch
+        // refused `eid-table default` in a LISP instance, which a fresh `router lisp` offered)
+        if !taken
+            && (i + 1 == self.frames.len() || mode == "config")
+            && level.is_none()
+            && held.is_none()
+            && let Some(p) = self.crawled(i, mode, line)
+        {
+            return Outcome::Ok(p);
+        }
         for refused in [level, held].into_iter().flatten() {
             if reach(&refused, line) < reach(&o, line) {
                 o = refused;
@@ -3935,6 +5010,21 @@ impl<'a> Session<'a> {
                 >= 2;
             // a file system's row fits a path after it, and no other word
             let typed = t.text.to_lowercase();
+            // a name the switch cannot resolve where a host stands: the lab C9200L-48T-4G (17.6.4
+            // and 17.15.6, `no ip domain lookup`) refused `server Hostname` in a server group and
+            // `peer ipv4 Hostname` in an SXP filter group at the name
+            if rows.iter().any(|&(w, what)| host_row(w, what))
+                && !rows.iter().any(|&(w, what)| {
+                    !host_row(w, what)
+                        && fits_row(w, what, &t.text, types) != Fit::No
+                        && (!w.starts_with("X:X") || t.text.contains(':'))
+                })
+                && !cli::ipv4(&t.text)
+                && !t.text.contains(':')
+                && !self.resolves(&t.text)
+            {
+                return Some((Outcome::Invalid(t.at), false));
+            }
             match rows
                 .iter()
                 .map(|&(w, what)| match file_system(w) {
@@ -3950,6 +5040,288 @@ impl<'a> Session<'a> {
             }
         }
         None
+    }
+
+    /// A configuration line the books refuse that this image's own crawl at the session's level
+    /// reads whole in the mode and context of frame `i`, as the engine's crawled command
+    /// (`cli::Engine::crawled`): each word a keyword the answer before it offers, whole or as its
+    /// unique start, or a value one of its value rows takes, an interface type and its number one
+    /// value however typed; a `LINE` row takes the rest, else the answer after the last word offers
+    /// `<cr>`. A value the crawl typed otherwise reads on through the answers after one it typed that
+    /// the same row takes (`live::Held::crawled_after`). A `no` or `default` line is the line it
+    /// undoes. None where an answer the line needs is not held, a word begins several keywords or a
+    /// capture held the line in this block (its held line takes it as held), and where
+    /// `held_refusal` leaves the line to the books: a routed port, a PoE port's `power`, a line the
+    /// crawl does not judge, a member another family provisions.
+    fn crawled(&self, i: usize, mode: &str, line: &str) -> Option<Parse> {
+        if !cli::is_config(mode) {
+            return None;
+        }
+        let level = self.level()?;
+        let held = &self.engine.held;
+        if !held.crawls.contains_key(&level) {
+            return None;
+        }
+        let frame = self.frames.get(i)?;
+        let header = frame
+            .blocks
+            .first()
+            .map_or("", |&b| self.device.blocks[b].header.as_str());
+        if held.has(&crate::live::kind(header), line.trim()) {
+            return None;
+        }
+        let routed = mode.starts_with("config-if")
+            && frame.blocks.iter().any(|&b| {
+                self.device.blocks[b]
+                    .lines
+                    .iter()
+                    .any(|e| e.text.trim() == "no switchport")
+            });
+        let first = line.split_whitespace().next().unwrap_or("").to_lowercase();
+        let power = first.len() >= 2
+            && "power".starts_with(&first)
+            && frame.blocks.iter().any(|&b| {
+                self.device.blocks[b]
+                    .header
+                    .strip_prefix("interface ")
+                    .is_some_and(|n| self.device.stack.poe(n).is_some())
+            });
+        let configured = |l: &str| self.running_has(l);
+        let context = self.context_at(i)?;
+        // a line the image's own switch took without a word here stands, though the crawl does
+        // not judge it or ran out before its end (`summary-metric 10.1.1.0/24 community 0` under a
+        // classic EIGRP process, the lab C9200L-48T-4G, 17.6.4 and 17.15.6)
+        let took = held.took(&level, mode, &context, line);
+        if routed
+            || power
+            || (crate::context::unjudged(mode, line, configured) && !took)
+            || (mode == "config" && self.provisions_another_family(Some(&level), &context, line))
+        {
+            return None;
+        }
+        self.crawl_reads(&level, mode, &context, line).or_else(|| {
+            took.then(|| {
+                let toks = cli::tokens(line);
+                let negated = toks
+                    .first()
+                    .is_some_and(|t| t.text.eq_ignore_ascii_case("no"));
+                Parse {
+                    command: self.engine.crawled(),
+                    line: 0,
+                    negated,
+                    items: toks
+                        .iter()
+                        .enumerate()
+                        .skip(usize::from(negated))
+                        .map(|(k, t)| Item::Kw {
+                            kw: t.text.clone(),
+                            tok: k,
+                            exact: true,
+                        })
+                        .collect(),
+                }
+            })
+        })
+    }
+
+    /// `crawled`'s reading of a line against the crawl's answers at `level`, in `mode` under
+    /// `context`.
+    fn crawl_reads(&self, level: &str, mode: &str, context: &str, line: &str) -> Option<Parse> {
+        let held = &self.engine.held;
+        let configured = |l: &str| self.running_has(l);
+        let answer = |typed: &str| {
+            held.help_for(Some(level), mode, Some(context), typed, configured)
+                .filter(|a| !crate::live::is_refusal(a))
+        };
+        // the line as the crawl typed it so far, a space after each word
+        let after = |typed: &str, word: &str, row: (&str, &str)| -> Option<String> {
+            let next = format!("{typed}{word} ");
+            if answer(&next).is_some() {
+                return Some(next);
+            }
+            let other = held.crawled_after(level, mode, context, typed, |w| {
+                fits_row(row.0, row.1, w, false) == Fit::Word
+            })?;
+            Some(format!("{typed}{other} "))
+        };
+        let toks = cli::tokens(line);
+        let mut items = vec![];
+        let mut negated = false;
+        let mut typed = String::new();
+        let mut k = 0;
+        while k < toks.len() {
+            let t = &toks[k];
+            let rows = crate::live::answer_rows(answer(&typed)?);
+            let keywords: Vec<&str> = rows
+                .iter()
+                .map(|&(w, _)| w)
+                .filter(|w| crate::live::keyword(w) && !mixed_placeholder(w))
+                .collect();
+            let kw = match crate::context::reads(&t.text, &keywords) {
+                crate::context::Reads::Exact => keywords
+                    .iter()
+                    .find(|w| w.eq_ignore_ascii_case(&t.text))
+                    .copied(),
+                crate::context::Reads::One(w) => Some(w),
+                crate::context::Reads::Several => return None,
+                crate::context::Reads::None => None,
+            };
+            // an interface: its type row and its number, typed apart or together
+            let (letters, digits) = t.text.split_at(
+                t.text
+                    .find(|c: char| c.is_ascii_digit())
+                    .unwrap_or(t.text.len()),
+            );
+            let joined = kw.is_none() && !letters.is_empty() && !digits.is_empty();
+            let typ = match kw {
+                Some(w) if is_type_row(w) => Some((w, toks.get(k + 1).map(|n| n.text.as_str()))),
+                None if joined => match crate::context::reads(letters, &keywords) {
+                    crate::context::Reads::Exact => keywords
+                        .iter()
+                        .find(|w| w.eq_ignore_ascii_case(letters))
+                        .map(|w| (*w, Some(digits))),
+                    crate::context::Reads::One(w) => Some((w, Some(digits))),
+                    _ => None,
+                }
+                .filter(|(w, _)| is_type_row(w)),
+                _ => None,
+            };
+            if let Some((w, Some(number))) = typ
+                && number.starts_with(|c: char| c.is_ascii_digit())
+            {
+                let at_type = format!("{typed}{w} ");
+                let rows = crate::live::answer_rows(answer(&at_type)?);
+                let &(r, what) = rows
+                    .iter()
+                    .find(|(r, what)| fits_row(r, what, number, false) == Fit::Word)?;
+                items.push(Item::Arg {
+                    name: "interface".into(),
+                    value: format!("{w}{number}"),
+                    tok: k,
+                    typed: true,
+                });
+                // read on as the crawl typed an interface of the type, together or apart
+                let together = format!("{typed}{w}{number} ");
+                let lw = w.to_lowercase();
+                typed = if answer(&together).is_some() {
+                    together
+                } else if let Some(n) = after(&at_type, number, (r, what)) {
+                    n
+                } else {
+                    let other = held.crawled_after(level, mode, context, &typed, |x| {
+                        x.strip_prefix(lw.as_str())
+                            .is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit()))
+                    })?;
+                    format!("{typed}{other} ")
+                };
+                k += if joined { 1 } else { 2 };
+                continue;
+            }
+            if let Some(w) = kw {
+                if k == 0 && (w == "no" || w == "default") {
+                    negated = true;
+                } else {
+                    items.push(Item::Kw {
+                        kw: w.to_string(),
+                        tok: k,
+                        exact: w.eq_ignore_ascii_case(&t.text),
+                    });
+                }
+                typed = format!("{typed}{w} ");
+                k += 1;
+                continue;
+            }
+            // a name IOS cannot resolve is refused where it asks for a host (`held_refusal`)
+            let &(r, what) = rows.iter().find(|&&(r, what)| {
+                (!crate::live::keyword(r) || mixed_placeholder(r))
+                    && fits_row(r, what, &t.text, false) != Fit::No
+                    && (!r.starts_with("X:X") || t.text.contains(':'))
+                    && (!host_row(r, what)
+                        || cli::ipv4(&t.text)
+                        || t.text.contains(':')
+                        || self.resolves(&t.text))
+            })?;
+            if r == "LINE" {
+                items.push(Item::Arg {
+                    name: r.into(),
+                    value: line[t.at..].trim_end().to_string(),
+                    tok: k,
+                    typed: false,
+                });
+                return Some(Parse {
+                    command: self.engine.crawled(),
+                    line: 0,
+                    negated,
+                    items,
+                });
+            }
+            items.push(Item::Arg {
+                name: r.into(),
+                value: t.text.clone(),
+                tok: k,
+                typed: !matches!(r, "WORD" | "Hostname"),
+            });
+            typed = after(&typed, &t.text, (r, what))?;
+            k += 1;
+        }
+        let ends = crate::live::answer_rows(answer(&typed)?)
+            .iter()
+            .any(|(w, _)| *w == "<cr>");
+        (ends && !items.is_empty()).then(|| Parse {
+            command: self.engine.crawled(),
+            line: 0,
+            negated,
+            items,
+        })
+    }
+
+    /// The mode a configuration line enters as this image's own crawl at the session's level shows
+    /// it: the one the crawl asked `?` in under the context the line adds to the current one, where
+    /// that is another mode; none for a `no` line. It stands over the books' (the lab C9200L-48T-4G,
+    /// 17.6.4 and 17.15.6: `archive`, `template peer-session <name>` and an OSPF process's
+    /// `address-family ipv4` each entered a submode the books give them none of).
+    fn crawled_enters(&self, mode: &str, line: &str) -> Option<String> {
+        if !cli::is_config(mode) {
+            return None;
+        }
+        let level = self.level()?;
+        let mut entered: Vec<&str> = self.frames[self.below_config()..]
+            .iter()
+            .map(|f| f.entered.as_str())
+            .collect();
+        if entered.iter().any(|l| l.is_empty())
+            || line
+                .split_whitespace()
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("no"))
+        {
+            return None;
+        }
+        entered.push(line.trim());
+        let mode = self
+            .engine
+            .held
+            .entered(&level, &crate::context::of(&entered))?;
+        (mode != self.mode()).then(|| mode.to_string())
+    }
+
+    /// Whether the image's own switch took `line` in this mode and context and entered no mode with
+    /// it, where its books give the command a mode: the 17.15 book's `route-map <map-name> {in |
+    /// out}` under a BGP peer-policy template, where the lab C9200L-48T-4G (17.15.6) stayed.
+    fn stays(&self, mode: &str, line: &str) -> bool {
+        let (Some(level), Some(context)) = (self.level(), self.context()) else {
+            return false;
+        };
+        let held = &self.engine.held;
+        let mut entered: Vec<&str> = self.frames[self.below_config()..]
+            .iter()
+            .map(|f| f.entered.as_str())
+            .collect();
+        entered.push(line.trim());
+        held.took(&level, mode, &context, line)
+            && held
+                .entered(&level, &crate::context::of(&entered))
+                .is_none()
     }
 
     /// Whether the last of a privileged line's words names an object this session configured of a
@@ -4059,11 +5431,20 @@ impl<'a> Session<'a> {
         })
     }
 
+    /// Where the submodes' frames start: after global configuration's (EXEC, privileged EXEC and
+    /// global configuration at the console).
+    fn below_config(&self) -> usize {
+        self.frames
+            .iter()
+            .position(|f| f.mode == "config")
+            .map_or(self.frames.len(), |i| i + 1)
+    }
+
     /// The context of frame `i`'s mode (`context`).
     fn context_at(&self, i: usize) -> Option<String> {
         let entered: Vec<&str> = self
             .frames
-            .get(3..=i)
+            .get(self.below_config()..=i)
             .unwrap_or_default()
             .iter()
             .map(|f| f.entered.as_str())
@@ -4077,16 +5458,70 @@ impl<'a> Session<'a> {
     /// The context the submodes entered give the current mode, as the corpus derives it from a
     /// session's prompts (`context::of`); none when a frame's entering line is unknown.
     fn context(&self) -> Option<String> {
-        let entered: Vec<&str> = self
-            .frames
+        let entered: Vec<&str> = self.frames[self.below_config()..]
             .iter()
-            .skip(3)
             .map(|f| f.entered.as_str())
             .collect();
         if entered.iter().any(|l| l.is_empty()) {
             return None;
         }
         Some(crate::context::of(&entered))
+    }
+
+    /// Whether IOS resolves a host name: an `ip host` line names it, or name lookup is on (no `no ip
+    /// domain lookup`), where vswitch cannot tell and takes it.
+    fn resolves(&self, name: &str) -> bool {
+        let global = &self.device.global;
+        global.iter().any(|e| {
+            let w: Vec<&str> = e.text.split_whitespace().collect();
+            matches!(w[..], ["ip", "host", n, ..] | ["ip", "host", "vrf", _, n, ..] if n.eq_ignore_ascii_case(name))
+        }) || !global
+            .iter()
+            .any(|e| e.text == "no ip domain lookup" || e.text == "no ip domain-lookup")
+    }
+
+    /// Whether this session's release is `release` or a later one.
+    fn since(&self, release: &str) -> bool {
+        crate::release::Release::parse(&self.device.release)
+            .zip(crate::release::Release::parse(release))
+            .is_some_and(|(r, s)| r.includes(s))
+    }
+
+    /// Whether the stack runs the C9200 image.
+    fn c9200(&self) -> bool {
+        use crate::platform::Family;
+        matches!(
+            self.device.stack.family(),
+            Some(Family::C9200 | Family::C9200L | Family::C9200B)
+        )
+    }
+
+    /// The lines of the section the line that entered `mode` opened in its block, trimmed: the
+    /// block's own lines where that line opened the block (a template's lines under `router bgp`,
+    /// a LISP service's under `router lisp`). None where no frame is in `mode`.
+    fn own_lines(&self, mode: &str) -> Vec<&str> {
+        let Some(f) = self.frames.iter().rev().find(|f| f.mode == mode) else {
+            return vec![];
+        };
+        let Some(b) = f.blocks.first().and_then(|&b| self.device.blocks.get(b)) else {
+            return vec![];
+        };
+        if f.prefix.is_empty() {
+            return b.lines.iter().map(|e| e.text.trim()).collect();
+        }
+        let indent = |t: &str| t.len() - t.trim_start().len();
+        let entered = f.entered.trim();
+        let Some(at) = b.lines.iter().rposition(|e| {
+            e.text.trim().eq_ignore_ascii_case(entered) && indent(&e.text) < f.prefix.len()
+        }) else {
+            return vec![];
+        };
+        let own = indent(&b.lines[at].text);
+        b.lines[at + 1..]
+            .iter()
+            .take_while(|e| indent(&e.text) > own)
+            .map(|e| e.text.trim())
+            .collect()
     }
 
     /// Whether the running configuration holds `line` at its top level.
@@ -4199,7 +5634,28 @@ impl<'a> Session<'a> {
         if let Some(lines) = self.held_answer(mode, context, text) {
             return lines;
         }
+        if let Some(lines) = self.interface_number_help(mode, text) {
+            return lines;
+        }
+        // `switch <n> provision` offers the models whatever the member: the crawl's switch 1's
+        // answer (the lab C9200L-48T-4G, 17.6.4, answered switch 2 alike)
         let toks = crate::cli::tokens(text);
+        if mode == "config"
+            && let [switch, n, provision, ..] = toks.as_slice()
+            && switch.text.len() >= 2
+            && "switch".starts_with(&switch.text.to_lowercase())
+            && n.text != "1"
+            && n.text.bytes().all(|b| b.is_ascii_digit())
+            && provision.text.len() >= 2
+            && "provision".starts_with(&provision.text.to_lowercase())
+            && let Some(lines) = self.held_answer(
+                mode,
+                context,
+                &format!("switch 1 {}", &text[provision.at..]),
+            )
+        {
+            return lines;
+        }
         let whole = text.is_empty() || text.ends_with(char::is_whitespace);
         let done = if whole {
             &toks[..]
@@ -4298,6 +5754,69 @@ impl<'a> Session<'a> {
         }
         out.push(String::new());
         out
+    }
+
+    /// IOS XE's answer to `?` after `interface` and a type, or after a port's number short of its
+    /// port: the numbers that come next (the lab C9200L-48T-4G, 17.6.4: `interface Port-channel ?`
+    /// gives `<1-48>  Port-channel interface number`; `interface GigabitEthernet ?` gives `<0-8>`,
+    /// its most members; `interface GigabitEthernet1/0/?` and `1/1/?` give `<0-48>`, the most ports
+    /// of the type). Other IOS XE platforms are inferred to answer alike.
+    fn interface_number_help(&self, mode: &str, text: &str) -> Option<Vec<String>> {
+        let stack = &self.device.stack;
+        if !cli::is_config(mode) || stack.classic() {
+            return None;
+        }
+        let toks = cli::tokens(text);
+        let [command, name] = toks.as_slice() else {
+            return None;
+        };
+        let command = command.text.to_lowercase();
+        if command.len() < 3 || !"interface".starts_with(&command) {
+            return None;
+        }
+        let split = name
+            .text
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(name.text.len());
+        let (ty, number) = name.text.split_at(split);
+        let types: Vec<&str> = cli::interface_types()
+            .iter()
+            .map(|(full, _)| *full)
+            .filter(|full| !ty.is_empty() && full.to_lowercase().starts_with(&ty.to_lowercase()))
+            .collect();
+        let full = match types.as_slice() {
+            [one] => *one,
+            many => many.iter().find(|f| f.eq_ignore_ascii_case(ty)).copied()?,
+        };
+        let ports: Vec<String> = stack
+            .physical()
+            .into_iter()
+            .filter(|p| stack.management() != Some(p.as_str()))
+            .filter_map(|p| p.strip_prefix(full).map(str::to_string))
+            .collect();
+        let whole = text.ends_with(char::is_whitespace);
+        let (lo, hi) = if whole && number.is_empty() {
+            match stack.numbered(full) {
+                Some(range) => range,
+                None if !ports.is_empty() => (0, stack.family()?.max_members() as u64),
+                None => return None,
+            }
+        } else if !whole && number.ends_with('/') {
+            // at the port's own level alone; the levels before it are left to the books
+            let levels = number.matches('/').count() + 1;
+            let top = ports
+                .iter()
+                .filter(|p| p.split('/').count() == levels)
+                .filter_map(|p| p.rsplit('/').next()?.parse::<u64>().ok())
+                .max()?;
+            (0, top)
+        } else {
+            return None;
+        };
+        Some(vec![
+            format!("  <{lo}-{hi}>  {full} interface number"),
+            String::new(),
+        ])
     }
 
     /// The line Tab makes of `text`: its last word as typed, then the rest of the one keyword or
@@ -4403,7 +5922,7 @@ impl<'a> Session<'a> {
         // the switch knows now (the lab C9300, 17.6.4), VLANs taking the same one on one line
         if top.blocks.is_empty()
             && !p.negated
-            && let Some((list, primary)) = crate::device::root_request(p)
+            && let Some((list, primary, diameter, hello)) = crate::device::root_request(p)
         {
             let mut by: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
             for v in crate::generate::vlan_ids(&list) {
@@ -4412,8 +5931,64 @@ impl<'a> Session<'a> {
                 by.entry(prio).or_default().insert(v);
             }
             for (prio, vlans) in by {
-                let q = crate::device::as_priority(p, &crate::target::ios_list(&vlans), prio);
+                let text = format!(
+                    "spanning-tree vlan {} priority {prio}",
+                    crate::target::ios_list(&vlans)
+                );
+                if let Outcome::Ok(q) = self.engine.parse("config", &text) {
+                    self.write(&q);
+                }
+            }
+            // a diameter sets the timers IEEE 802.1D recommends for it: a max age of 4 hellos and
+            // twice the diameter less 2, a forward delay of half 4 hellos and 3 diameters, rounded
+            // up (the lab C9200L-48T-4G, 17.6.4: diameter 3 at hello 2 stored `forward-time 9` and
+            // `max-age 12`); a hello time given is stored as given, and a timer the pair leaves at
+            // its default prints nothing (inferred)
+            if let Some(d) = diameter {
+                let h = hello.unwrap_or(2);
+                let mut timers = vec![];
+                if let Some(h) = hello {
+                    timers.push(("hello-time", h, 2));
+                }
+                timers.push(("forward-time", (4 * h + 3 * d).div_ceil(2), 15));
+                timers.push(("max-age", (4 * h + 2 * d).saturating_sub(2), 20));
+                for (setting, value, default) in timers {
+                    let text = if value == default {
+                        format!("no spanning-tree vlan {list} {setting}")
+                    } else {
+                        format!("spanning-tree vlan {list} {setting} {value}")
+                    };
+                    if let Outcome::Ok(q) = self.engine.parse("config", &text) {
+                        self.write(&q);
+                    }
+                }
+            }
+            return;
+        }
+        // an instance's `root secondary` is stored as the priority 28672 (the lab C9200L-48T-4G,
+        // 17.6.4: `spanning-tree mst 0 priority 28672`), `root primary` as 24576 (inferred, as for
+        // a VLAN with no better root)
+        if top.blocks.is_empty()
+            && let Some((list, primary)) = crate::device::mst_root_request(p)
+        {
+            let prio = if primary { 24576 } else { 28672 };
+            let text = format!("spanning-tree mst {list} priority {prio}");
+            if let Outcome::Ok(q) = self.engine.parse("config", &text) {
                 self.write(&q);
+            }
+            return;
+        }
+        // `no ... root` takes back what the request set, the priority and the timers (the lab
+        // C9200L-48T-4G, 17.6.4: `no spanning-tree vlan 1 root` left VLAN 1 no priority,
+        // `forward-time` or `max-age`; `hello-time` inferred alike)
+        if top.blocks.is_empty()
+            && let Some(list) = crate::device::root_withdrawn(p)
+        {
+            for setting in ["priority", "hello-time", "forward-time", "max-age"] {
+                let text = format!("no spanning-tree vlan {list} {setting}");
+                if let Outcome::Ok(q) = self.engine.parse("config", &text) {
+                    self.write(&q);
+                }
             }
             return;
         }
@@ -4857,6 +6432,84 @@ const NEW_STYLE: &[&str] = &[
     "access-session closed",
     "access-session port-control ",
     "access-session control-direction ",
+    "access-session inherit ",
+];
+
+/// What IOS XE says before it asks whether to convert the 802.1X configuration to new-style, and
+/// the question (the lab C9200L-48T-4G, 17.6.4 and 17.15.6).
+pub(crate) const CONVERT_SAY: &str = "This operation will permanently convert all relevant authentication commands to their CPL control-policy equivalents. As this conversion is irreversible and will disable the conversion CLI 'authentication display [legacy|new-style]', you are strongly advised to back up your current configuration before proceeding. ";
+const CONVERT_ASK: &str = "Do you wish to continue? [yes]: ";
+
+/// What converting the 802.1X configuration to new-style adds at the top, as the lab
+/// C9200L-48T-4G printed it at 17.6.4 and 17.15.6 (`show archive config differences`): a
+/// configuration file's lines, typed from `(config)#`.
+const CPL_DEFAULTS: &[&str] = &[
+    "access-session mac-move deny",
+    "service-template DEFAULT_LINKSEC_POLICY_MUST_SECURE",
+    " linksec policy must-secure",
+    "service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
+    " linksec policy should-secure",
+    "service-template DEFAULT_CRITICAL_VOICE_TEMPLATE",
+    " voice vlan",
+    "service-template DEFAULT_CRITICAL_DATA_TEMPLATE",
+    "service-template webauth-global-inactive",
+    " inactivity-timer 3600",
+    "class-map type control subscriber match-all AAA_SVR_DOWN_AUTHD_HOST",
+    " match result-type aaa-timeout",
+    " match authorization-status authorized",
+    "class-map type control subscriber match-all AAA_SVR_DOWN_UNAUTHD_HOST",
+    " match result-type aaa-timeout",
+    " match authorization-status unauthorized",
+    "class-map type control subscriber match-all DOT1X",
+    " match method dot1x",
+    "class-map type control subscriber match-all DOT1X_FAILED",
+    " match method dot1x",
+    " match result-type method dot1x authoritative",
+    "class-map type control subscriber match-all DOT1X_MEDIUM_PRIO",
+    " match authorizing-method-priority gt 20",
+    "class-map type control subscriber match-all DOT1X_NO_RESP",
+    " match method dot1x",
+    " match result-type method dot1x agent-not-found",
+    "class-map type control subscriber match-all DOT1X_TIMEOUT",
+    " match method dot1x",
+    " match result-type method dot1x method-timeout",
+    "class-map type control subscriber match-all MAB",
+    " match method mab",
+    "class-map type control subscriber match-all MAB_FAILED",
+    " match method mab",
+    " match result-type method mab authoritative",
+];
+
+/// The control policy converting a legacy port makes for it, `POLICY_<port>`: what the lab
+/// C9200L-48T-4G made at 17.6.4 and 17.15.6 for a port with `authentication port-control auto`,
+/// `mab` and `dot1x pae authenticator` and the default order and priority (dot1x, then MAB). Its
+/// running configuration prints each class twice, `show policy-map` once; a port's other
+/// `authentication` lines (order, priority, timers, events) were not converted on the lab switch.
+const CPL_PORT_POLICY: &[&str] = &[
+    " event session-started match-all",
+    "  10 class always do-until-failure",
+    "   10 authenticate using dot1x priority 10",
+    " event authentication-failure match-first",
+    "  5 class DOT1X_FAILED do-until-failure",
+    "   10 terminate dot1x",
+    "   20 authentication-restart 60",
+    "  10 class DOT1X_NO_RESP do-until-failure",
+    "   10 terminate dot1x",
+    "   20 authenticate using mab priority 20",
+    "  20 class MAB_FAILED do-until-failure",
+    "   10 terminate mab",
+    "   20 authentication-restart 60",
+    "  40 class always do-until-failure",
+    "   10 terminate dot1x",
+    "   20 terminate mab",
+    "   30 authentication-restart 60",
+    " event agent-found match-all",
+    "  10 class always do-until-failure",
+    "   10 terminate mab",
+    "   20 authenticate using dot1x priority 10",
+    " event authentication-success match-all",
+    "  10 class always do-until-failure",
+    "   10 activate service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
 ];
 
 /// Whether the configuration's 802.1X lines are new-style: a line of `NEW_STYLE` at the top, as a
@@ -5332,6 +6985,32 @@ fn fits_row(row: &str, what: &str, typed: &str, types: bool) -> Fit {
     }
 }
 
+/// Whether a `?` row is a value whose placeholder holds lowercase letters, which `live::keyword`
+/// reads as a keyword: `Hostname`, `A.B.C.D/nn`, `X:X:X:X::X/<0-128>`, `Hex-string`.
+fn mixed_placeholder(row: &str) -> bool {
+    row == "Hostname"
+        || ["A.B.C.D", "X:X:X:X::X", "H.H.H", "Hex-", "Group_"]
+            .iter()
+            .any(|p| row.starts_with(p))
+}
+
+/// Whether a `?` row stands for a host, a name or an address: `Hostname`, `Hostname or A.B.C.D`.
+fn host_row(row: &str, what: &str) -> bool {
+    row == "Hostname" || what.starts_with("or ")
+}
+
+/// Whether a `?` row names an interface type, as IOS prints it in a list of them (`Vlan`,
+/// `GigabitEthernet`, `VirtualPortGroup`, `nve`): a number follows it.
+fn is_type_row(row: &str) -> bool {
+    row == "nve"
+        || row.starts_with(|c: char| c.is_ascii_uppercase())
+            && (cli::interface_types()
+                .iter()
+                .chain(cli::PHYSICAL_TYPES)
+                .any(|(full, _)| *full == row)
+                || cli::interface_name(&format!("{row}1"), None).is_some())
+}
+
 /// Whether a word begins an interface type's name, two letters at least.
 fn names_type(word: &str) -> bool {
     word.len() >= 2
@@ -5608,18 +7287,45 @@ fn past_in_range(word: &str, stack: &crate::platform::Stack) -> usize {
         })
         .filter_map(|(full, _)| stack.numbered(full))
         .collect();
-    let ([(_, hi)], true) = (types.as_slice(), digits.bytes().all(|b| b.is_ascii_digit())) else {
+    let ([(lo, hi)], true) = (types.as_slice(), digits.bytes().all(|b| b.is_ascii_digit())) else {
         return 0;
     };
-    let fits = (1..=digits.len())
-        .take_while(|&k| digits[..k].parse::<u64>().is_ok_and(|v| v <= *hi))
-        .last()
-        .unwrap_or(0);
+    let fits = begun(digits, *lo, *hi);
     if fits == digits.len() {
         0
     } else {
         abbr.len() + fits
     }
+}
+
+/// How many of `digits` begin a number in `lo..=hi`: IOS reads a bounded number until a digit
+/// leaves every number of the range (the lab C9200L-48T-4G, 17.6.4: `Port-channel128` past `12`
+/// against `<1-48>`, `Vlan0` at the `0` against `<1-4094>`).
+fn begun(digits: &str, lo: u64, hi: u64) -> usize {
+    let begins = |p: &str| {
+        if p.starts_with('0') {
+            return p == "0" && lo == 0;
+        }
+        let Ok(v) = p.parse::<u64>() else {
+            return false;
+        };
+        // the numbers `p` begins with each count of digits after it, while they reach `hi`
+        let mut scale = 1u64;
+        while let Some(from) = v.checked_mul(scale).filter(|&f| f <= hi) {
+            if from.saturating_add(scale - 1) >= lo {
+                return true;
+            }
+            let Some(next) = scale.checked_mul(10) else {
+                return false;
+            };
+            scale = next;
+        }
+        false
+    };
+    (1..=digits.len())
+        .take_while(|&k| begins(&digits[..k]))
+        .last()
+        .unwrap_or(0)
 }
 
 /// Where in a refused interface name (`rest`, the line from the name on) the caret goes: past a
@@ -5646,6 +7352,24 @@ fn past_a_name(rest: &str, stack: &crate::platform::Stack) -> usize {
             .find(|c: char| !c.is_whitespace())
             .map_or(0, |i| first.len() + i),
     };
+    // a range from a port the stack has to an end past the top port, at the end's digit past it
+    // (the lab C9200L-48T-4G, 17.6.4: `interface range GigabitEthernet1/0/47 - 49` at the `9`)
+    let past = if used == 1 {
+        first.len()
+    } else {
+        at + number.len()
+    };
+    if stack.has(&format!("{full}{number}"))
+        && let Some(dash) = rest[past..].trim_start().strip_prefix('-')
+        && let Some((head, _)) = number.rsplit_once('/')
+    {
+        let end = dash.trim_start();
+        let digits: String = end.chars().take_while(char::is_ascii_digit).collect();
+        let from = rest.len() - end.len();
+        if let Some(i) = past_the_top_port(&full, &format!("{head}/{digits}"), stack) {
+            return from + i - head.len() - 1;
+        }
+    }
     if let Some(i) = number.match_indices('/').map(|(i, _)| i).find(|&i| {
         let name = format!("{full}{}", &number[..i]);
         stack.has(&name) && stack.management() != Some(name.as_str())
@@ -5665,7 +7389,35 @@ fn past_a_name(rest: &str, stack: &crate::platform::Stack) -> usize {
             return at + same;
         }
     }
-    beyond_the_stack(&full, &number, stack).map_or(0, |i| at + i)
+    if let Some(i) = beyond_the_stack(&full, &number, stack) {
+        return at + i;
+    }
+    past_the_top_port(&full, &number, stack).map_or(0, |i| at + i)
+}
+
+/// Where in a port's number (`number`, of type `full`) its port goes past the most any port of the
+/// type has: past the digits that begin a number up to it. The lab C9200L-48T-4G (17.6.4) answered
+/// `GigabitEthernet1/0/?` and `GigabitEthernet1/1/?` with `<0-48>`, its uplinks numbering to 4, and
+/// refused `GigabitEthernet1/0/49` at the `9`; other IOS XE platforms are inferred to do the same.
+fn past_the_top_port(full: &str, number: &str, stack: &crate::platform::Stack) -> Option<usize> {
+    let ports: Vec<String> = stack
+        .physical()
+        .into_iter()
+        .filter(|p| stack.management() != Some(p.as_str()))
+        .filter_map(|p| p.strip_prefix(full).map(str::to_string))
+        .collect();
+    let levels = number.split('/').count();
+    let top = ports
+        .iter()
+        .filter(|p| p.split('/').count() == levels)
+        .filter_map(|p| p.rsplit('/').next()?.parse::<u64>().ok())
+        .max()?;
+    let (head, port) = number.rsplit_once('/')?;
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let fits = begun(port, 0, top);
+    (fits < port.len()).then_some(head.len() + 1 + fits)
 }
 
 /// Where in a port's number (`number`, of type `full`) a level no port could have begins: a module
@@ -5945,6 +7697,9 @@ mod tests {
             ("exit", "config"),
             ("interface GigabitEthernet1/0/2", "config-if"),
             ("ip dhcp snooping trust", "config-if"),
+            // the lab switch held its OSPF line on a routed port (GigabitEthernet1/0/15); a
+            // switchport's `ip ?` offers no `ospf`
+            ("no switchport", "config-if"),
             ("ip ospf 1 area 0", "config-if"),
             ("ip dhcp client client-id ascii CLIENTA", "config-if"),
             ("vrrp 1 address-family ipv4", "config-if-vrrp"),
@@ -6057,6 +7812,8 @@ mod tests {
             ("ip ospf hello-interval 12", "config-if"),
             ("ip ospf dead-interval 8", "config-if"),
             ("ip ospf authentication-key KEYB", "config-if"),
+            // a switchport's `ip ?` offered no `ospf` (the crawl's GigabitEthernet1/0/5)
+            ("ip ospf cost 8", "config-if"),
             ("exit", "config"),
             ("time-range TRA", "config-time-range"),
             ("exit", "config"),
@@ -6100,9 +7857,6 @@ mod tests {
             ("exit", "config"),
             ("radius server RSA", "config-radius-server"),
             ("dscp auth 10 acct 20", "config-radius-server"),
-            ("exit", "config"),
-            ("interface GigabitEthernet1/0/2", "config-if"),
-            ("ip ospf cost 8", "config-if"),
             ("exit", "config"),
             ("monitor session 1 filter vlan 100 - 110", "config"),
             ("snmp-server enable traps bridge newroot", "config"),
@@ -6344,6 +8098,43 @@ mod tests {
     }
 
     #[test]
+    fn a_submode_hands_global_configuration_a_line_its_crawl_reads() {
+        // the lab C9200L-48T-4G (17.6.4, network-advantage) ran `router bgp 65000` after `router
+        // isis`: its 17.6 books lack `router bgp`, which its crawl reads in global configuration
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.boot_level = Some("network-advantage".into());
+        for (line, mode) in [
+            ("enable", "privileged"),
+            ("configure terminal", "config"),
+            ("router isis", "config-router"),
+            ("router bgp 65000", "config-router"),
+            ("bgp router-id 10.99.255.1", "config-router"),
+            ("exit", "config"),
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+            assert_eq!(s.mode(), mode, "after {line}");
+        }
+        assert!(
+            s.device
+                .blocks
+                .iter()
+                .any(|b| b.header == "router bgp 65000")
+        );
+        // and a second process is refused as the switch refused it
+        assert_eq!(
+            s.type_line("router bgp 109"),
+            (
+                vec!["BGP is already running; AS is 65000".to_string()],
+                Result::Error
+            )
+        );
+    }
+
+    #[test]
     fn the_lisp_submodes_a_c9200l_took_load_on_its_image() {
         // the lab C9200L-48T-4G (17.6.4 and 17.15.6) at network-advantage entered these LISP
         // submodes, which its books give no mode, took these lines in them and answered these
@@ -6430,6 +8221,18 @@ mod tests {
                 ("exit", "config-router-lisp"),
                 ("exit-router-lisp", "config"),
             ] {
+                // 17.6.4's modes crawl offered these lines' last keyword nowhere in them, 17.15.6's did
+                if release == "17.6"
+                    && [
+                        "route-export destinations-summary",
+                        "dynamic-eid detection multiple-addr bridged-vm",
+                    ]
+                    .iter()
+                    .any(|l| line.starts_with(l))
+                {
+                    assert_eq!(s.type_line(line).1, Result::Error, "{line}");
+                    continue;
+                }
                 let (out, r) = s.type_line(line);
                 assert_eq!(r, Result::Ok, "{release} {line}: {out:?}");
                 assert_eq!(s.mode(), mode, "{release} after {line}");
@@ -12560,7 +14363,11 @@ mod tests {
     #[test]
     fn a_line_taken_with_a_warning_says_it_as_ios_xe_does() {
         let e = c9300_17_6();
-        let mut s = typed_24t(&e, &["policy-map type control subscriber PC1", "exit"]);
+        // the first control policy asks to convert the 802.1X configuration; `yes` converts it
+        let mut s = typed_24t(
+            &e,
+            &["policy-map type control subscriber PC1", "yes", "exit"],
+        );
         let (out, r) = s.type_line("policy-map type control subscriber PC1");
         assert_eq!(r, Result::Ok);
         assert_eq!(
@@ -12636,6 +14443,7 @@ mod tests {
             &[
                 "aaa new-model",
                 "policy-map type control subscriber PC",
+                "yes",
                 "exit",
                 "interface GigabitEthernet1/0/4",
             ],
@@ -12652,6 +14460,115 @@ mod tests {
         assert_eq!(
             s.type_line("authentication periodic").0,
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_line_needing_new_style_802_1x_asks_to_convert_and_yes_converts_the_legacy_ports() {
+        // the lab C9200L-48T-4G (17.6.4 and 17.15.6), from a port with legacy 802.1X lines
+        const BASE: &str = "aaa new-model\n\
+            crypto pki trustpoint TP1\n enrollment terminal\n revocation-check none\n\
+            crypto pki certificate chain TP1\n\
+            dot1x system-auth-control\n\
+            interface GigabitEthernet1/0/12\n switchport access vlan 20\n switchport mode access\n\
+             authentication port-control auto\n mab\n dot1x pae authenticator\n\
+             spanning-tree portfast\nend\n";
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        crate::check::type_into(&mut s, BASE);
+        assert_eq!(s.mode(), "config-if");
+        assert_eq!(s.type_line("exit").1, Result::Ok);
+        // `no` takes neither the line nor the conversion; Ctrl-C drops both
+        for answer in [Some("no"), None] {
+            let (out, r) = s.type_line("parameter-map type webauth PMAP1");
+            assert_eq!((out, r), (vec![CONVERT_SAY.to_string()], Result::Ok));
+            assert_eq!(s.prompt(), CONVERT_ASK);
+            match answer {
+                Some(a) => assert_eq!(s.type_line(a), (vec![], Result::Ok)),
+                None => s.cancel(),
+            }
+            assert_eq!(s.mode(), "config");
+            assert!(shown(&s, &["parameter-map", "service-template"]).is_empty());
+        }
+        // Enter takes the default, `yes`
+        s.type_line("class-map type control subscriber match-all TESTCC");
+        assert_eq!(s.type_line(""), (vec![], Result::Ok));
+        assert_eq!(s.mode(), "config-filter-control-classmap");
+        assert_eq!(s.type_line("exit").1, Result::Ok);
+        // no line asks again
+        assert_eq!(
+            s.type_line("parameter-map type webauth PMAP1"),
+            (vec![], Result::Ok)
+        );
+        assert_eq!(s.type_line("exit").1, Result::Ok);
+        let shown_all = show::configuration(&s.device);
+        let at = |l: &str| {
+            shown_all
+                .iter()
+                .position(|x| x == l)
+                .unwrap_or_else(|| panic!("{l}: {shown_all:?}"))
+        };
+        let order = [
+            "crypto pki certificate chain TP1",
+            "access-session mac-move deny",
+            "service-template DEFAULT_LINKSEC_POLICY_MUST_SECURE",
+            "service-template webauth-global-inactive",
+            "parameter-map type webauth PMAP1",
+            "class-map type control subscriber match-all AAA_SVR_DOWN_AUTHD_HOST",
+            "class-map type control subscriber match-all TESTCC",
+            "policy-map type control subscriber POLICY_Gi1/0/12",
+            "interface GigabitEthernet1/0/12",
+        ];
+        for pair in order.windows(2) {
+            assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+        }
+        assert_eq!(
+            shown_all[at("service-template webauth-global-inactive") + 1],
+            " inactivity-timer 3600 "
+        );
+        assert_eq!(
+            block_of(&s, "interface GigabitEthernet1/0/12"),
+            [
+                "interface GigabitEthernet1/0/12",
+                " switchport access vlan 20",
+                " switchport mode access",
+                " access-session host-mode single-host",
+                " access-session closed",
+                " access-session port-control auto",
+                " mab",
+                " dot1x pae authenticator",
+                " spanning-tree portfast",
+                " service-policy type control subscriber POLICY_Gi1/0/12",
+            ]
+        );
+        // each class twice, as `show running-config | section` printed it
+        let policy = block_of(&s, "policy-map type control subscriber POLICY_Gi1/0/12");
+        assert_eq!(
+            policy.len(),
+            1 + 4 + 2 * (CPL_PORT_POLICY.len() - 4),
+            "{policy:#?}"
+        );
+        assert_eq!(
+            policy[1..7],
+            [
+                " event session-started match-all",
+                "  10 class always do-until-failure",
+                "   10 authenticate using dot1x priority 10",
+                "  10 class always do-until-failure",
+                "   10 authenticate using dot1x priority 10",
+                " event authentication-failure match-first",
+            ]
+        );
+        // a legacy line is called deprecated now
+        s.type_line("interface GigabitEthernet1/0/13");
+        assert_eq!(
+            s.type_line("authentication port-control auto").0,
+            [
+                "%Command deprecated (authentication port-control auto) - use access-session instead",
+                ""
+            ]
         );
     }
 
@@ -12953,5 +14870,329 @@ mod tests {
         assert_eq!(typed(LICENSE, "interface gigabitethernet4/0/1"), at(11));
         assert_eq!(typed(ESSENTIALS, "interface nve1"), at(11));
         assert_eq!(typed(LICENSE, "interface nve1"), vec![] as Vec<String>);
+    }
+
+    /// A C9200L-48T-4G at 17.6 in global configuration.
+    fn c9200l_config(e: &Engine) -> Session<'_> {
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        s
+    }
+
+    fn c9200_17_6() -> Engine {
+        let r = crate::release::Release::parse("17.6").unwrap();
+        Engine::new(crate::grammars::grammar("c9200", r).unwrap())
+    }
+
+    #[test]
+    fn an_ospf_network_takes_a_wildcard_contiguous_as_a_wildcard_or_as_a_mask() {
+        // the lab C9200L-48T-4G, 17.6.4: the sample lines' `10.1.1.1 10.1.1.1` refused, an
+        // example's `255.240.0.0` taken
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        s.type_line("router ospf 1");
+        let (out, _) = s.type_line("network 10.1.1.1 10.1.1.1 area 0");
+        assert!(
+            out.iter()
+                .any(|l| l == "% OSPF: Invalid address/mask combination"),
+            "{out:?}"
+        );
+        for wildcard in ["0.0.0.255", "255.240.0.0"] {
+            let (out, r) = s.type_line(&format!("network 10.1.1.1 {wildcard} area 20"));
+            assert_eq!((out, r), (vec![], Result::Ok), "{wildcard}");
+        }
+    }
+
+    #[test]
+    fn a_bounded_number_is_read_while_its_digits_begin_one_in_range() {
+        assert_eq!(begun("49", 1, 48), 1);
+        assert_eq!(begun("128", 1, 48), 2);
+        assert_eq!(begun("48", 1, 48), 2);
+        assert_eq!(begun("0", 1, 4094), 0);
+        assert_eq!(begun("0", 0, 8), 1);
+        assert_eq!(begun("9", 0, 8), 0);
+        assert_eq!(begun("4095", 1, 4094), 3);
+    }
+
+    #[test]
+    fn interface_numbers_are_offered_and_refused_past_the_top_as_the_lab_c9200l_did() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        for (text, range) in [
+            (
+                "interface Port-channel ",
+                "  <1-48>  Port-channel interface number",
+            ),
+            ("interface Vlan ", "  <1-4094>  Vlan interface number"),
+            (
+                "interface Loopback ",
+                "  <0-2147483647>  Loopback interface number",
+            ),
+            (
+                "interface Tunnel ",
+                "  <0-2147483647>  Tunnel interface number",
+            ),
+            (
+                "interface GigabitEthernet ",
+                "  <0-8>  GigabitEthernet interface number",
+            ),
+            (
+                "interface GigabitEthernet1/0/",
+                "  <0-48>  GigabitEthernet interface number",
+            ),
+            (
+                "interface GigabitEthernet1/1/",
+                "  <0-48>  GigabitEthernet interface number",
+            ),
+        ] {
+            assert_eq!(s.help(text), [range, ""], "{text}");
+        }
+        for (line, before) in [
+            ("interface Port-channel49", "interface Port-channel4"),
+            ("interface Port-channel65", "interface Port-channel6"),
+            ("interface Port-channel128", "interface Port-channel12"),
+            ("interface Vlan0", "interface Vlan"),
+            ("interface Port-channel 0", "interface Port-channel "),
+            (
+                "interface GigabitEthernet1/0/49",
+                "interface GigabitEthernet1/0/4",
+            ),
+            (
+                "interface range GigabitEthernet1/0/47 - 49",
+                "interface range GigabitEthernet1/0/47 - 4",
+            ),
+        ] {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Error, "{line}: {out:?}");
+            assert_eq!(
+                caret_at(&out),
+                "Switch(config)#".len() + before.len(),
+                "{line}"
+            );
+        }
+        assert_eq!(s.type_line("interface Port-channel48").1, Result::Ok);
+    }
+
+    #[test]
+    fn every_member_s_provision_is_offered_the_crawled_member_s_models() {
+        // the lab C9200L-48T-4G, 17.6.4: switch 2 answered as the crawl's switch 1
+        let e = c9200_17_6();
+        let s = c9200l_config(&e);
+        let models = s.help("switch 2 provision ");
+        assert!(
+            models
+                .iter()
+                .any(|l| l == "  c9200l-48t-4g    Catalyst 9200L Series Switch with 48G, (4x1G)"),
+            "{models:#?}"
+        );
+        assert_eq!(models, s.help("switch 1 provision "));
+    }
+
+    #[test]
+    fn a_loopback_refuses_an_address_from_dhcp_at_dhcp() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        s.type_line("interface Loopback5");
+        let (out, r) = s.type_line("ip address dhcp");
+        assert_eq!(r, Result::Error);
+        assert_eq!(caret_at(&out), "Switch(config-if)#ip address ".len());
+        assert_eq!(
+            s.type_line("ip address 10.5.5.5 255.255.255.255").1,
+            Result::Ok
+        );
+        s.type_line("interface Vlan11");
+        assert_eq!(s.type_line("ip address dhcp").1, Result::Ok);
+    }
+
+    #[test]
+    fn vtp_lines_say_what_they_did_as_the_lab_c9200l_said_it() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        let said = |m: &str| (vec![m.to_string()], Result::Ok);
+        let refused = |m: &str| (vec![m.to_string()], Result::Error);
+        for (line, answer) in [
+            (
+                "vtp mode server",
+                said("Device mode already VTP Server for VLANS."),
+            ),
+            (
+                "vtp domain LAB",
+                said("Changing VTP domain name from NULL to LAB"),
+            ),
+            ("vtp domain LAB", said("Domain name already set to LAB.")),
+            (
+                "vtp domain LAB2",
+                said("Changing VTP domain name from LAB to LAB2"),
+            ),
+            ("no vtp password", said("No password currently set.")),
+            (
+                "vtp password LABPW",
+                said("Setting device VTP password to LABPW"),
+            ),
+            ("no vtp password", said("Clearing device VTP password.")),
+            ("vtp pruning", said("Pruning switched on")),
+            ("no vtp pruning", said("Pruning switched off")),
+            (
+                "vtp mode transparent",
+                said("Setting device to VTP Transparent mode for VLANS."),
+            ),
+            (
+                "vtp pruning",
+                refused("Cannot modify pruning unless in VTP server mode"),
+            ),
+        ] {
+            assert_eq!(s.type_line(line), answer, "{line}");
+        }
+        s.type_line("vlan 4000");
+        s.type_line("exit");
+        assert_eq!(
+            s.type_line("vtp mode server"),
+            refused("Device mode cannot be VTP Server for VLANS because extended VLAN(s) exist")
+        );
+    }
+
+    #[test]
+    fn a_vtp_server_below_version_3_fails_an_extended_vlan_and_a_version_3_one_any_vlan() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        s.type_line("vlan 4000");
+        s.type_line("name LABEXT");
+        let (out, r) = s.type_line("exit");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out[..4],
+            [
+                "% Failed to create VLANs 4000",
+                "Extended VLAN(s) not allowed in current VTP mode.",
+                "%Failed to commit extended VLAN(s) changes.",
+                "",
+            ]
+        );
+        assert!(!s.device.blocks.iter().any(|b| b.header == "vlan 4000"));
+        // an extended VLAN there already holds the version
+        s.device.block("vlan 4000");
+        assert_eq!(
+            s.type_line("vtp version 2"),
+            (
+                vec![
+                    "Extended VLAN(s) exist,VTP version 2 cannot be changed unless extended VLAN(s) removed"
+                        .to_string()
+                ],
+                Result::Error
+            )
+        );
+        s.type_line("no vlan 4000");
+        assert_eq!(s.type_line("vtp version 3").1, Result::Ok);
+        assert_eq!(
+            s.type_line("vlan 34"),
+            (
+                vec![
+                    "VTP VLAN configuration not allowed when device is not the primary server for vlan database."
+                        .to_string()
+                ],
+                Result::Error
+            )
+        );
+    }
+
+    #[test]
+    fn a_certificate_s_hex_is_read_in_its_own_mode_until_quit() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        for l in [
+            "crypto pki trustpoint TP1",
+            "enrollment terminal",
+            "exit",
+            "crypto pki certificate chain TP1",
+        ] {
+            s.type_line(l);
+        }
+        let (out, r) = s.type_line("certificate ca 01");
+        assert_eq!(r, Result::Ok);
+        assert_eq!(
+            out.first().map(String::as_str),
+            Some("Enter the certificate in hexidecimal representation....")
+        );
+        assert!(s.in_hex());
+        assert_eq!(s.type_line("3082 01A2"), (vec![], Result::Ok));
+        assert_eq!(s.type_line(""), (vec![], Result::Ok));
+        // a line that is no hex is refused at its first other character, `exit` too
+        let (out, r) = s.type_line("exit");
+        assert_eq!(r, Result::Error);
+        assert_eq!(caret_at(&out), s.prompt().chars().count() + 1);
+        assert!(s.in_hex());
+        assert_eq!(s.type_line("quit").1, Result::Ok);
+        assert!(!s.in_hex());
+        assert_eq!(s.mode(), "config-cert-chain");
+    }
+
+    #[test]
+    fn authentication_display_names_the_style_and_refuses_another_once_new_style() {
+        // the lab C9200L-48T-4G, 17.6.4 and 17.15.6
+        let e = c9200_17_6();
+        let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        assert_eq!(
+            s.type_line("authentication display config-mode").0,
+            ["Current configuration mode is legacy ", ""]
+        );
+        // the first new-style line asks to convert, and `yes` converts
+        for l in [
+            "configure terminal",
+            "parameter-map type webauth P1",
+            "yes",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert_eq!(
+            s.type_line("authentication display config-mode").0,
+            ["Current configuration mode is new-style ", ""]
+        );
+        let (out, r) = s.type_line("authentication display legacy");
+        assert_eq!(r, Result::Error);
+        assert_eq!(caret_at(&out), "Switch#authentication display ".len());
+        let offered = s.help("authentication display ");
+        assert!(
+            offered
+                .iter()
+                .any(|l| l.trim_start().starts_with("config-mode"))
+        );
+        assert!(!offered.iter().any(|l| l.trim_start().starts_with("legacy")));
+    }
+
+    #[test]
+    fn a_control_policy_event_typed_bare_is_match_all_and_opens_its_classes() {
+        // the lab C9200L-48T-4G, 17.6.4 and 17.15.6
+        let e = c9200_17_6();
+        let mut s = c9200l_config(&e);
+        s.type_line("policy-map type control subscriber P1");
+        // the first control policy asks to convert the 802.1X configuration
+        assert_eq!(s.type_line("yes").1, Result::Ok);
+        assert_eq!(s.type_line("event session-started").1, Result::Ok);
+        assert_eq!(s.mode(), "config-class-control-policymap");
+        assert_eq!(s.type_line("1 class always do-until-failure").1, Result::Ok);
+        assert_eq!(s.mode(), "config-action-control-policymap");
+        s.type_line("exit");
+        s.type_line("exit");
+        assert_eq!(s.type_line("event session-started").1, Result::Ok);
+        s.type_line("end");
+        let lines = block_of(&s, "policy-map type control subscriber P1");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with(" event "))
+                .collect::<Vec<_>>(),
+            [" event session-started match-all"],
+            "{lines:#?}"
+        );
     }
 }

@@ -290,6 +290,9 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
     struct Unit {
         line: String,
         bangs: usize,
+        // the `!` lines built before it, and its command's number
+        built: usize,
+        command: Option<usize>,
         under: Vec<String>,
     }
     let mut head: Vec<String> = vec![];
@@ -340,6 +343,7 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
             (Some(a), Some(b)) => gap(a, b).unwrap_or(bangs),
             _ => bangs,
         });
+        let bangs_built = bangs;
         bangs = 0;
         before = Some(this);
         closes = crate::live::banner_opens(&l);
@@ -347,8 +351,24 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
         units.push(Unit {
             line: l,
             bangs: n,
+            built: bangs_built,
+            command: this,
             under: vec![],
         });
+    }
+    // a block before a line of its own command that opens none keeps the `!` closing it: the
+    // captures key both by their first words, and two such lines mostly meet with none between
+    // (c2960 15.2(6)E capture 3: the MST region, `!`, `spanning-tree mst hello-time 1`)
+    for i in 1..units.len() {
+        let (a, b) = (&units[i - 1], &units[i]);
+        if !a.under.is_empty()
+            && b.under.is_empty()
+            && a.command.is_some()
+            && a.command == b.command
+        {
+            let built = b.built;
+            units[i].bangs = units[i].bangs.max(built);
+        }
     }
     let tail = bangs;
     let bang = |n: usize| std::iter::repeat_n("!".to_string(), n);
@@ -939,7 +959,23 @@ pub fn configuration(d: &Device) -> Vec<String> {
             })
             .collect(),
     );
-    let before = spanning_vlans_in_order(before, |e| e.text.as_str());
+    let before = mst_in_order(spanning_vlans_in_order(before, |e| e.text.as_str()), |e| {
+        e.text.as_str()
+    });
+    // the MST region's block prints before the MST lines, set apart (c2960 15.2(6)E capture 3; the
+    // lab C9300-24T and C9200L-48T-4G, 17.6.4), else among the other blocks; a held one prints
+    // where its switch printed it (two c2960 15.2(6)E captures)
+    let region = d
+        .blocks
+        .iter()
+        .find(|b| b.header == "spanning-tree mst configuration" && !d.held_top.contains(&b.header));
+    let region_at = region
+        .and_then(|_| {
+            before
+                .iter()
+                .position(|e| e.text.starts_with("spanning-tree mst "))
+        })
+        .filter(|&i| i >= at_hostname_of(&before));
     let block = |body: &mut Vec<String>, b: &Block| {
         // a `vlan configuration` with nothing under it is not kept (the lab C9300, 17.6.4)
         if b.lines.is_empty() && b.header.starts_with("vlan configuration ") {
@@ -962,10 +998,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
         .iter()
         .filter(|b| b.header.starts_with("vrf definition "))
         .collect();
-    let at_hostname = before
-        .iter()
-        .position(|e| e.text.starts_with("hostname "))
-        .map_or(0, |i| i + 1);
+    let at_hostname = at_hostname_of(&before);
     for e in &before[..at_hostname] {
         body.push(e.text.clone());
     }
@@ -975,14 +1008,32 @@ pub fn configuration(d: &Device) -> Vec<String> {
             block(&mut body, b);
         }
     }
-    for e in &before[at_hostname..] {
+    for (i, e) in before.iter().enumerate().skip(at_hostname) {
+        if Some(i) == region_at
+            && let Some(b) = region
+        {
+            body.push("!".into());
+            block(&mut body, b);
+        }
         body.push(e.text.clone());
     }
     body.push("!".into());
+    // below VTP version 3 a server or client keeps the extended VLANs here, vlan.dat holding the
+    // normal range alone (the lab C9200L-48T-4G, 17.6.4: `vlan 4000` and its name, a server at
+    // version 1)
+    let v3 = d.vtp_settings().0 == "3";
     let vlans: Vec<&Block> = d
         .blocks
         .iter()
-        .filter(|b| in_config && vlan_ids_of(&b.header).is_some())
+        .filter(|b| {
+            vlan_ids_of(&b.header).is_some_and(|list| {
+                in_config
+                    || (!v3
+                        && crate::generate::vlan_ids(list)
+                            .iter()
+                            .all(|v| (1006..=4094).contains(v)))
+            })
+        })
         .collect();
     let vlans = vlan_units(&vlans);
     // IOS lists every interface the stack has, those never configured as an empty block
@@ -1034,6 +1085,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
                 && !starts(&b.header, BEFORE_SNMP)
                 && !starts(&b.header, AFTER_INTERFACE_BLOCKS)
                 && !d.held_top.contains(&b.header)
+                && !(region_at.is_some() && b.header == "spanning-tree mst configuration")
         })
         .collect();
     let mut acls: Vec<&Block> = d
@@ -1191,21 +1243,64 @@ fn vtp_together(body: &mut Vec<String>) {
     body.splice(first..first, lines);
 }
 
-/// IOS writes the `spanning-tree vlan` lines in VLAN order whatever order they were typed in (the lab
-/// C9300, 17.6.4: `vlan 1 priority 24576` before `vlan 10 priority 4096`); the other lines keep their
-/// places.
+/// Where the lines after the hostname begin: past the `hostname` line, else at the first.
+fn at_hostname_of(before: &[&&crate::device::Entry]) -> usize {
+    before
+        .iter()
+        .position(|e| e.text.starts_with("hostname "))
+        .map_or(0, |i| i + 1)
+}
+
+/// IOS writes the MST settings of the region first, then each instance's in instance order,
+/// whatever order they were typed in (the lab C9300-24T, 17.6.4: `mst hello-time 1`, `mst max-hops
+/// 10`, `mst 0 priority 24576`, `mst 1 priority 8192` with instance 1 typed first; the lab
+/// C9200L-48T-4G alike); the other lines keep their places.
+fn mst_in_order<T>(items: Vec<T>, text: impl Fn(&T) -> &str) -> Vec<T> {
+    let instance = |t: &str| -> Option<Option<u32>> {
+        let rest = t.strip_prefix("spanning-tree mst ")?;
+        if rest == "configuration" {
+            return None;
+        }
+        let first = rest.split_whitespace().next()?;
+        // an instance list by its first, 0 among them
+        Some(first.split([',', '-']).next()?.parse::<u32>().ok())
+    };
+    let places: Vec<usize> = (0..items.len())
+        .filter(|&i| instance(text(&items[i])).is_some())
+        .collect();
+    let mut picked: Vec<(Option<u32>, usize)> = places
+        .iter()
+        .filter_map(|&i| Some((instance(text(&items[i]))?, i)))
+        .collect();
+    picked.sort();
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    let moved: Vec<Option<T>> = picked.iter().map(|&(_, i)| slots[i].take()).collect();
+    for (&p, m) in places.iter().zip(moved) {
+        slots[p] = m;
+    }
+    slots.into_iter().flatten().collect()
+}
+
+/// IOS writes the `spanning-tree vlan` lines a setting at a time, the priorities first, then the
+/// timers, each in VLAN order whatever order they were typed in (the lab C9300, 17.6.4: `vlan 1
+/// priority 24576` before `vlan 10 priority 4096`; the lab C9200L-48T-4G, 17.6.4: `vlan 1,20
+/// priority 24576`, `vlan 10 priority 4096`, `vlan 1 forward-time 9`, `vlan 1 max-age 12`;
+/// `hello-time` placed before `forward-time` inferred); the other lines keep their places.
 fn spanning_vlans_in_order<T>(items: Vec<T>, text: impl Fn(&T) -> &str) -> Vec<T> {
-    let first = |t: &str| -> Option<u32> {
-        let list = t
-            .strip_prefix("spanning-tree vlan ")?
-            .split_whitespace()
-            .next()?;
-        crate::generate::vlan_ids(list).first().copied()
+    const SETTINGS: [&str; 4] = ["priority", "hello-time", "forward-time", "max-age"];
+    let first = |t: &str| -> Option<(usize, u32)> {
+        let mut words = t.strip_prefix("spanning-tree vlan ")?.split_whitespace();
+        let list = words.next()?;
+        let rank = words
+            .next()
+            .and_then(|w| SETTINGS.iter().position(|s| *s == w))
+            .unwrap_or(0);
+        Some((rank, crate::generate::vlan_ids(list).first().copied()?))
     };
     let places: Vec<usize> = (0..items.len())
         .filter(|&i| first(text(&items[i])).is_some())
         .collect();
-    let mut picked: Vec<(u32, usize)> = places
+    let mut picked: Vec<((usize, u32), usize)> = places
         .iter()
         .filter_map(|&i| Some((first(text(&items[i]))?, i)))
         .collect();
@@ -1390,6 +1485,16 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 "show interfaces status err-disabled" => interfaces_status_errdisabled(d),
                 "show vlan brief" => vlan_brief(d, s.width),
                 "show vlan" => vlan(d, s.width),
+                _ if c.strip_prefix("show vlan id ").is_some_and(|n| {
+                    n.parse::<u32>()
+                        .ok()
+                        .and_then(|n| vlan_id(d, s.width, n))
+                        .is_some()
+                }) =>
+                {
+                    let n = c["show vlan id ".len()..].parse().unwrap_or(0);
+                    vlan_id(d, s.width, n).unwrap_or_default()
+                }
                 "show interfaces switchport" => interfaces_switchport(d),
                 // one port: `show interfaces Gi1/0/1 switchport`
                 _ if c.starts_with("show interfaces ")
@@ -1410,7 +1515,31 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 "show ip interface brief" => ip_interface_brief(d),
                 "show power inline" => power_inline(d),
                 "show vtp status" => vtp_status(d),
+                // the global aging time and a heading for the VLANs' own, none set (the lab
+                // C9200L-48T-4G, 17.6.4); a VLAN's row and classic IOS's answer are not modelled
+                "show mac address-table aging-time"
+                    if !d.stack.classic()
+                        && !d.global.iter().any(|e| {
+                            e.text.starts_with("mac address-table aging-time ")
+                                && e.text.contains(" vlan ")
+                        }) =>
+                {
+                    let global = d
+                        .global_value("mac address-table aging-time ")
+                        .unwrap_or("300");
+                    vec![
+                        format!("Global Aging Time: {global:>4}"),
+                        "Vlan    Aging Time".into(),
+                        "----    ----------".into(),
+                    ]
+                }
                 "show vtp counters" => vtp_counters(d),
+                "show switch" => crate::version::show_switch(d).unwrap_or_else(|| {
+                    vec![format!("% vswitch has no output model for '{c}' yet")]
+                }),
+                "show module" => crate::version::show_module(d).unwrap_or_else(|| {
+                    vec![format!("% vswitch has no output model for '{c}' yet")]
+                }),
                 "show vtp password" => vtp_password(d),
                 "show license summary" => crate::version::license_summary(d),
                 "show version" => crate::version::show_version(d, s.now(), s.booted),
@@ -2953,17 +3082,7 @@ pub fn vlan(d: &Device, width: usize) -> Vec<String> {
         "---- ----- ---------- ----- ------ ------ -------- ---- -------- ------ ------".into(),
     );
     for (id, _, _) in vlan_list(d) {
-        let (kind, stp) = match id {
-            1002 => ("fddi", "-"),
-            1003 => ("tr", "-"),
-            1004 => ("fdnet", "ieee"),
-            1005 => ("trnet", "ibm"),
-            _ => ("enet", "-"),
-        };
-        out.push(format!(
-            "{id:<4} {kind:<5} {:<10} 1500  -      -      -        {stp:<4} -        0      0   ",
-            100_000 + id
-        ));
+        out.push(vlan_type_row(id));
     }
     let rule = "-".repeat(78);
     out.extend(
@@ -2980,6 +3099,71 @@ pub fn vlan(d: &Device, width: usize) -> Vec<String> {
         .map(String::from),
     );
     out
+}
+
+/// A VLAN's row of `show vlan`'s type table.
+fn vlan_type_row(id: u32) -> String {
+    let (kind, stp) = match id {
+        1002 => ("fddi", "-"),
+        1003 => ("tr", "-"),
+        1004 => ("fdnet", "ieee"),
+        1005 => ("trnet", "ibm"),
+        _ => ("enet", "-"),
+    };
+    format!(
+        "{id:<4} {kind:<5} {:<10} 1500  -      -      -        {stp:<4} -        0      0   ",
+        100_000 + id
+    )
+}
+
+/// `show vlan id <n>` for a VLAN the switch has, as the lab C9200L-48T-4G (17.6.4) printed it:
+/// its rows of `show vlan`, then its remote SPAN state. A VLAN with lines besides its name and
+/// state, or none here, is not modelled.
+fn vlan_id(d: &Device, width: usize, n: u32) -> Option<Vec<String>> {
+    let header = format!("vlan {n}");
+    if d.blocks.iter().any(|b| {
+        b.header == header
+            && b.lines
+                .iter()
+                .any(|e| !e.text.starts_with("name ") && !e.text.starts_with("state "))
+    }) {
+        return None;
+    }
+    let brief = vlan_brief(d, width);
+    let id = n.to_string();
+    let start = brief
+        .iter()
+        .position(|l| l.split_whitespace().next() == Some(id.as_str()))?;
+    // a row's ports wrap onto lines of their own
+    let end = brief[start + 1..]
+        .iter()
+        .position(|l| !l.starts_with(' ') || l.trim().is_empty())
+        .map_or(brief.len(), |i| start + 1 + i);
+    let mut out = brief[..3].to_vec();
+    out.extend_from_slice(&brief[start..end]);
+    out.extend(
+        [
+            "",
+            "VLAN Type  SAID       MTU   Parent RingNo BridgeNo Stp  BrdgMode Trans1 Trans2",
+            "---- ----- ---------- ----- ------ ------ -------- ---- -------- ------ ------",
+        ]
+        .map(String::from),
+    );
+    out.push(vlan_type_row(n));
+    out.extend(
+        [
+            "",
+            "Remote SPAN VLAN",
+            "----------------",
+            "Disabled",
+            "",
+            "Primary Secondary Type              Ports",
+            "------- --------- ----------------- ------------------------------------------",
+            "",
+        ]
+        .map(String::from),
+    );
+    Some(out)
 }
 
 /// `show etherchannel summary`, laid out as both C9200Ls print it: every port-channel and its
@@ -3334,7 +3518,14 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
             "Number of existing extended VLANs",
             &extended.to_string(),
         ));
-        out.push(feature("Maximum VLANs supported locally", "4096"));
+        // a C9200L holds 1024 (the lab C9200L-48T-4G, 17.6.4), the lab C9300 4096; the other
+        // families are inferred to hold the C9300's
+        let most = if d.stack.family() == Some(crate::platform::Family::C9200L) {
+            "1024"
+        } else {
+            "4096"
+        };
+        out.push(feature("Maximum VLANs supported locally", most));
         // no primary server, which vswitch does not model: the primary's ID is zero and the digest
         // empty
         if keeps {
@@ -3434,9 +3625,23 @@ pub fn vtp_counters(d: &Device) -> Vec<String> {
 /// `show vtp password`: the lab C9300's answer (17.6.4) with none set, the lab C2960G's
 /// (15.0(2)SE11) with one set, its text as typed (on IOS XE inferred).
 pub fn vtp_password(d: &Device) -> Vec<String> {
-    match d.global_value("vtp password ") {
-        Some(p) => vec![format!("VTP Password: {p}")],
-        None => vec!["The VTP password is not configured.".into()],
+    let Some(p) = d.global_value("vtp password ") else {
+        return vec!["The VTP password is not configured.".into()];
+    };
+    if d.stack.classic() {
+        return vec![format!("VTP Password: {p}")];
+    }
+    // IOS XE names no plain password, and a hidden one by its secret (the lab C9300-24T and
+    // C9200L-48T-4G, 17.6.4)
+    match p.strip_suffix(" hidden") {
+        Some(hidden) => {
+            let hex: String = vtp_secret(hidden)
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect();
+            vec![format!("VTP Password: {hex}")]
+        }
+        None => vec!["VTP Password is configured.".into()],
     }
 }
 
@@ -3525,9 +3730,18 @@ pub fn ip_interface_brief(d: &Device) -> Vec<String> {
     for n in names {
         let header = format!("interface {n}");
         let c = config_of(d, &n);
+        let dhcp = c.iter().any(|l| l.starts_with("ip address dhcp"));
+        // DHCP's interface keeps the address the line took the place of (the lab C9200L-48T-4G,
+        // 17.6.4: Vlan20's 10.99.20.1, down with no lease)
+        let kept = d
+            .dhcp_kept
+            .get(&header)
+            .filter(|_| dhcp)
+            .and_then(|a| a.split_whitespace().next());
         let ip = value(&c, "ip address ")
             .and_then(|v| v.split_whitespace().next())
             .filter(|v| v.contains('.'))
+            .or(kept)
             .unwrap_or("unassigned");
         // NVRAM where the configuration gives an address or none; a switch port is unset however
         // configured (both C9200Ls), and so is a loopback with no address (c9200 17.15 capture 27 and the six
@@ -3546,7 +3760,6 @@ pub fn ip_interface_brief(d: &Device) -> Vec<String> {
         // inferred). One in a configuration loaded reads `DHCP` or NVRAM, and the factory default's
         // `no ip address` `unset`
         let typed = d.manual.contains(&header);
-        let dhcp = c.iter().any(|l| l.starts_with("ip address dhcp"));
         let addressed = c
             .iter()
             .any(|l| l.starts_with("ip address ") || *l == "no ip address");
@@ -4433,7 +4646,8 @@ mod tests {
         let e = engine("c9300", "17.6");
         let s = vtp_switch(
             &e,
-            &["vtp domain LAB", "vtp version 3", "vlan 10,20-22", "exit"],
+            // a version 3 server is no primary server and takes no VLAN, so the VLANs come first
+            &["vtp domain LAB", "vlan 10,20-22", "exit", "vtp version 3"],
         );
         let status = vtp_status(&s.device);
         assert_eq!(
@@ -4511,8 +4725,14 @@ mod tests {
             vtp_password(&s.device),
             ["The VTP password is not configured."]
         );
+        // the lab C9300-24T (17.6.4) named no plain password, and a hidden one by its secret
         let s = vtp_switch(&e, &["vtp password secret1"]);
-        assert_eq!(vtp_password(&s.device), ["VTP Password: secret1"]);
+        assert_eq!(vtp_password(&s.device), ["VTP Password is configured."]);
+        let s = vtp_switch(&e, &["vtp version 3", "vtp password LABPW3 hidden"]);
+        assert_eq!(
+            vtp_password(&s.device),
+            ["VTP Password: 2B3CFF9F1B73F1F0A0B929AE1D8804D6"]
+        );
     }
 
     #[test]
@@ -5900,5 +6120,385 @@ mod tests {
             " exit-address-family",
         ]);
         assert_eq!(eigrp_stub(stated.clone()), stated);
+    }
+
+    #[test]
+    fn a_switch_running_no_spanning_tree_instance_says_so_as_the_lab_c9200l_did() {
+        // the lab C9200L-48T-4G, 17.6.4, no port up
+        let e = engine("c9200", "17.6");
+        let mut s = typed(&e, "C9200L-48T-4G", &[]);
+        let none = ["", "No spanning tree instance exists.", ""];
+        for l in [
+            "show spanning-tree",
+            "show spanning-tree active",
+            "show spanning-tree detail",
+        ] {
+            assert_eq!(s.type_line(l).0, none, "{l}");
+        }
+        assert!(s.type_line("show spanning-tree root").0.is_empty());
+        assert!(s.type_line("show spanning-tree bridge").0.is_empty());
+        assert_eq!(
+            s.type_line("show spanning-tree interface GigabitEthernet1/0/1 detail")
+                .0,
+            [
+                "no spanning tree info available for GigabitEthernet1/0/1 ",
+                ""
+            ]
+        );
+        for l in [
+            "show spanning-tree summary",
+            "show spanning-tree summary totals",
+        ] {
+            let out = s.type_line(l).0;
+            let rule = out.iter().position(|l| l.starts_with("------")).unwrap();
+            assert_eq!(
+                out[rule + 1..],
+                ["Total                        0         0        0          0          0"],
+                "{l}"
+            );
+        }
+        let mut s = typed(&e, "C9200L-48T-4G", &["spanning-tree mode mst"]);
+        assert_eq!(
+            s.type_line("show spanning-tree mst").0,
+            ["", "No mst information available.", ""]
+        );
+        assert_eq!(
+            s.type_line("show spanning-tree mst 1").0,
+            ["", "No mst information available for instance(s) 1.", ""]
+        );
+        assert_eq!(
+            s.type_line("show spanning-tree mst interface GigabitEthernet1/0/1")
+                .0,
+            [
+                "",
+                "No mst information available on interface GigabitEthernet1/0/1.",
+                ""
+            ]
+        );
+    }
+
+    #[test]
+    fn a_c9200_at_17_6_warns_of_a_spanning_tree_mode_change_and_a_c9300_does_not() {
+        let warning = [
+            "Warning: Changing STP mode can disrupt the traffic and make system unstable",
+            "Recommend to change STP mode only during maintenance window",
+        ];
+        let e = engine("c9200", "17.6");
+        let mut s = typed(&e, "C9200L-48T-4G", &[]);
+        s.type_line("configure terminal");
+        assert_eq!(s.type_line("spanning-tree mode mst").0, warning);
+        assert!(s.type_line("spanning-tree mode mst").0.is_empty());
+        let e = engine("c9300", "17.6");
+        let mut s = typed(&e, "C9300-24T", &[]);
+        s.type_line("configure terminal");
+        assert!(s.type_line("spanning-tree mode mst").0.is_empty());
+    }
+
+    #[test]
+    fn root_requests_store_priorities_and_a_diameter_s_timers_and_no_root_takes_them_back() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = engine("c9200", "17.6");
+        let mut s = typed(
+            &e,
+            "C9200L-48T-4G",
+            &[
+                "spanning-tree vlan 10 priority 4096",
+                "spanning-tree vlan 1 root secondary",
+                "spanning-tree vlan 20 root primary",
+                "spanning-tree vlan 1 root primary diameter 3",
+            ],
+        );
+        let stp = |s: &shell::Session| -> Vec<String> {
+            configuration(&s.device)
+                .into_iter()
+                .filter(|l| l.starts_with("spanning-tree vlan "))
+                .collect()
+        };
+        assert_eq!(
+            stp(&s),
+            [
+                "spanning-tree vlan 1,20 priority 24576",
+                "spanning-tree vlan 10 priority 4096",
+                "spanning-tree vlan 1 forward-time 9",
+                "spanning-tree vlan 1 max-age 12",
+            ]
+        );
+        for l in ["configure terminal", "no spanning-tree vlan 1 root", "end"] {
+            s.type_line(l);
+        }
+        assert_eq!(
+            stp(&s),
+            [
+                "spanning-tree vlan 10 priority 4096",
+                "spanning-tree vlan 20 priority 24576",
+            ]
+        );
+    }
+
+    #[test]
+    fn mst_lines_are_kept_per_instance_and_follow_the_region_in_instance_order() {
+        // the lab C9200L-48T-4G and C9300-24T, 17.6.4
+        let e = engine("c9200", "17.6");
+        let s = typed(
+            &e,
+            "C9200L-48T-4G",
+            &[
+                "spanning-tree mode mst",
+                "spanning-tree mst configuration",
+                "name LAB",
+                "exit",
+                "spanning-tree mst 1 priority 8192",
+                "spanning-tree mst 0 root secondary",
+                "spanning-tree mst hello-time 1",
+            ],
+        );
+        let run = configuration(&s.device);
+        let at = |l: &str| {
+            run.iter()
+                .position(|x| x == l)
+                .unwrap_or_else(|| panic!("{l}: {run:#?}"))
+        };
+        let region = at("spanning-tree mst configuration");
+        assert_eq!(run[region - 1], "!");
+        assert_eq!(
+            run[region + 1..region + 4],
+            [" name LAB", "!", "spanning-tree mst hello-time 1"],
+            "{run:#?}"
+        );
+        assert!(at("spanning-tree mst hello-time 1") < at("spanning-tree mst 0 priority 28672"));
+        assert!(at("spanning-tree mst 0 priority 28672") < at("spanning-tree mst 1 priority 8192"));
+    }
+
+    #[test]
+    fn show_pending_prints_the_mst_region_as_edited() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = engine("c9200", "17.6");
+        let mut s = typed(&e, "C9200L-48T-4G", &["spanning-tree mode mst"]);
+        for l in [
+            "configure terminal",
+            "spanning-tree mst configuration",
+            "name LAB",
+            "revision 1",
+            "instance 1 vlan 10-20",
+        ] {
+            s.type_line(l);
+        }
+        let (out, r) = s.type_line("show pending");
+        assert_eq!(r, shell::Result::Ok);
+        assert_eq!(
+            out[..3],
+            [
+                "Pending MST configuration",
+                "Name      [LAB]",
+                "Revision  1     Instances configured 2",
+            ]
+        );
+        assert_eq!(out[6..8], ["0         1-9,21-4094", "1         10-20"]);
+    }
+
+    #[test]
+    fn a_vtp_version_already_run_stores_no_line_and_a_version_or_pruning_change_counts() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = engine("c9200", "17.6");
+        let mut s = typed(&e, "C9200L-48T-4G", &[]);
+        s.type_line("configure terminal");
+        assert_eq!(
+            s.type_line("vtp version 1"),
+            (
+                vec!["VTP version is already in V1.".to_string()],
+                shell::Result::Ok
+            )
+        );
+        assert!(
+            !configuration(&s.device)
+                .iter()
+                .any(|l| l.starts_with("vtp version"))
+        );
+        let mut revisions = vec![];
+        for l in [
+            "vtp domain LAB",
+            "vtp version 2",
+            "vtp password LABPW",
+            "vtp pruning",
+            "no vtp pruning",
+            "vtp version 1",
+        ] {
+            s.type_line(l);
+            revisions.push(s.device.vtp.revision);
+        }
+        assert_eq!(revisions, [0, 1, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn below_vtp_version_3_a_server_s_extended_vlans_print_in_the_running_configuration() {
+        // the lab C9200L-48T-4G, 17.6.4: `vlan 4000` and its name, a version 1 server
+        let mut d = device::Device::new(platform::parse_stack("C9200L-48T-4G").unwrap());
+        d.blocks.push(Block {
+            header: "vlan 4000".into(),
+            lines: vec![device::Entry {
+                key: "name".into(),
+                text: "name LABEXT".into(),
+            }],
+        });
+        d.blocks.push(Block {
+            header: "vlan 30".into(),
+            lines: vec![],
+        });
+        let run = configuration(&d);
+        assert!(run.iter().any(|l| l == "vlan 4000"), "{run:#?}");
+        assert!(run.iter().any(|l| l == " name LABEXT"));
+        assert!(!run.iter().any(|l| l.starts_with("vlan 30")));
+        d.global.push(device::Entry {
+            key: "vtp version".into(),
+            text: "vtp version 3".into(),
+        });
+        assert!(!configuration(&d).iter().any(|l| l == "vlan 4000"));
+    }
+
+    #[test]
+    fn a_c9200l_at_vtp_version_3_holds_1024_vlans() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = engine("c9200", "17.6");
+        let s = typed(&e, "C9200L-48T-4G", &["vtp version 3"]);
+        let status = vtp_status(&s.device);
+        assert!(
+            status
+                .iter()
+                .any(|l| l == "Maximum VLANs supported locally   : 1024"),
+            "{status:#?}"
+        );
+    }
+
+    #[test]
+    fn show_mac_address_table_aging_time_gives_the_global_time() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = engine("c9200", "17.6");
+        let mut s = typed(&e, "C9200L-48T-4G", &[]);
+        assert_eq!(
+            s.type_line("show mac address-table aging-time").0[0],
+            "Global Aging Time:  300"
+        );
+        let mut s = typed(&e, "C9200L-48T-4G", &["mac address-table aging-time 120"]);
+        assert_eq!(
+            s.type_line("show mac address-table aging-time").0,
+            [
+                "Global Aging Time:  120",
+                "Vlan    Aging Time",
+                "----    ----------"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lone_c9200_at_17_6_shows_its_switch_and_module_and_a_member_unprovisioned() {
+        // the lab C9200L-48T-4G, 17.6.4
+        let e = engine("c9200", "17.6");
+        let mut s = typed(
+            &e,
+            "C9200L-48T-4G",
+            &["switch 2 provision c9200l-48t-4g", "no switch 2 provision"],
+        );
+        s.device.mac = crate::stp::Mac::parse("a411.bb6c.a180").unwrap();
+        let (out, _) = s.type_line("show switch");
+        assert_eq!(
+            out[0],
+            "Switch/Stack Mac Address : a411.bb6c.a180 - Local Mac Address"
+        );
+        assert_eq!(
+            out[5..7],
+            [
+                "*1       Active   a411.bb6c.a180     1      V02     Ready                               ",
+                " 2       Member   0000.0000.0000     0              Unprovisioned                       ",
+            ]
+        );
+        let (out, _) = s.type_line("show module");
+        assert_eq!(
+            out[2],
+            format!(
+                " 1       52     C9200L-48T-4G         {:<13}a411.bb6c.a180  V02           17.06.04      ",
+                crate::version::serial(&s.device, "system")
+            )
+        );
+        let e = engine("c9300", "17.6");
+        let mut s = typed(&e, "C9300-24T", &[]);
+        assert!(s.type_line("show switch").0[0].starts_with("% vswitch has no output model"));
+    }
+
+    #[test]
+    fn ip_address_dhcp_takes_the_address_s_place_and_the_interface_keeps_the_address() {
+        // the lab C9200L-48T-4G, 17.6.4: Vlan20
+        let e = engine("c9200", "17.6");
+        let mut s = typed(
+            &e,
+            "C9200L-48T-4G",
+            &[
+                "interface Vlan20",
+                "ip address 10.99.20.1 255.255.255.0",
+                "ip helper-address 10.99.20.5",
+                "ip address dhcp",
+            ],
+        );
+        assert_eq!(
+            block_of(&configuration(&s.device), "interface Vlan20"),
+            [
+                "interface Vlan20",
+                " ip address dhcp",
+                " ip helper-address 10.99.20.5"
+            ]
+        );
+        let brief = s.type_line("show ip interface brief").0;
+        let row = brief.iter().find(|l| l.starts_with("Vlan20 ")).unwrap();
+        assert!(row.contains(" 10.99.20.1      YES manual "), "{row}");
+        // an address typed again ends it
+        for l in [
+            "configure terminal",
+            "interface Vlan20",
+            "no ip address",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert!(s.device.dhcp_kept.is_empty());
+    }
+
+    #[test]
+    fn show_vlan_id_prints_the_vlan_s_rows_and_its_remote_span_state() {
+        // the lab C9200L-48T-4G, 17.6.4: VLAN 30 suspended, two ports in it
+        let e = engine("c9200", "17.6");
+        let mut s = typed(
+            &e,
+            "C9200L-48T-4G",
+            &[
+                "vlan 30",
+                "name LAB30",
+                "state suspend",
+                "exit",
+                "interface GigabitEthernet1/0/16",
+                "switchport access vlan 30",
+                "interface GigabitEthernet1/0/17",
+                "switchport access vlan 30",
+            ],
+        );
+        assert_eq!(
+            s.type_line("show vlan id 30").0,
+            [
+                "",
+                "VLAN Name                             Status    Ports",
+                "---- -------------------------------- --------- -------------------------------",
+                "30   LAB30                            suspended Gi1/0/16, Gi1/0/17",
+                "",
+                "VLAN Type  SAID       MTU   Parent RingNo BridgeNo Stp  BrdgMode Trans1 Trans2",
+                "---- ----- ---------- ----- ------ ------ -------- ---- -------- ------ ------",
+                "30   enet  100030     1500  -      -      -        -    -        0      0   ",
+                "",
+                "Remote SPAN VLAN",
+                "----------------",
+                "Disabled",
+                "",
+                "Primary Secondary Type              Ports",
+                "------- --------- ----------------- ------------------------------------------",
+                "",
+            ]
+        );
     }
 }

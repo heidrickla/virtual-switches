@@ -162,6 +162,14 @@ The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl 
 - Answers are held by level, mode, context and the line before `?`. The first answer for a key is the one held.
 - An answer replays as printed, duplicate rows and spacing included.
 
+### Lines folders
+
+A lines folder holds configuration lines typed at a lab switch one after another from its own prompts, at the level its `level` file names: `<book>-<release>/lines/lines.log`, or `lines-<name>/lines.log` beside it. The C9200 17.6 and 17.15 ones hold the lab C9200L-48T-4G's sample lines at network-advantage: a line for each keyword of each submode its crawls entered, typed from the probe base. `vswitch corpus` reads them with the crawls, in name order, and holds no `?` answer from them.
+
+- Each submode a line of a crawl or lines folder was typed in is a mode entered under its context, whether the line asked `?` or was entered (`corpus::entered_modes`).
+- Each line the switch took without a word is held as taken in its mode and context (`corpus::taken_lines`), and so is one it asked first whether to convert the 802.1X configuration, taken on `yes`. A `?` probe, Ctrl-Z and a line whose context is unknown are not read.
+- A taken line naming the site is left out, its words read as a crawl's key is (Site words).
+
 ### Exchanges held
 
 - Only a complete exchange is held: a probe followed by the next prompt.
@@ -200,6 +208,9 @@ The context is the chain of lines that entered the submodes. Each keyword is exp
 
 One function derives the context for the corpus (from a log's prompts) and for the shell (from its entering lines).
 
+- A name after a named sequence is `«word»`: `template <name>`, and BGP's `template peer-policy <name>` and `template peer-session <name>`, whose kind is a keyword, apart from it; `mdns-sd service-list <name>`, whose `IN` and `OUT` after the name are read in any case as the keyword (the lab C9200L-48T-4G, 17.15.6, offered them in capitals).
+- A word that is a hyphened keyword's part before the hyphen stays as typed: `service` is LISP's `service ipv4`, not `service-template`.
+
 One table says which lines leave another such block for one of their own: `interface`, `vlan`, `line`, `router`, `vrf definition`, `ip vrf`, `route-map`, `class-map`, `policy-map` and `ip access-list`.
 
 An answer holds in the context it was asked in. A mode and context the crawl never entered take the books' answer and never another context's.
@@ -208,7 +219,7 @@ An answer holds in the context it was asked in. A mode and context the crawl nev
 
 - An address typed in the line, whole or inside a word, is matched as `«ipv4»`, `«ipv6»` or `«mac»`, and a prefix length after it as `«number»`.
 - A crawl's key or context still holding an address is not compiled.
-- An answer that depends on the configuration replays only while the session lacks the line that changes it. `aaa ?`, `no aaa ?` and `default aaa ?` offer `new-model` alone until `aaa new-model` is configured.
+- An answer that depends on the configuration replays only while the session lacks the line that changes it. In global configuration `aaa ?`, `no aaa ?` and `default aaa ?` offer `new-model` alone until `aaa new-model` is configured; an interface's `aaa ?` offers `connect-info` either way (the lab C9200L-48T-4G, 17.6.4, on `interface nve1`).
 
 ## Reading crawl answers
 
@@ -294,7 +305,7 @@ A configuration or privileged EXEC line is read against the image's own answers 
 - A privileged line naming an object this session configured, of a kind `?` names (`live::NAMED_KINDS`: flow monitor, sampler, flow record, flow exporter), takes the name where the crawl, asked with none configured, listed none.
 - On a routed port only the configured-object answers are read: every physical port shares one context, which holds the crawled switchport's answers. A PoE port's `power` lines are not read: the crawled ports had no PoE.
 - The types after `switch <n> provision` are those the crawled switch stacks with (the lab C9200L-48T-4G listed C9200L models alone): where they name none of the session's stack family, the line is left to the books.
-- Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides.
+- Lines in states the crawl lacked are left to the books (`context::UNJUDGED`): the AAA lines before `aaa new-model`, VRRP before `fhrp version vrrp v3`, `xconnect` on a sub-interface, port-security MAC addresses, `media-type`, and `ptp sync` on a port, which `?` hides. So are lines `?` hid where the switch took them: `broadcast-underlay`, `database-mapping` and `fast-detection` in a LISP instance's Ethernet service and `database-mapping` in its IPv4 one, with no `eid-table` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; IPv6 inferred), and every LISP mode's `exit` and `exit-` lines (17.15.6 took `exit` and the `exit-` ones its `?` hid; 17.6.4's listed the `exit-` ones).
 
 Lines the switch refused where its crawl offers the words (`context::REFUSED`), refused on the image and at the levels they were measured on, where that image has its own crawl at the session's level:
 
@@ -308,6 +319,18 @@ Lines the switch refused where its crawl offers the words (`context::REFUSED`), 
 
 - A unique abbreviation of a line stands for it (`ptp m e2etransparent`). Each word is read against the keywords offered before it, the held answer's else the books', and the line's own word, which the switch read there.
 - A word beginning the line's word and another, up to the caret's word, answers `% Ambiguous command:  "<line>"` (`clas C1`: `class` and `class-map`). Past the caret's word only a unique start stands.
+
+### Lines taken on Enter
+
+A configuration line the books refuse, and no licence gate or held refusal refuses, is taken where the image's own crawl at the session's level reads it whole in the mode and context it is typed in. It runs as the crawl's command (`cli::Engine::crawled`), which runs in no mode while the shell keeps the line.
+
+- Each word is a keyword the answer before it offers, whole or as its unique start, or a value one of its value rows takes; an interface type and its number are one value, typed apart or together. A `LINE` row takes the rest. Otherwise the answer after the last word offers `<cr>`.
+- A value the crawl typed otherwise reads on through the answers after one it typed that the same row takes (`live::Held::crawled_after`). A `no` or `default` line is read as the line it undoes.
+- It is not taken where an answer the line needs is not held, a word begins several keywords, or a capture held the line in its block. Nor is it on a routed port, for a PoE port's `power`, for a line the crawl does not judge, or for a member another family provisions.
+- Only the mode the line is typed in reads it, and global configuration, which every submode hands a line it does not know (the lab C9200L-48T-4G, 17.6.4, ran its `router bgp 65000` after `router isis`): an enclosing submode's crawl was asked in another state (the same switch refused `eid-table default` in a LISP instance, which a fresh `router lisp` offered).
+- A line the image's own switch took without a word in that mode and context (Lines folders) is taken though the crawl does not judge it or ran out before its end (`summary-metric 10.1.1.0/24 community 0` under a classic EIGRP process, the lab C9200L-48T-4G, 17.6.4 and 17.15.6).
+- Where a row stands for a host (`Hostname`, `Hostname or A.B.C.D`), a name is refused at the name where IOS cannot resolve it: no `ip host` names it and `no ip domain lookup` is configured (the lab C9200L-48T-4G, 17.6.4 and 17.15.6: `server Hostname` in a server group, `peer ipv4 Hostname` in an SXP filter group). With name lookup on vswitch cannot tell, and takes it.
+- A line enters the mode the crawl asked `?` in under the context it adds, where that is another mode, over the books' mode: `archive`, `template peer-session <name>` and an OSPF process's `address-family ipv4` each entered a submode their books give them none of (17.6.4 and 17.15.6). A `no` line enters none. A line the switch took and entered no mode with stays where it was, though its books give it a mode (the 17.15 book's `route-map <map-name> {in | out}` under a BGP peer-policy template, 17.15.6).
 
 ### Licence gate
 

@@ -3753,6 +3753,62 @@
       "drop_modes": ["config-policy-server"],
       "lines": [],
       "evidence": "address (CTS) takes the policy server's lines; the lab C9200L-48T-4G (17.15.6) refused 'address 100.0.1.10 primary' at (config-policy-server)#"
+    },
+    {
+      "name": "event (control policy)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-event-control-policymap"],
+      "lines": ["event {aaa-available | absolute-timeout | agent-found | authentication-failure | authentication-success | authorization-failure | authorization-success | identity-update | inactivity-timeout | remote-authentication-failure | remote-authentication-success | remote-update | session-disconnected | session-started | tag-added | tag-removed | template-activated | template-activation-failed | template-deactivated | template-deactivation-failed | timer-expiry | violation} [match-all | match-first]", "no event {aaa-available | absolute-timeout | agent-found | authentication-failure | authentication-success | authorization-failure | authorization-success | identity-update | inactivity-timeout | remote-authentication-failure | remote-authentication-success | remote-update | session-disconnected | session-started | tag-added | tag-removed | template-activated | template-activation-failed | template-deactivated | template-deactivation-failed | timer-expiry | violation}"],
+      "enters": "config-class-control-policymap",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) took 'event session-started match-all' and 'event aaa-available' at (config-event-control-policymap)# and entered (config-class-control-policymap)#, printing the latter 'event aaa-available match-all'; its crawls list these 22 events after 'event' and 'no event', each offering match-all and match-first; an applet's event enters nothing"
+    },
+    {
+      "name": "event",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-event-control-policymap"],
+      "lines": [],
+      "evidence": "event (control policy) takes it in (config-event-control-policymap)#"
+    },
+    {
+      "name": "event identity-update",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "event (control policy) takes its lines: the lab C9200L-48T-4G (17.6.4 and 17.15.6) offered match-all and match-first after each event"
+    },
+    {
+      "name": "event authentication-success",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's 'match-any' is no keyword of an event: the lab C9200L-48T-4G (17.6.4 and 17.15.6) offered match-all and match-first after each; event (control policy) takes its lines"
+    },
+    {
+      "name": "event authentication-failure",
+      "platform": "Catalyst 9200",
+      "remove": true,
+      "evidence": "the guide's 'match-any' is no keyword of an event: the lab C9200L-48T-4G (17.6.4 and 17.15.6) offered match-all and match-first after each; event (control policy) takes its lines"
+    },
+    {
+      "name": "class (control policy)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-class-control-policymap"],
+      "lines": ["<priority-number> class {<control-class-name> | always} [do-all | do-until-failure | do-until-success]", "no <priority-number>"],
+      "args": {"priority-number": {"kind": "Number", "min": 1, "max": 254}, "control-class-name": {"kind": "Word"}},
+      "enters": "config-action-control-policymap",
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) took '10 class always do-until-failure' and '1 class always' at (config-class-control-policymap)# and entered (config-action-control-policymap)#; its crawls offered <1-254> there, WORD and always after '1 class', do-all, do-until-failure, do-until-success and <cr> after '1 class 10' and '1 class always', and <cr> after 'no 1'"
+    },
+    {
+      "name": "class",
+      "platform": "Catalyst 9200",
+      "drop_modes": ["config-class-control-policymap"],
+      "lines": [],
+      "evidence": "class (control policy) takes it in (config-class-control-policymap)#, where the 17.15 book's line keeps only its no form"
+    },
+    {
+      "name": "authentication display",
+      "platform": "Catalyst 9200",
+      "modes": ["privileged"],
+      "lines": ["authentication display {config-mode | legacy | new-style}"],
+      "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) offered config-mode, legacy and new-style after 'authentication display', each ending the line, and at 17.6.4 answered 'authentication display config-mode' with the configuration's style"
     }
   ]
 }

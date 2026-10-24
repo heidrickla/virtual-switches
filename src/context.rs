@@ -49,6 +49,9 @@ const NAMED: &[&[&str]] = &[
     &["crypto", "pki", "certificate", "chain"],
     &["vlan", "access-map"],
     &["template"],
+    // BGP's templates, whose kind is a keyword: `template peer-policy P` is no global `template T`
+    &["template", "peer-policy"],
+    &["template", "peer-session"],
     &["service-template"],
     &["bfd-template", "single-hop"],
     &["bfd-template", "multi-hop"],
@@ -71,7 +74,13 @@ const NAMED: &[&[&str]] = &[
     &["flow", "exporter"],
     &["flow", "record"],
     &["flow", "monitor"],
+    &["mdns-sd", "service-list"],
 ];
+
+/// Keywords IOS lists in capitals after a `NAMED` sequence's name, read in any case as the keyword:
+/// `mdns-sd service-list <name> ?` offers `IN` and `OUT` (the lab C9200L-48T-4G, 17.15.6), whose
+/// lists enter config-mdns-sl-in and config-mdns-sl-out.
+const CASED: &[(&[&str], &[&str])] = &[(&["mdns-sd", "service-list"], &["in", "out"])];
 
 /// Lines that open a block of their own from global configuration, whichever block's submode they
 /// are typed in: IOS leaves that block for global configuration first. The shell's frame stack and
@@ -176,18 +185,21 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// Crawl answers that hold only in the state the crawl saw: a key's start, and the configuration
-/// line whose presence ends them. The crawl's switch had AAA off, so its `aaa ?`, `no aaa ?` and
-/// `default aaa ?` offer `new-model` alone.
-pub const STATE_PREDICATES: &[(&str, &str)] = &[
-    ("aaa ", "aaa new-model"),
-    ("no aaa ", "aaa new-model"),
-    ("default aaa ", "aaa new-model"),
+/// Crawl answers that hold only in the state the crawl saw: a mode, a key's start, and the
+/// configuration line whose presence ends them. The crawl's switch had AAA off, so global
+/// configuration's `aaa ?`, `no aaa ?` and `default aaa ?` offer `new-model` alone; an interface's
+/// `aaa ?` offers `connect-info` either way (the lab C9200L-48T-4G, 17.6.4, on `interface nve1`).
+pub const STATE_PREDICATES: &[(&str, &str, &str)] = &[
+    ("config", "aaa ", "aaa new-model"),
+    ("config", "no aaa ", "aaa new-model"),
+    ("config", "default aaa ", "aaa new-model"),
 ];
 
 /// Lines a crawl's `?` answers do not judge: the lab C9300-24T (17.6.4) took them where its crawl
-/// offered none of their words, and the lab C9200L-48T-4G (17.15.6) took `exit-router-lisp` from
-/// its running configuration though its `?` under `router lisp` hides it. Each is a mode, a line's
+/// offered none of their words, and the lab C9200L-48T-4G (17.6.4 and 17.15.6) took
+/// `broadcast-underlay`, `database-mapping` and `fast-detection` in a LISP instance's ethernet
+/// service and `database-mapping` in its IPv4 one, which its `?` there, with no `eid-table`, hid
+/// (IPv6 inferred). A LISP mode's `exit` lines are not judged either (`unjudged`). Each is a mode, a line's
 /// start (past `no` or `default`) and the configured line under which the switch took them, `""`
 /// where the port's own state or hardware decides or `?` hides the line in every state. The crawl ran without `aaa new-model`, `fhrp version vrrp v3` and `ptp profile
 /// dot1as`, on ports with no dual-purpose media (the captured 2960s set `media-type` on theirs) and
@@ -208,17 +220,28 @@ pub const UNJUDGED: &[(&str, &str, &str)] = &[
     ("config-if", "media-type", ""),
     ("config-if", "ptp sync", ""),
     ("config", "vtp file", ""),
-    ("config-router-lisp", "exit-router-lisp", ""),
+    ("config-lisp-inst-srv-eth", "broadcast-underlay", ""),
+    ("config-lisp-inst-srv-eth", "database-mapping", ""),
+    ("config-lisp-inst-srv-eth", "fast-detection", ""),
+    ("config-lisp-inst-srv-ipv4", "database-mapping", ""),
+    ("config-lisp-inst-srv-ipv6", "database-mapping", ""),
 ];
 
 /// Whether `line` in `mode` is one a crawl's answers do not judge (`UNJUDGED`) in the state
-/// `configured` describes.
+/// `configured` describes. A LISP mode's `exit` and `exit-` lines are: the lab C9200L-48T-4G
+/// (17.15.6) took `exit`, `exit-router-lisp`, `exit-service-ipv4` and the others its `?` hid
+/// (17.6.4's listed the `exit-` ones, never `exit`).
 pub fn unjudged(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> bool {
     let line = line.trim_start().to_lowercase();
     let line = ["no ", "default "]
         .iter()
         .find_map(|n| line.strip_prefix(n))
         .unwrap_or(&line);
+    if (mode.starts_with("config-lisp") || mode.starts_with("config-router-lisp"))
+        && (line.trim_end() == "exit" || line.starts_with("exit-"))
+    {
+        return true;
+    }
     UNJUDGED.iter().any(|(m, start, state)| {
         *m == mode && line.starts_with(start) && (state.is_empty() || configured(state))
     })
@@ -360,12 +383,12 @@ pub fn refused(
     })
 }
 
-/// Whether a crawl answer for `key` no longer holds: a predicate names it and `configured` says the
-/// session has the line that changes the answer.
-pub fn stale(key: &str, configured: impl Fn(&str) -> bool) -> bool {
+/// Whether a crawl answer for `key` in `mode` no longer holds: a predicate names it and `configured`
+/// says the session has the line that changes the answer.
+pub fn stale(mode: &str, key: &str, configured: impl Fn(&str) -> bool) -> bool {
     STATE_PREDICATES
         .iter()
-        .any(|(start, line)| key.starts_with(start) && configured(line))
+        .any(|(m, start, line)| *m == mode && key.starts_with(start) && configured(line))
 }
 
 /// A crawl's help key: the line typed before `?` as `help_key` has it, each address in it
@@ -547,11 +570,15 @@ pub fn reads<'k>(word: &str, known: &[&'k str]) -> Reads<'k> {
 }
 
 /// A word as IOS reads an abbreviation of one of `known`: itself when it is one, the one it begins
-/// when it is two letters or more and begins just one, else as typed.
+/// when it is two letters or more and begins just one, else as typed. A word that is a hyphened
+/// keyword's part before the hyphen stays as typed (`service` of `service-template`): IOS has it as a
+/// keyword of its own (LISP's `service ipv4`), and `known` lists only the entering ones.
 fn expand(word: &str, known: &[&str]) -> String {
     let w = word.to_lowercase();
     match reads(&w, known) {
-        Reads::One(k) if w.len() >= 2 => k.to_string(),
+        Reads::One(k) if w.len() >= 2 && k.split_once('-').is_none_or(|(head, _)| head != w) => {
+            k.to_string()
+        }
         _ => w,
     }
 }
@@ -665,7 +692,14 @@ fn generic_segment(toks: &[&str]) -> String {
         let word = expand(t, &here);
         let continues = here.contains(&word.as_str());
         let named = !continues && NAMED.iter().any(|e| e.len() == i && e[..] == before[..]);
-        out.push(if continues {
+        let cased = CASED.iter().any(|(seq, keywords)| {
+            i == seq.len() + 1
+                && before[..seq.len()] == seq[..]
+                && keywords.contains(&lower.as_str())
+        });
+        out.push(if cased {
+            lower
+        } else if continues {
             word
         } else if named {
             "«word»".into()
@@ -881,6 +915,20 @@ mod tests {
             (
                 "spanning-tree mst configuration",
                 "spanning-tree mst configuration",
+            ),
+            ("template WIRED", "template «word»"),
+            ("template peer-policy PP", "template peer-policy «word»"),
+            ("template peer-session PS", "template peer-session «word»"),
+            ("service-template TESTST", "service-template «word»"),
+            ("service ipv4", "service ipv4"),
+            ("service ethernet", "service ethernet"),
+            (
+                "mdns-sd service-list SL2 OUT",
+                "mdns-sd service-list «word» out",
+            ),
+            (
+                "mdns-sd service-list 10 IN",
+                "mdns-sd service-list «word» in",
             ),
         ];
         for (line, want) in cases {
@@ -1334,15 +1382,17 @@ mod tests {
 
     #[test]
     fn a_state_predicate_ends_a_crawl_answer_only_when_its_line_is_configured() {
-        assert!(!stale("aaa ", |_| false));
-        assert!(stale("aaa ", |l| l == "aaa new-model"));
-        assert!(stale("aaa authentication ", |l| l == "aaa new-model"));
-        assert!(!stale("ip ", |_| true));
+        assert!(!stale("config", "aaa ", |_| false));
+        assert!(stale("config", "aaa ", |l| l == "aaa new-model"));
+        assert!(stale("config", "aaa authentication ", |l| l == "aaa new-model"));
+        assert!(!stale("config", "ip ", |_| true));
         for key in ["no aaa ", "default aaa ", "no aaa accounting "] {
-            assert!(!stale(key, |_| false), "{key}");
-            assert!(stale(key, |l| l == "aaa new-model"), "{key}");
+            assert!(!stale("config", key, |_| false), "{key}");
+            assert!(stale("config", key, |l| l == "aaa new-model"), "{key}");
         }
-        assert!(!stale("no aaa ", |l| l == "no aaa new-model"));
-        assert!(!stale("no ip ", |_| true));
+        assert!(!stale("config", "no aaa ", |l| l == "no aaa new-model"));
+        assert!(!stale("config", "no ip ", |_| true));
+        // an interface's `aaa ?` holds whatever AAA's state
+        assert!(!stale("config-if", "aaa ", |l| l == "aaa new-model"));
     }
 }

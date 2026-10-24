@@ -763,9 +763,11 @@ fn act(
             write!(out, "\r\n").map_err(io)?;
             return Ok(Some(Input::Typed(line)));
         }
+        // a certificate's hex takes Ctrl-Z as no `end`: the same prompt again
         Effect::End => {
             write!(out, "^Z\r\n").map_err(io)?;
-            return Ok(Some(Input::Typed("end".into())));
+            let end = if s.in_hex() { "" } else { "end" };
+            return Ok(Some(Input::Typed(end.into())));
         }
         // a question being asked (`copy`'s destination) is dropped, never answered with its default;
         // a banner's text keeps the lines entered, and the line being typed goes
