@@ -2247,6 +2247,23 @@ mod generate_tests {
     }
 
     #[test]
+    fn lldp_runs_only_when_the_design_asks_and_the_switch_takes_it() {
+        let mut spec: generate::Spec =
+            toml::from_str(include_str!("../tests/example-design.toml")).unwrap();
+        let off = generate::render(&spec);
+        assert!(!off.iter().any(|l| l.contains("lldp")));
+        spec.lldp = true;
+        let on = generate::render(&spec);
+        assert_eq!(on.iter().filter(|l| *l == "lldp run").count(), 1);
+        let rest: Vec<&String> = on.iter().filter(|l| *l != "lldp run").collect();
+        assert_eq!(rest, off.iter().collect::<Vec<_>>());
+        let (s, refused) = typed(&spec);
+        assert_eq!(refused, 0);
+        let run = show::running_config(&s.device).join("\n");
+        assert_eq!(run.matches("\nlldp run\n").count(), 1, "{run}");
+    }
+
+    #[test]
     fn a_new_stack_leaves_vtp_before_it_defines_vlans() {
         let mut spec: generate::Spec =
             toml::from_str(include_str!("../tests/example-design.toml")).unwrap();

@@ -196,6 +196,7 @@ The command prints the captures read, the switches cabled and the cables written
 | `vtp_mode` | `transparent`, `off`, `server` or `client`, written before the VLANs |
 | `existing_vlans` | VLANs the switch already has, which trunks and access ports may name without defining |
 | `system_mtu`, `port_channel_load_balance`, `spanning_tree` | global lines; `spanning_tree` takes `mode`, `priority` and `vlans` (1-4094 when absent) |
+| `lldp` | `true` writes `lldp run`; off by default |
 | `domain`, `name_servers`, `ntp_servers`, `syslog_hosts` | naming and services |
 | `management` | `address`, `mask`, `gateway` on GigabitEthernet0/0 in `Mgmt-vrf` |
 | `native_vlan` | the native VLAN of every trunk |

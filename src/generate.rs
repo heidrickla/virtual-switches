@@ -35,6 +35,9 @@ pub struct Spec {
     pub port_channel_load_balance: Option<String>,
     #[serde(default)]
     pub spanning_tree: Option<SpanningTree>,
+    /// `lldp run`, so a neighbour's LLDP table names this switch and port
+    #[serde(default)]
+    pub lldp: bool,
     #[serde(default)]
     pub domain: Option<String>,
     #[serde(default)]
@@ -461,6 +464,9 @@ pub fn render(s: &Spec) -> Vec<String> {
         if let Some(p) = st.priority {
             c.push(format!("spanning-tree vlan {} priority {p}", st.vlans));
         }
+    }
+    if s.lldp {
+        c.push("lldp run".into());
     }
     if let Some(d) = &s.domain {
         c.push(format!("ip domain name {d}"));
