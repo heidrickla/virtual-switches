@@ -4668,12 +4668,38 @@ impl<'a> Session<'a> {
         {
             return Outcome::Ok(p);
         }
+        // a refusal of the image's own switch past the books' stands where its crawl reads every
+        // word before the caret: the lab WS-C2960X-24PS-L (15.2(2)E5) refused `key chain TESTMS
+        // macsec` at `macsec`, where the 2960-X book holds no `key chain`
+        let held = match held {
+            Some(Outcome::Invalid(at)) if !taken && self.crawl_reads_to(i, mode, line, at) => {
+                o = Outcome::Invalid(at);
+                None
+            }
+            h => h,
+        };
         for refused in [level, held].into_iter().flatten() {
             if reach(&refused, line) < reach(&o, line) {
                 o = refused;
             }
         }
         o
+    }
+
+    /// Whether this image's own crawl at the session's level reads `line` up to byte `at`, a word's
+    /// start, in the mode and context of frame `i`: each word before it as `crawled` reads a line,
+    /// whatever the answer after the last offers.
+    fn crawl_reads_to(&self, i: usize, mode: &str, line: &str, at: usize) -> bool {
+        if !cli::is_config(mode) || at == 0 {
+            return false;
+        }
+        let (Some(level), Some(context)) = (self.level(), self.context_at(i)) else {
+            return false;
+        };
+        self.engine.held.crawls.contains_key(&level)
+            && self
+                .crawl_reading(&level, mode, &context, &line[..at], false)
+                .is_some()
     }
 
     /// Where a line is refused for a word the session's licence level leaves out of the image, in the
@@ -5127,6 +5153,18 @@ impl<'a> Session<'a> {
     /// `crawled`'s reading of a line against the crawl's answers at `level`, in `mode` under
     /// `context`.
     fn crawl_reads(&self, level: &str, mode: &str, context: &str, line: &str) -> Option<Parse> {
+        self.crawl_reading(level, mode, context, line, true)
+    }
+
+    /// `crawl_reads`, the answer after the last word offering `<cr>` where `whole`.
+    fn crawl_reading(
+        &self,
+        level: &str,
+        mode: &str,
+        context: &str,
+        line: &str,
+        whole: bool,
+    ) -> Option<Parse> {
         let held = &self.engine.held;
         let configured = |l: &str| self.running_has(l);
         let answer = |typed: &str| {
@@ -5267,7 +5305,7 @@ impl<'a> Session<'a> {
         let ends = crate::live::answer_rows(answer(&typed)?)
             .iter()
             .any(|(w, _)| *w == "<cr>");
-        (ends && !items.is_empty()).then(|| Parse {
+        ((ends || !whole) && !items.is_empty()).then(|| Parse {
             command: self.engine.crawled(),
             line: 0,
             negated,
@@ -8132,6 +8170,29 @@ mod tests {
                 Result::Error
             )
         );
+    }
+
+    #[test]
+    fn a_crawl_s_caret_stands_past_the_books_where_it_reads_every_word_before_it() {
+        // the lab WS-C2960X-24PS-L (15.2(2)E5, lanbase) refused `key chain TESTMS macsec` at
+        // `macsec`; its book holds no `key chain`, which its crawl entered as `key chain 10`
+        let r = crate::release::Release::parse("15.2(2)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        for line in ["enable", "configure terminal"] {
+            assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+        }
+        let (out, r) = s.type_line("key chain 10 macsec");
+        assert_eq!(r, Result::Error);
+        let caret = "Switch(config)#key chain 10 ".len();
+        assert_eq!(out[0], format!("{}^", " ".repeat(caret)), "{out:?}");
+        // a name the crawl did not type is left to the books, as any value after which the
+        // answers can differ
+        let (out, _) = s.type_line("key chain TESTMS macsec");
+        assert_ne!(out[0], format!("{}^", " ".repeat(caret + 4)), "{out:?}");
+        assert_eq!(s.type_line("key chain TESTMS").1, Result::Ok);
+        assert_eq!(s.mode(), "config-keychain");
     }
 
     #[test]

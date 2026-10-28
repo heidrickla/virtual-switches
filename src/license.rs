@@ -34,8 +34,9 @@ const CLASSIC: &[&str] = &["c2960", "c2960x", "ie3000", "ie3010"];
 /// An image's crawl by its book, release and level.
 pub type Image = (&'static str, &'static str, &'static str);
 
-/// For a switch of one of the books at the level, at any release, the crawl that may answer for it:
-/// IOS XE takes the C9300 17.6 crawl at its own level, classic IOS the C2960G 15.0(2)SE crawl.
+/// For a switch of one of the books at the level, at any release, the crawl that may answer for it,
+/// the first entry naming its book: IOS XE takes the C9300 17.6 crawl at its own level, the 2960-X
+/// the lab WS-C2960X-24PS-L's 15.2(2)E crawl, the other classic books the C2960G 15.0(2)SE crawl.
 pub const DONORS: &[(&[&str], &str, Image)] = &[
     (
         IOS_XE,
@@ -47,6 +48,7 @@ pub const DONORS: &[(&[&str], &str, Image)] = &[
         "network-essentials",
         ("c9300", "17.6", "network-essentials"),
     ),
+    (&["c2960x"], "lanbase", ("c2960x", "15.2(2)E", "lanbase")),
     (CLASSIC, "lanbase", ("c2960", "15.0(2)SE", "lanbase")),
 ];
 
@@ -54,7 +56,9 @@ pub const DONORS: &[(&[&str], &str, Image)] = &[
 /// listed here. Each is an image whose captures hold `?` answers the donor beat the books on with
 /// those answers masked (`shell::tests::donor_answers_against_the_captures_answers`, 2026-10-15),
 /// keyword recall 73-98% against the books' 32-51%. A Catalyst 9000 takes both levels: the
-/// advantage donor scored 95-99% recall against essentials captures.
+/// advantage donor scored 95-99% recall against essentials captures. The 2960-X 15.2(7)E capture's
+/// answers scored 90% recall and 98% precision against the 2960-X 15.2(2)E crawl, 73% and 97%
+/// against the C2960G's (2026-10-28).
 pub const ENABLED: &[(&str, &str, &str)] = &[
     ("c2960x", "15.2(7)E", "lanbase"),
     ("c9200", "17.6", "network-essentials"),
@@ -275,8 +279,14 @@ mod tests {
         );
         assert_eq!(
             donor("c2960x", "15.2(7)E", "lanbase"),
+            Some(("c2960x", "15.2(2)E", "lanbase"))
+        );
+        assert_eq!(
+            donor("c2960", "15.2(6)E", "lanbase"),
             Some(("c2960", "15.0(2)SE", "lanbase"))
         );
+        // the 2960-X 15.2(2)E image answers from its own crawl, so it takes no donor
+        assert_eq!(donor("c2960x", "15.2(2)E", "lanbase"), None);
         assert_eq!(donor("c2960x", "15.2(7)E", "network-advantage"), None);
         assert_eq!(donor("c9300", "17.6", "network-advantage"), None);
         assert_eq!(donor("c2960", "15.0(2)SE", "lanbase"), None);
@@ -296,7 +306,7 @@ mod tests {
         let on = [("c2960x", "15.2(7)E", "lanbase")];
         assert_eq!(
             enabled_donor("c2960x", "15.2(7)E", "lanbase", &on),
-            Some(("c2960", "15.0(2)SE", "lanbase"))
+            Some(("c2960x", "15.2(2)E", "lanbase"))
         );
         assert_eq!(enabled_donor("c2960x", "15.2(6)E", "lanbase", &on), None);
     }

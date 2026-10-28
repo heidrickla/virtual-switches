@@ -147,8 +147,9 @@ A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswit
 | C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
 | C9200 17.15 | C9200L-48T-4G, 17.15.6 | `network-advantage`, `network-essentials` |
 | C2960 15.0(2)SE | C2960G, 15.0(2)SE11 | `lanbase` |
+| C2960-X 15.2(2)E | WS-C2960X-24PS-L, 15.2(2)E5 | `lanbase` |
 
-The C9300 17.6 crawl at each Catalyst 9000 level and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 and 17.15 crawls answer for their own images at both levels, the licence gate included.
+The C9300 17.6 crawl at each Catalyst 9000 level, the C2960-X 15.2(2)E crawl and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 and 17.15 crawls answer for their own images at both levels, the licence gate included. The C2960-X 15.2(2)E crawl answers for its own image at `lanbase`.
 
 ### Crawl folders
 
@@ -271,7 +272,8 @@ Where the image's own answers, the abbreviations read and the answers derived ho
 | Platform | Donor |
 |---|---|
 | IOS XE (Catalyst 9200, 9300, 9400, IE3300) | the C9300 17.6 crawl at the session's level |
-| classic IOS (Catalyst 2960, 2960-X, IE 3000, IE 3010) | the C2960G 15.0(2)SE crawl at `lanbase` |
+| Catalyst 2960-X | the C2960-X 15.2(2)E crawl at `lanbase` |
+| classic IOS (Catalyst 2960, IE 3000, IE 3010) | the C2960G 15.0(2)SE crawl at `lanbase` |
 
 A donor answers for an image at a level only once that book, release and level is listed in `license::ENABLED` (`src/license.rs`). The listed images are those whose captured `?` answers the donor matched better than the books with those answers masked:
 
@@ -291,7 +293,7 @@ A donor answers for an image at a level only once that book, release and level i
 
 ### Lines refused on Enter
 
-A configuration or privileged EXEC line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line.
+A configuration or privileged EXEC line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line. A configuration line's refusal past the books' own stands where the image's own crawl reads every word before its caret, as a line it takes is read (`shell::Session::crawl_reads_to`): the lab WS-C2960X-24PS-L (15.2(2)E5) refused `key chain TESTMS macsec` at `macsec`, where the 2960-X book holds no `key chain`, and the C9200L and C9300 book examples replayed 25 more lines with the switch's caret.
 
 - A word no row of the answer before it offers is invalid there. A line whose answer after its last word holds no `<cr>` is incomplete, unless that answer offers again what the one before it offered (a list, which ends anywhere).
 - A word with no answer held before it is not read. Reading stops at a held refusal for the line so far and at a `LINE` row.
