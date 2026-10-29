@@ -275,6 +275,51 @@ pub const SYSTEM_V6: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// The access lists the 2960-X image makes itself, as `SYSTEM_V4` and `SYSTEM_V6`: in every
+/// `show access-lists` the lab WS-C2960X-24PS-L printed at 15.2(2)E5 and 15.2(7)E0a, with no 802.1X
+/// or AAA configured; `show` titles the preauth lists `(per-user)`.
+pub const SYSTEM_2960X_V4: &[(&str, &[&str])] = &[
+    (
+        "CISCO-CWA-URL-REDIRECT-ACL",
+        &[
+            "100 deny udp any any eq domain",
+            "101 deny tcp any any eq domain",
+            "102 deny udp any eq bootps any",
+            "103 deny udp any any eq bootpc",
+            "104 deny udp any eq bootpc any",
+            "105 permit tcp any any eq www",
+        ],
+    ),
+    (
+        "preauth_ipv4_acl",
+        &[
+            "10 permit udp any any eq domain",
+            "20 permit tcp any any eq domain",
+            "30 permit udp any eq bootps any",
+            "40 permit udp any any eq bootpc",
+            "50 permit udp any eq bootpc any",
+            "60 deny ip any any",
+        ],
+    ),
+];
+
+/// See `SYSTEM_2960X_V4`.
+pub const SYSTEM_2960X_V6: &[(&str, &[&str])] = &[(
+    "preauth_ipv6_acl",
+    &[
+        "permit udp any any eq domain sequence 10",
+        "permit tcp any any eq domain sequence 20",
+        "permit icmp any any nd-ns sequence 30",
+        "permit icmp any any nd-na sequence 40",
+        "permit icmp any any router-solicitation sequence 50",
+        "permit icmp any any router-advertisement sequence 60",
+        "permit icmp any any redirect sequence 70",
+        "permit udp any eq 547 any eq 546 sequence 80",
+        "permit udp any eq 546 any eq 547 sequence 90",
+        "deny ipv6 any any sequence 100",
+    ],
+)];
+
 /// An IPv6 list's entries as `show ipv6 access-list` prints them: the sequence number after the
 /// entry (the lab C9300-24T, 17.6.4: ` sequence 10 permit ipv6 2001:DB8::/32 any` prints `permit ipv6
 /// 2001:DB8::/32 any sequence 10`); an entry typed with none takes the highest plus 10 (inferred),

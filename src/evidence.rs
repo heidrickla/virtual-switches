@@ -29,6 +29,7 @@ const BATCH: &str = "76 switches captured, each cabled as it ran: 2960-X at 15.2
 const SHOW_TECH: &str = "the show techs of 39 switches: 2960-Plus at 15.2(6)E, C9200L at 17.15, C9300 at 17.15, IE-3300 at 17.6; 2026-10-07";
 const C2960G: &str = "the lab C2960G (WS-C2960G-8TC-L, 15.0(2)SE11) over SSH";
 const LAB: &str = "the lab C9300-24T with a C9300-NM-4G (17.6.4) on its console and the lab C2960G (15.0(2)SE11) over SSH, each case configured, read and reset, 2026-10-16";
+const LAB_2960X: &str = "the lab WS-C2960X-24PS-L (15.2(2)E5 and 15.2(7)E0a) over SSH, each case configured, read and reset, and its 15.2(7)E0a show sweep replayed from its own running configuration, 222 modelled outputs compared whole, 2026-10-29";
 const LAB_REPLAY: &str = "the lab C9300-24T with a C9300-NM-4G (17.6.4): its 745-line configuration, member 2 provisioned and absent, replayed and 39 outputs compared whole, and the follow-up measurements, 2026-10-17";
 
 pub const RULES: &[Rule] = &[
@@ -46,7 +47,7 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces switchport",
-        rule: "a bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`); IOS XE calls an LACP member it has not bundled, linked or not, and a PAgP or `on` member with no link, `down (suspended member of bundle Po1)` with no operational encapsulation; a voice VLAN of `dot1p`, `untagged` or `none` as typed; the pruning lines read in turn as the allowed list reads, within 2-1001; one port's block alone with no blank line after it",
+        rule: "a bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`); IOS XE calls an LACP member it has not bundled, linked or not, and a PAgP or `on` member with no link, `down (suspended member of bundle Po1)` with no operational encapsulation, and classic IOS an LACP member with no link; a voice VLAN of `dot1p`, `untagged` or `none` as typed; the pruning lines read in turn as the allowed list reads, within 2-1001; one port's block alone with no blank line after it",
         source: Source::Live,
         evidence: LAB,
     },
@@ -190,6 +191,12 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
+        rule: "classic IOS prints the last-change line between two `!` lines after the first, counted in the size, and counts an empty line's newline; `linenum` numbers each line but an empty one, right-aligned in five columns, six from 100 lines; `brief` leaves out the certificates' hex; `class-map` and `policy-map` print between `!` and `end`, one byte over their lines, nothing for one named that does not exist; `ip dhcp pool` each pool after a `!` with no heading; `vlan` unsized; with AAA off `aaa` a `!`, `no aaa new-model` and the users, its other sections a `!`; `identity` and `map-class` `end` unsized, `eap` a blank line, `flow` the heading alone; a class map's `match ip dscp ef ` with its trailing space",
+        source: Source::Live,
+        evidence: LAB_2960X,
+    },
+    Rule {
+        output: "show running-config",
         rule: "a line added to a replayed configuration prints after every replayed line whose command IOS prints before its own (a new `spanning-tree mst configuration` after `spanning-tree extend system-id`); two replayed lines differing only in case each print as printed",
         source: Source::Live,
         evidence: "the lab C2960G (WS-C2960G-8TC-L, 15.0(2)SE11) with an MST region typed and reset, 2026-10-16; the captures whose ports carry descriptions differing only in case",
@@ -229,6 +236,12 @@ pub const RULES: &[Rule] = &[
         rule: "IOS XE lists standard lists then extended, each by name, a standard entry's action padded; a 9300 at 17.6 adds the lists it makes itself (`IP-Adm-V4-Int-ACL-global`, `implicit_deny`, `implicit_permit`, `meraki-fqdn-dns`, `preauth_v4`, and the `_v6` lists), the first empty once `no ip http server` and `no ip http secure-server` are typed; `show access-lists` adds the IPv6 lists, each entry with `sequence <n>` after it, then the MAC lists, each title with a space after it",
         source: Source::Live,
         evidence: LAB_REPLAY,
+    },
+    Rule {
+        output: "show ip access-lists, show access-lists, show ipv6 access-list",
+        rule: "the 2960-X lists standard lists then extended, each by name, among them the lists it makes itself (`CISCO-CWA-URL-REDIRECT-ACL`, `preauth_ipv4_acl (per-user)`; `preauth_ipv6_acl (per-user)` among the IPv6 lists); `show access-lists` adds the IPv6 lists, then the MAC lists; `show ip access-lists interface <name> [in|out]` the lists applied there, each title naming its direction, nothing where none is; `ipc` and `hardware counters` print no output model",
+        source: Source::Live,
+        evidence: LAB_2960X,
     },
     Rule {
         output: "show running-config",
@@ -286,9 +299,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show interfaces status",
-        rule: "a port-channel no member bundles in: `notconnect unassigned auto auto N/A` on IOS XE and on classic IOS before 15.2 (no Type there, its trailing space kept), whatever its mode; classic IOS from 15.2 shows the access VLAN",
+        rule: "a port-channel no member bundles in: `notconnect unassigned auto auto N/A` on IOS XE and `notconnect unassigned auto auto ` on classic IOS (no Type there, its trailing space kept), whatever its mode; one that was up keeps its VLAN and the speed it ran, which a switch here never has",
         source: Source::Live,
-        evidence: "the lab C9300 (17.6.4) and the lab C2960G (15.0(2)SE11), 2026-10-16; a 2960-X capture at 15.2",
+        evidence: "the lab C9300 (17.6.4) and the lab C2960G (15.0(2)SE11), 2026-10-16; the lab WS-C2960X-24PS-L (15.2(7)E0a), 2026-10-29; a 2960-X capture at 15.2(7)E with a port-channel down at `full 1000`",
     },
     Rule {
         output: "show interfaces status",
@@ -406,9 +419,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show etherchannel summary",
-        rule: "the members wrap under the Ports column before column 79",
+        rule: "classic IOS pads each member to 12, its trailing spaces kept, and the members wrap under the Ports column before column 79",
         source: Source::Live,
-        evidence: "c2960x 15.2(7)E capture 7: Po3's fourth member on its own line",
+        evidence: "c2960x 15.2(7)E capture 7: Po3's fourth member on its own line (its log trimmed); the lab C2960G (15.0(2)SE11) and the lab WS-C2960X-24PS-L (15.2(7)E0a, 2026-10-29): `Gi1/0/3(D)  Gi1/0/4(D)  `",
     },
     Rule {
         output: "show etherchannel summary",
@@ -493,6 +506,12 @@ pub const RULES: &[Rule] = &[
         rule: "classic IOS pads its labels to one width and lists EtherChannel misconfig guard after Loopguard Default; `1 vlan` in the singular; `Root bridge for: none`",
         source: Source::Live,
         evidence: C2960G,
+    },
+    Rule {
+        output: "show spanning-tree summary, mst configuration digest",
+        rule: "from 15.2 classic IOS lists EtherChannel misconfig guard first; from 15.2(7)E it pads its labels to 39 and adds PVST Simulation Default (`enabled but inactive in rapid-pvst mode`) and Bridge Assurance before UplinkFast; the default region's digest `0xAC36177F50283CD4B83821D8AB26DE62` and pre-standard digest `0xBB3B6C15EF8D089BB55ED10D24DF44DE`, after `% Switch is not in mst mode` outside MST",
+        source: Source::Live,
+        evidence: LAB_2960X,
     },
     Rule {
         output: "show spanning-tree summary, blockedports",
@@ -595,6 +614,12 @@ pub const RULES: &[Rule] = &[
         rule: "no advertisement counted between VTP servers in a lab; a password set answers the no-output-model line",
         source: Source::Inferred,
         evidence: "the lab C9300 ran VTP off when its counters were read and set no password",
+    },
+    Rule {
+        output: "show vtp status, show vtp interface, show vtp devices",
+        rule: "on the 2960-X the `vtp interface` named is the updater (`(preferred interface)`) and a server adds `Preferred interface name is <name>  `; version 3 counts the normal range apart from the extended VLANs, keeps 1005 and prints no Feature UNKNOWN block; `show vtp interface` lists each front port and port-channel, `disabled` under `no vtp`; `show vtp devices` below version 3 says it needs version 3",
+        source: Source::Live,
+        evidence: "the lab WS-C2960X-24PS-L (15.2(7)E0a) over SSH, transparent at versions 1 to 3, off at 3 and a server at 2, 2026-10-29",
     },
     Rule {
         output: "show vtp status",

@@ -2531,6 +2531,14 @@
       "evidence": "the books' pool form takes 'mask' before the mask; the lab C9200L-48T-4G (17.6.4) printed ' network <address> <mask>' under an 'ip dhcp pool' in its running configuration"
     },
     {
+      "name": "network (DHCP pool)",
+      "platform": "Catalyst 2960x",
+      "modes": ["dhcp-config"],
+      "lines": ["network <network-number> [<mask>]", "no network"],
+      "args": {"network-number": {"kind": "Ipv4"}, "mask": {"kind": "Ipv4"}},
+      "evidence": "the 2960-X books give the pool form as one argument, 'network <network-number mask prefix-length>', beside the RIP 'network'; the lab WS-C2960X-24PS-L took 'network 198.51.100.0 255.255.255.0' in (dhcp-config)# at 15.2(2)E5 and 15.2(7)E0a and printed it so, and its crawl answers 'network 10.1.1.1 ?' with '/nn or A.B.C.D' and <cr> (the prefix length, which IOS prints as a mask, is left out)"
+    },
+    {
       "name": "dns-server (DHCP pool)",
       "platform": "Catalyst 9200",
       "modes": ["dhcp-config"],
@@ -2561,6 +2569,30 @@
       "lines": ["permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]", "no permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]"],
       "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "protocol": {"kind": "Word"}},
       "evidence": "the security reference's line runs every choice together; the lab C9200L-48T-4G (17.6.4) printed ' permit host <mac> any' under a 'mac access-list extended' in its running configuration"
+    },
+    {
+      "name": "deny (MAC access-list configuration)",
+      "platform": "Catalyst 9200",
+      "modes": ["config-ext-macl"],
+      "lines": ["deny {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]", "no deny {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<protocol>]"],
+      "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "protocol": {"kind": "Word"}},
+      "evidence": "as 'permit (MAC access-list configuration)': the security reference's line runs every choice together ('deny any host <src-MAC-addr> ...'), which refused 'deny any any'; the lab C9200L-48T-4G's crawl (17.6.4) answers 'deny 0011.2233.4455 0011.2233.4455 ?' with 'any', 'host' and a MAC address, and after 'any' lists the EtherTypes, 'cos', 'lsap', 'protocol-family', 'vlan' and <cr>"
+    },
+    {
+      "name": "permit (MAC access-list configuration)",
+      "modes": ["config-ext-macl"],
+      "corrects": ["permit any host <src-MAC-addr> <src-MAC-addr mask> any host <dst-MAC-addr> <dst-MAC-addr mask> <type mask> aarp amber appletalk dec-spanning decnet-iv diagnostic dsm etype-6000 etype-8042 lat lavc-sca lsap <lsap mask> mop-console mop-dump msdos mumps netbios vines-echo vines-ip xns-idp cos <cos>"],
+      "lines": ["permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<ethertype> <ethertype-mask> | aarp | amber | appletalk | dec-spanning | decnet-iv | diagnostic | dsm | etype-6000 | etype-8042 | lat | lavc-sca | lsap <lsap> <lsap-mask> | mop-console | mop-dump | msdos | mumps | netbios | vines-echo | vines-ip | xns-idp] [cos <cos>]", "no permit {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<ethertype> <ethertype-mask> | aarp | amber | appletalk | dec-spanning | decnet-iv | diagnostic | dsm | etype-6000 | etype-8042 | lat | lavc-sca | lsap <lsap> <lsap-mask> | mop-console | mop-dump | msdos | mumps | netbios | vines-echo | vines-ip | xns-idp] [cos <cos>]"],
+      "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "ethertype": {"kind": "Word"}, "ethertype-mask": {"kind": "Word"}, "lsap": {"kind": "Word"}, "lsap-mask": {"kind": "Word"}, "cos": {"kind": "Number", "min": 0, "max": 7}},
+      "evidence": "the 2960-X 15.2(6)E and 15.2(7)E references run every choice of the 15.2(2)E reference's line together ('permit any host <src-MAC-addr> ...'), which refused 'permit any any'; the 15.2(2)E line, with a 'no' form, is the form. The lab WS-C2960X-24PS-L (15.2(7)E0a) took 'permit any any' in (config-ext-macl)# and printed it in its running configuration, and its crawl answers 'permit 0011.2233.4455 0011.2233.4455 any ?' with an EtherType number, the EtherType names, 'cos', 'lsap' and <cr>, a number with its mask, 'lsap' with its value, and 'cos' with <0-7>"
+    },
+    {
+      "name": "deny (MAC access-list configuration)",
+      "modes": ["config-ext-macl"],
+      "corrects": ["deny any host <src-MAC-addr> <src-MAC-addr mask> any host <dst-MAC-addr> <dst-MAC-addr mask> <type mask> aarp amber appletalk dec-spanning decnet-iv diagnostic dsm etype-6000 etype-8042 lat lavc-sca lsap <lsap mask> mop-console mop-dump msdos mumps netbios vines-echo vines-ip xns-idp cos <cos>", "no deny any host <src-MAC-addr> <src-MAC-addr mask> any host <dst-MAC-addr> <dst-MAC-addr mask> <type mask> aarp amber appletalk dec-spanning decnet-iv diagnostic dsm etype-6000 etype-8042 lat lavc-sca lsap <lsap mask> mop-console mop-dump msdos mumps netbios vines-echo vines-ip xns-idp cos <cos>"],
+      "lines": ["deny {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<ethertype> <ethertype-mask> | aarp | amber | appletalk | dec-spanning | decnet-iv | diagnostic | dsm | etype-6000 | etype-8042 | lat | lavc-sca | lsap <lsap> <lsap-mask> | mop-console | mop-dump | msdos | mumps | netbios | vines-echo | vines-ip | xns-idp] [cos <cos>]", "no deny {any | host <src-mac> | <src-mac> <src-mac-mask>} {any | host <dst-mac> | <dst-mac> <dst-mac-mask>} [<ethertype> <ethertype-mask> | aarp | amber | appletalk | dec-spanning | decnet-iv | diagnostic | dsm | etype-6000 | etype-8042 | lat | lavc-sca | lsap <lsap> <lsap-mask> | mop-console | mop-dump | msdos | mumps | netbios | vines-echo | vines-ip | xns-idp] [cos <cos>]"],
+      "args": {"src-mac": {"kind": "Mac"}, "src-mac-mask": {"kind": "Mac"}, "dst-mac": {"kind": "Mac"}, "dst-mac-mask": {"kind": "Mac"}, "ethertype": {"kind": "Word"}, "ethertype-mask": {"kind": "Word"}, "lsap": {"kind": "Word"}, "lsap-mask": {"kind": "Word"}, "cos": {"kind": "Number", "min": 0, "max": 7}},
+      "evidence": "as 'permit (MAC access-list configuration)': the 2960-X 15.2(6)E and 15.2(7)E references run every choice together; the lab WS-C2960X-24PS-L (15.2(7)E0a) took the book example 'deny any any 0x4321 0' (an EtherType in hex and its mask), and its crawl answers 'deny 0011.2233.4455 0011.2233.4455 any ?' as it answers permit"
     },
     {
       "name": "ip dhcp snooping trust",

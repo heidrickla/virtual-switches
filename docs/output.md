@@ -17,6 +17,8 @@ Messages come from the command reference's CLI chapter, with ASCII quotes (the c
 
 The caret stands under the refused word of the line as typed, spaces and `do` included.
 
+Some privileged commands typed alone print a line of their own, as the lab switches answered them on Enter (`shell::Session::root_alone`). `show` prints `% Type "show ?" for a list of subcommands` on the C9300 17.6 image. `show`, `clear` and `debug` print it on the C9200 17.6 and 17.15 images, and `set` too on the 2960-X from 15.2(7)E. `where` prints `% No connections open` on the C9200 and 2960-X images. Each is typed whole.
+
 | Refusal | Caret |
 |---|---|
 | a word no keyword there begins | past the longest start of the word that a keyword there begins with: `show config` at `>` on a 2960-X is refused under the `f`, as `controllers` begins `con`; on a 9300 under the second `o` and on a 9200 under the `n`, whose keywords at `>` differ |
@@ -195,7 +197,7 @@ These lines are taken with a warning first:
 
 ### VTP lines
 
-IOS XE says what these lines did (the lab C9200L-48T-4G and C9300-24T, 17.6.4). The refusals are in the first table.
+IOS XE and the 2960-X say what these lines did (the lab C9200L-48T-4G and C9300-24T, 17.6.4; the lab WS-C2960X-24PS-L, 15.2(7)E0a, the same words). The refusals are in the first table.
 
 | Line | Message |
 |---|---|
@@ -206,6 +208,7 @@ IOS XE says what these lines did (the lab C9200L-48T-4G and C9300-24T, 17.6.4). 
 | `vtp password <password>` | `Setting device VTP password to <password>`; `hidden` below version 3: `Device is operating in VTP version <n>. hidden option is allowed from VTP version 3 only.`, the password set before kept (the lab C2960G) |
 | `no vtp password` | `Clearing device VTP password.`; none set: `No password currently set.` |
 | `vtp pruning`, `no vtp pruning` on a server | `Pruning switched on`, `Pruning switched off` |
+| `vtp file <name>`, `no vtp file` | `Setting device to store VLAN database at filename <name>.`, `Clearing device storage filename.` (the lab WS-C2960X-24PS-L; IOS XE inferred alike) |
 
 ### Converting 802.1X to new-style
 
@@ -219,6 +222,8 @@ On IOS XE and the 2960-X the first line that needs the 802.1X configuration new-
 - A converted configuration asks no more, even after `configure replace` to legacy lines.
 - `authentication display config-mode` prints `Current configuration mode is legacy ` or `Current configuration mode is new-style `, then a blank line. Once the configuration is new-style, `authentication display legacy|new-style` is refused at its start, and `?` after `authentication display` offers `config-mode` alone (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the lab WS-C2960X-24PS-L refused the two at 15.2(2)E5).
 - The 2960-X converts as the lab WS-C2960X-24PS-L did at 15.2(2)E5. It adds `access-session mac-move deny`, after `udld enable` and the blank line that follows it, and four service templates with no `linksec` lines and no critical data template, after the last certificate chain with no `!` between (`CPL_DEFAULTS_2960X`). It adds the control class maps only where a port converts, and prints them, and the control policies, before the other class maps and policies, with two `!` lines between the last control class map and a class map after it. A converted port's policy falls back to MAB when dot1x fails (`CPL_PORT_POLICY_2960X`), and the running configuration prints each class once.
+- At 15.2(7)E0a the 2960-X converts as the lab WS-C2960X-24PS-L did there, from its crawl base and a rich one, with a port and without (`CPL_DEFAULTS_2960X_15_2_7`). The five service templates are `DEFAULT_CRITICAL_VOICE_TEMPLATE` (` voice vlan`), `webauth-global-inactive` (` inactivity-timer 3600 `), `webauth-global-absolute`, `DEFAULT_LINKSEC_POLICY_MUST_SECURE` and `DEFAULT_LINKSEC_POLICY_SHOULD_SECURE`. `access-session mac-move deny` prints with no `!` before the line after it, as that line printed before. It adds `ip access-list extended AI_PORT_ACL` (` permit ip any any`), and the parameter maps `AI_NRH_PMAP` (` type authbypass`) and `AI_WEBAUTH_PMAP` (` type webauth`) after the last `spanning-tree` or `errdisable` line. Where a port converts it adds `SESSION_UNAUTH` (` match authorization-status unauthorized`) after the other control class maps.
+- In a replayed configuration, converting at 15.2(7)E0a prints one `!` line more before the parameter maps than stood between the lines either side of them, and two after each. It prints seven more after the last class map, before the line that followed it, and a converted port's policy goes between with the `!` lines that line had (the rich base: one `!` between the QoS class map and `policy-map LAB-IN` before, eight after).
 - An `event <name>` typed alone in a control policy is `event <name> match-all`, and prints so (the lab C9200L-48T-4G, 17.6.4 and 17.15.6: `event aaa-available`).
 
 ## Help and Tab
@@ -273,11 +278,25 @@ On IOS XE and the 2960-X the first line that needs the 802.1X configuration new-
 
 ## show running-config
 
-The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too. n counts each line from the first `!` through `end` with its newline, plus one; an empty line counts nothing.
+The output begins `Building configuration...`, a blank line and `Current configuration : <n> bytes`, and ends `end` and a blank line, the interface form's too. n counts each line from the first `!` through `end` with its newline, plus one. An empty line counts nothing on IOS XE and its newline on classic IOS (the lab WS-C2960X-24PS-L at 15.2(2)E5 and 15.2(7)E0a: 5388 bytes for a configuration with one after `udld enable`).
 
-IOS XE 17.6 prints `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` and a `!` line after the first `!`, counted in n: the time the switch booted, a replayed configuration's own line, else the last line typed, on the switch's clock. A replayed line's ` by <user>` prints until a line is typed. Other releases print no such line.
+IOS XE 17.6 and classic IOS print `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` and a `!` line after the first `!`, counted in n: the time the switch booted, a replayed configuration's own line, else the last line typed, on the switch's clock. A replayed line's ` by <user>` prints until a line is typed. Other IOS XE releases print no such line. Classic IOS's `! NVRAM config last updated` line after a save is not modelled.
 
 `show running-config interface <name>` prints that block alone: a `!` line, the block, `end`. A port never configured prints as an empty block, and the byte count is that of the lines printed, plus one. An interface the switch has not made (Bluetooth0/4 before it is typed) prints `end` alone.
+
+### Views
+
+The other views print as the lab WS-C2960X-24PS-L (15.2(7)E0a) and C9200L-48T-4G (17.6.4) printed them (`show::running_view`):
+
+- `full`, `view` and `view full` print the whole configuration. `brief` leaves out each certificate's hex and `quit`, sized for what it prints.
+- `linenum` numbers each line, right-aligned in five columns, six from 100 lines and one more for each digit past three, with ` : ` before the line (`    1 : !`). An empty line is left out and not numbered (the C9300-24T and C9200L at 17.6.4 too). The size stays that of the view.
+- `class-map` and `policy-map`, all or the one named, print between a `!` and `end`, with a `!` before `end` after the policy maps, and count one byte more than their lines (57 bytes for one class map of two lines). One named that does not exist prints nothing.
+- `ip dhcp pool` prints each pool after a `!` and a `!` after the last, with no heading.
+- `vlan` and `vlan <id>` print the VLANs the configuration holds under `Current configuration:` with no size, each after a `!`, then `end`. A VTP server holds none there and prints `end` alone.
+- `aaa authentication`, `authorization`, `accounting` and `username` print a `!` and those lines. With AAA off, `aaa` prints a `!`, `no aaa new-model` and the users, and each other section a `!` alone.
+- With none configured, `identity profile` and `identity policy` (named or not), and classic IOS's `map-class`, print `end` alone under `Current configuration:`. IOS XE's `map-class` and every `vrf` print `end` sized. Classic IOS's `eap profiles` and `eap method profiles` print a blank line, and its `flow monitor`, `exporter` and `record` the heading `Current configuration:` alone.
+
+`all`, the partitions, a named pool and AAA's views with it on have no output model.
 
 ### Contents
 
@@ -293,7 +312,7 @@ IOS XE 17.6 prints `! Last configuration change at 12:34:56 UTC Thu Mar 5 2026` 
 - `monitor session` lines name their ports short (`Gi1/0/11`).
 - At IOS XE 17.6 an access list's `deny` pads to `permit`'s width (` 20 deny   any log`, ` 30 deny   ip any any log`); 17.15 pads none.
 - An IPv6 access list entry typed with no number prints `sequence <n>` before it, n 10 past the highest.
-- On IOS XE a class map's DSCP and precedence values print each followed by a space, a space apart (`match dscp cs4  cs5  ef `), and a CoS value with a space either side (`match cos  5 `).
+- A class map's DSCP and precedence values print each followed by a space, a space apart (`match dscp cs4  cs5  ef `), and a CoS value with a space either side (`match cos  5 `). Classic IOS does the same (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a: `match ip dscp ef `; its CoS form inferred).
 - A section closes at its `exit-` line: inside an interface at its lines' depth (`  exit-vrrp`), elsewhere at its header's. Sections nest (`topology base` under an EIGRP named-mode family).
 - A router's own lines print before its address and service families, whenever typed; its other sections (`bmp server`, templates) keep their place.
 
@@ -372,12 +391,13 @@ Lines and sections print in the order the captures print them: top-level lines b
 - `router` blocks print after the last interface (measured at 17.6, inferred elsewhere).
 - At IOS XE 17.6, `vlan filter` prints after the `vlan access-map` blocks and before the VLANs; elsewhere among the global lines before them (inferred).
 - At IOS XE 17.6, `ip route` follows the `ip http` lines, and `ip access-list` blocks follow `ip route`, before `control-plane`.
-- IOS XE writes the standard access lists, then the extended, each by name, whatever order they were typed in.
+- IOS XE and the 2960-X write the standard access lists, then the extended, each by name, whatever order they were typed in (the 2960-X: the lab WS-C2960X-24PS-L, 15.2(7)E0a, printed `AI_PORT_ACL`, which converting made, before `LAB-EXT`).
 
 ### Blank and comment lines
 
 - Between two top-level lines the output prints as many `!` lines as that release's captures printed most often between the same two commands, then the family's, else as many as the typed text built.
 - A line a switch printed keeps its own spacing (`snmp-server host ... <removed>  snmp`).
+- The 2960-X prints no `!` line between two extended access lists (the lab WS-C2960X-24PS-L, 15.2(7)E0a).
 - On IOS XE the two `! If contact email address ...` comment lines print above `contact-email-addr sch-smart-licensing@cisco.com` in `call-home`. Typing that address prints `The email address configured in Cisco Smart License Portal will be used as contact email address to send SCH notifications.`.
 - Held blocks (`call-home`, `crypto pki`) print through the same block printer as the rest.
 - Under `ip ssh pubkey-chain` users print two spaces in and their keys three.
@@ -514,7 +534,7 @@ A block per switchport as the show techs of 39 switches print it, a blank line b
 - A port with no mode is `dynamic auto`. An access VLAN no block defines prints `(Inactive)`.
 - AppGigabitEthernet is `static access` with encapsulation `native`.
 - A bundled member's Operational Mode names its bundle (`trunk (member of bundle Po1)`).
-- IOS XE prints an LACP member it has not bundled, linked or not, as `down (suspended member of bundle Po1)` with no operational encapsulation, and a PAgP or `on` member with no link the same.
+- IOS XE prints an LACP member it has not bundled, linked or not, as `down (suspended member of bundle Po1)` with no operational encapsulation, and a PAgP or `on` member with no link the same. Classic IOS prints an LACP member with no link the same (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a); its PAgP and `on` members are not known.
 - A port-channel prints `Access Mode VLAN: unassigned` and `Trunking Native Mode VLAN: 0 (Inactive)` while no member bundles, whatever its mode.
 - A voice VLAN of `dot1p`, `untagged` or `none` prints as typed.
 - The pruning list prints `NONE` when empty, and its `add` and `remove` lines apply in turn within 2-1001.
@@ -570,16 +590,17 @@ Versions 1 and 2 print the MD5 digest in two rows of eight `0xNN ` bytes. It is 
 - A version 1 or 2 server counts one revision per VLAN database change typed at the console, once the VLAN submode is left, and stamps the updater and the switch's clock (`10-16-26 18:30:17`: month and day unpadded). A change of version below 3, or of pruning, counts one too (the lab C9200L-48T-4G, 17.6.4: `vtp version 2`, `vtp pruning`, `no vtp pruning` and `vtp version 1` each counted one, `vtp password` none). A replayed configuration counts nothing.
 - A new domain, transparent or off mode and version 3 start the revision at 0.
 - Both digest lines end with a space on every platform.
-- The updater is the lowest-numbered VLAN interface with an address. It skips a VLAN interface with no address (DHCP with no lease); with none, the first layer 3 interface with an address prints (`on interface Lo0 (first layer3 interface found)`). A transparent switch and VTP mode off name no updater.
+- The updater is the interface `vtp interface` names, with an address (`(preferred interface)`, then `Preferred interface name is <name>` and two spaces on a server: the lab WS-C2960X-24PS-L, 15.2(7)E0a), else the lowest-numbered VLAN interface with an address. It skips a VLAN interface with no address (DHCP with no lease); with none, the first layer 3 interface with an address prints (`on interface Lo0 (first layer3 interface found)`). A transparent switch and VTP mode off name no updater.
 - From IOS XE 17.6 the pruning line adds its operational state (`Enabled (Operationally Enabled)`); the 9400 at 17.5 prints `Enabled` alone.
 - A 2960-Plus supports 255 VLANs locally, an IE-3300 259 and a C9200L 1024 (the lab C9200L-48T-4G, 17.6.4, at versions 1 and 3); the other IOS XE families are inferred to hold the lab C9300's 4096.
 
-Version 3 prints no last change or updater, then a Feature VLAN block: the mode, the VLANs, the extended VLANs and the VLANs supported. A server or client adds the revision, `Primary ID` `0000.0000.0000`, an empty `Primary Description` and an empty `MD5 digest`, as vswitch models no primary server; its revision stays 0. Feature MST and Feature UNKNOWN blocks follow, each Transparent, and a blank line ends the output.
+Version 3 prints no last change or updater, then a Feature VLAN block: the mode, the VLANs, the extended VLANs and the VLANs supported. A server or client adds the revision, `Primary ID` `0000.0000.0000`, an empty `Primary Description` and an empty `MD5 digest`, as vswitch models no primary server; its revision stays 0. Feature MST and Feature UNKNOWN blocks follow, each Transparent, and a blank line ends the output. The 2960-X counts the normal-range VLANs apart from the extended ones, keeps 1005 and prints no Feature UNKNOWN block (the lab WS-C2960X-24PS-L, 15.2(7)E0a, transparent and off).
 
-## show vtp counters and show vtp password
+## show vtp counters, password, interface and devices
 
 - `show vtp counters` prints every advertisement and error count at 0, then the pruning table with a row per trunking port (`Gi1/1/1`, `Po10`), its three counts at 0.
 - `show vtp password` prints `The VTP password is not configured.` where none is set. Where one is, classic IOS prints `VTP Password: <password>` as typed, and IOS XE `VTP Password is configured.` for a plain password and `VTP Password: <secret>` for a hidden one, the secret as 32 hex digits (the lab C9300-24T and C9200L-48T-4G, 17.6.4).
+- On the 2960-X, `show vtp interface` prints a blank line, ` Interface               VTP Status` and 36 dashes, then a row per front port, the two ten-gigabit ports `show interfaces status` leaves out (`Te1/1/1`, `Te1/1/2`, the WS-C2960X-24PS-L alone measured) and each port-channel, the name padded to 21 and four spaces before `enabled`, or `disabled` under `no vtp`; below version 3 `show vtp devices` prints `Device information can be only retrieved in VTP version 3` (the lab WS-C2960X-24PS-L, 15.2(7)E0a).
 - The VTP lines' own messages are under Messages the configuration gives.
 
 ## show spanning-tree
@@ -596,7 +617,7 @@ PVST, Rapid PVST and MST in their converged state, across every switch of a lab,
 - Cost is `spanning-tree [vlan <list>] cost`, else the speed's: long (802.1t, 1G 20000) by default on IOS XE, short (802.1D, 1G 4) on classic IOS, or `spanning-tree pathcost method`. The speed is the port's `speed`, else the speed a `no speed` cleared, else the link's: the lab C9300 kept costing a port at its old forced speed after `no speed`.
 - A cable to a device the lab does not model carries no BPDUs unless the lab file's `[[device]]` gives the BPDUs it sends.
 - `spanning-tree bpdufilter enable` sends and takes no BPDUs: both ends are designated forwarding.
-- A port with BPDU guard that hears a BPDU is err-disabled: it leaves the tables, and its cable's far end loses its link. `show interfaces status` names its transceiver; `show interfaces status err-disabled` lists it with reason `bpduguard`.
+- A port with BPDU guard that hears a BPDU is err-disabled: it leaves the tables, and its cable's far end loses its link. `show interfaces status` names its transceiver; `show interfaces status err-disabled` lists it with reason `bpduguard`, and prints nothing while no port is err-disabled (the lab C9200L-48T-4G, 17.6.4; the lab WS-C2960X-24PS-L, 15.2(7)E0a).
 
 ### MST
 
@@ -656,12 +677,13 @@ A Catalyst 9400's ports and a classic stack's port-channels have no known number
 | `show pending`, in `spanning-tree mst configuration` | `Pending MST configuration`, then the region as edited so far, which vswitch takes as each line is typed (the lab C9200L-48T-4G, 17.6.4); `show current`, the region before the edit, is not modelled |
 
 - A bridge that is not the root adds `Cost` and `Port <n> (<name>)` under the root's address. Under MST the cost is the CIST's external one, the internal one where the CIST's root is in the region (inferred), and an MSTI's internal one.
-- IOS XE pads the summary's labels to two widths and lists EtherChannel misconfig guard first. Classic IOS pads them to one width and lists it after Loopguard Default.
+- IOS XE pads the summary's labels to two widths and lists EtherChannel misconfig guard first. Classic IOS pads them to one width and lists it after Loopguard Default before 15.2 and first from 15.2. From 15.2(7)E classic IOS pads them to 39 and adds `PVST Simulation Default` (`enabled but inactive in rapid-pvst mode`, `disabled` under `no spanning-tree pvst-simulation`) and `Bridge Assurance` before UplinkFast (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a).
 - The summary counts `1 vlan` and `1 mst` in the singular.
 - UplinkFast and BackboneFast set outside PVST print `enabled but inactive in <mode> mode`.
 - A port in no tree prints `no spanning tree info available for <port> `, `detail` or not; a VLAN list with no instance prints `Spanning tree instance(s) for vlan <list> does not exist.`
 - A switch with no port up runs no instance (the lab C9200L-48T-4G, 17.6.4, in rapid-pvst and MST mode). `show spanning-tree`, `active` and `detail` print `No spanning tree instance exists.` between blank lines, `root` and `bridge` print nothing, and `summary` and `summary totals` end with one `Total` row of zeros. In MST mode `mst` and `mst detail` print `No mst information available.`, `mst <n>` `No mst information available for instance(s) <n>.` and `mst interface <port>` `No mst information available on interface <port>.`, each between blank lines.
-- `detail`, `interface <port> detail`, `mst interface <port>`, `mst configuration digest` and MST forms outside MST mode print the no-output-model line where an instance runs. No BPDU counter, topology change or age is invented.
+- `mst configuration digest` prints the default region's (no name, revision 0, no instance) `Digest          0xAC36177F50283CD4B83821D8AB26DE62` and `Pre-std Digest  0xBB3B6C15EF8D089BB55ED10D24DF44DE` after its name and revision lines; classic IOS prints `% Switch is not in mst mode` first outside MST mode (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a). Another region's digest has no output model.
+- `detail`, `interface <port> detail`, `mst interface <port>` and MST forms outside MST mode print the no-output-model line where an instance runs. No BPDU counter, topology change or age is invented.
 - Aging Time is `mac address-table aging-time` for the VLAN or the switch, else 300; MST blocks print none.
 
 ## show ip interface brief
@@ -684,6 +706,8 @@ The layout and column widths follow C9200L captures at 17.6 and 17.15, with no b
 ## show ip access-lists and show access-lists
 
 `show ip access-lists [<name>]` prints each IPv4 list, or the one named: classic IOS as created, IOS XE the standard lists then the extended, each by name. A Catalyst 9300 at 17.6 adds the lists IOS XE makes itself (`IP-Adm-V4-Int-ACL-global`, `implicit_deny`, `implicit_permit`, `meraki-fqdn-dns`, `preauth_v4`); `IP-Adm-V4-Int-ACL-global` holds `permit tcp any any eq www` while `ip http server` runs and `eq 443` while `ip http secure-server` runs. `show access-lists [<name>]` prints the same, then on IOS XE the IPv6 lists and the MAC lists. Sources are the lab C9300-24T (17.6.4) and the lab 2960G (15.0(2)SE11).
+
+The 2960-X prints as IOS XE does, the standard lists then the extended by name, then the IPv6 and MAC lists, and makes its own lists as the lab WS-C2960X-24PS-L did at 15.2(2)E5 and 15.2(7)E0a: `CISCO-CWA-URL-REDIRECT-ACL` (entries 100 to 105: DNS, DHCP and `permit tcp any any eq www`) and `preauth_ipv4_acl (per-user)`, and `preauth_ipv6_acl (per-user)` among the IPv6 lists. `show ip access-lists interface <name> [in|out]` prints the lists applied there, inbound first (inferred), each title ending with its direction (`Standard IP access list LAB-STD in`), and nothing where none is. `show access-lists ipc` and `hardware counters` print counters vswitch does not model.
 
 - The heading is `Extended IP access list <name>` or `Standard IP access list <name>`.
 - Each entry is four spaces in with its number. Remarks are left out.

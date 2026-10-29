@@ -347,6 +347,13 @@ impl<'a> Session<'a> {
         })
     }
 
+    /// Whether the image says what a global VTP line did: IOS XE, and of classic IOS the 2960-X (the
+    /// lab WS-C2960X-24PS-L, 15.2(7)E0a: the mode, the domain, the version and pruning as IOS XE).
+    fn says_vtp(&self) -> bool {
+        !self.device.stack.classic()
+            || self.device.stack.family() == Some(crate::platform::Family::C2960X)
+    }
+
     /// What IOS XE says of a global VTP line in the state before it, and whether it takes the line
     /// (the lab C9200L-48T-4G and C9300-24T, 17.6.4): a mode, domain or version as set or as already
     /// so, pruning switched on or off by a server alone, and a version 1 or 2 server's refusals while
@@ -418,6 +425,16 @@ impl<'a> Session<'a> {
                 "on"
             };
             return said(format!("Pruning switched {on}"));
+        }
+        // the file VTP keeps the VLAN database in (the lab WS-C2960X-24PS-L, 15.2(7)E0a: `vtp file
+        // vtpfilename`, `no vtp file vtpconfig`; IOS XE inferred alike)
+        if let Some(name) = canonical.strip_prefix("vtp file ") {
+            return said(format!(
+                "Setting device to store VLAN database at filename {name}."
+            ));
+        }
+        if canonical.starts_with("no vtp file") {
+            return said("Clearing device storage filename.".into());
         }
         None
     }
@@ -491,6 +508,25 @@ impl<'a> Session<'a> {
                 if let Some(name) = self.device.blocks[b].header.strip_prefix("interface ") {
                     self.device.held_speed.remove(name);
                 }
+            }
+        }
+    }
+
+    /// A port-channel `switchport access vlan` or its `no` was typed on prints its access VLAN from
+    /// then on, down or up: the lab WS-C2960X-24PS-L (15.2(7)E0a) printed Po1 `unassigned` with no
+    /// member bundled, `20` once given VLAN 20, and `1` once `configure replace` took it back.
+    fn assign_channels(&mut self, p: &Parse) {
+        if crate::device::key(p) != "switchport access vlan" {
+            return;
+        }
+        let Some(f) = self.frames.last() else {
+            return;
+        };
+        for &b in &f.blocks {
+            if let Some(name) = self.device.blocks[b].header.strip_prefix("interface ")
+                && name.starts_with("Port-channel")
+            {
+                self.device.channel_vlans.insert(name.to_string());
             }
         }
     }
@@ -1423,6 +1459,11 @@ impl<'a> Session<'a> {
             self.closed = true;
             return (vec![], Result::Ok);
         }
+        if self.mode() == "privileged"
+            && let Some(said) = self.root_alone(whole.trim())
+        {
+            return said;
+        }
         // an EXEC line's output passes the modifier after `|` (`show running-config | include x`);
         // in configuration mode `|` is text (`do` hands its line to EXEC whole)
         let bar = (!cli::is_config(self.mode()))
@@ -1898,8 +1939,8 @@ impl<'a> Session<'a> {
             self.converting = Some(line.to_string());
             return (vec![CONVERT_SAY.into()], Result::Ok);
         }
-        // what IOS XE says of a VTP line; a line it refuses with a word changes nothing
-        let vtp_note = (mode == "config" && !self.redacted && !self.device.stack.classic())
+        // what IOS XE and the 2960-X say of a VTP line; a line refused with a word changes nothing
+        let vtp_note = (mode == "config" && !self.redacted && self.says_vtp())
             .then(|| self.vtp_said(&canonical))
             .flatten();
         if let Some((said, false)) = &vtp_note {
@@ -1957,6 +1998,7 @@ impl<'a> Session<'a> {
         }
         if r == Result::Ok {
             self.hold_speeds(&p, speeds);
+            self.assign_channels(&p);
         }
         // at the console an access or voice VLAN the switch lacks is made, and said so, as IOS does;
         // a replayed configuration defines its own
@@ -3340,10 +3382,16 @@ impl<'a> Session<'a> {
     /// a default SGT mapping without a default route, a civic location holding no attributes, and
     /// the MST region shown outside MST.
     fn taken_with_warning(&self, mode: &str, p: &Parse) -> Option<String> {
-        if p.negated || self.device.stack.classic() {
+        if p.negated {
             return None;
         }
         let canonical = p.canonical();
+        // classic IOS's are not measured but the MST region's (the lab WS-C2960X-24PS-L, 15.2(7)E0a)
+        if self.device.stack.classic()
+            && !canonical.starts_with("show spanning-tree mst configuration")
+        {
+            return None;
+        }
         let words: Vec<&str> = canonical.split_whitespace().collect();
         let exists = || self.device.blocks.iter().any(|b| b.header == canonical);
         // the interface the line is typed into, and whether it holds the line already
@@ -3666,10 +3714,13 @@ impl<'a> Session<'a> {
     /// `authentication` lines become `access-session` lines and a control policy of its own,
     /// `CPL_PORT_POLICY`, its classes printed twice; the port keeps `mab` and `dot1x pae`. The 2960-X
     /// adds `CPL_DEFAULTS_2960X`, the class maps of `CPL_CLASSES` only where a port converts, and
-    /// `CPL_PORT_POLICY_2960X`, its classes printed once (the lab WS-C2960X-24PS-L, 15.2(2)E5).
+    /// `CPL_PORT_POLICY_2960X`, its classes printed once (the lab WS-C2960X-24PS-L, 15.2(2)E5); at
+    /// 15.2(7)E0a `CPL_DEFAULTS_2960X_15_2_7`, `CPL_PARAMETER_MAPS_2960X` and, where a port
+    /// converts, `CPL_CLASSES_2960X_15_2_7` too.
     fn convert_to_new_style(&mut self) {
         self.converted = true;
         let classic = self.device.stack.classic();
+        let e7 = classic && self.since("15.2(7)E");
         let anchor = self.service_templates_after();
         let identity = |t: &str| t.strip_prefix("identity policy ").map(str::to_string);
         let mut lines: Vec<String> = (self.device.global.iter().map(|e| e.text.as_str()))
@@ -3683,10 +3734,10 @@ impl<'a> Session<'a> {
         self.device
             .blocks
             .retain(|b| !b.header.starts_with("identity policy "));
-        let defaults = if classic {
-            CPL_DEFAULTS_2960X
-        } else {
-            CPL_DEFAULTS
+        let defaults = match (classic, e7) {
+            (false, _) => CPL_DEFAULTS,
+            (true, false) => CPL_DEFAULTS_2960X,
+            (true, true) => CPL_DEFAULTS_2960X_15_2_7,
         };
         lines.extend(defaults.iter().map(|l| l.to_string()));
         let mut ports = vec![];
@@ -3716,6 +3767,9 @@ impl<'a> Session<'a> {
         }
         if !classic || !ports.is_empty() {
             lines.extend(CPL_CLASSES.iter().map(|l| l.to_string()));
+            if e7 {
+                lines.extend(CPL_CLASSES_2960X_15_2_7.iter().map(|l| l.to_string()));
+            }
         }
         let mut policies = vec![];
         for (port, ..) in &ports {
@@ -3739,6 +3793,27 @@ impl<'a> Session<'a> {
             ));
         }
         self.configure_quietly(&lines);
+        // the parameter maps print after the spanning-tree and errdisable lines, each after the one
+        // before (the lab WS-C2960X-24PS-L, 15.2(7)E0a: after `errdisable recovery cause
+        // bpduguard` on the rich base, `spanning-tree extend system-id` on the crawl base)
+        if e7 {
+            let shown = show::configuration(&self.device);
+            let mut prev = (shown.iter().rev())
+                .find(|l| l.starts_with("spanning-tree ") || l.starts_with("errdisable "))
+                .cloned();
+            for (header, line) in CPL_PARAMETER_MAPS_2960X {
+                let b = self.device.block(header);
+                self.device.blocks[b].lines = vec![Entry {
+                    key: line.to_string(),
+                    text: line.to_string(),
+                }];
+                self.device.held_top.insert(header.to_string());
+                if let Some(p) = prev {
+                    self.device.held_after.insert(header.to_string(), p);
+                }
+                prev = Some(header.to_string());
+            }
+        }
         // `access-session mac-move deny`, then the service templates where an identity policy
         // prints, each after the one before, and the parameter maps typed next (the lab
         // C9200L-48T-4G, 17.6.4 and 17.15.6, `show running-config | section`); the 2960-X prints
@@ -3763,6 +3838,9 @@ impl<'a> Session<'a> {
                 self.device.held_after.insert(l.clone(), p);
             }
             prev = Some(l.clone());
+        }
+        if e7 {
+            self.separators_at_15_2_7(&policies);
         }
         // a port's `access-session` lines print after its `switchport` lines, before `mab`, and stay
         // there, as no capture orders them
@@ -3869,6 +3947,65 @@ impl<'a> Session<'a> {
             .pairs
             .insert((udld, key.clone()), seps[..blank].to_vec());
         layout.pairs.insert((key, next), seps[blank..].to_vec());
+    }
+
+    /// The `!` lines a replayed configuration's lines print with once converted at 15.2(7)E0a (the
+    /// lab WS-C2960X-24PS-L, its rich base): one more before the parameter maps than were between
+    /// the lines either side of them, then two after each; and seven more after its last class map,
+    /// before the line after it, a converted port's policy going between with the `!` lines that
+    /// line had (one `!` between the QoS class map and `policy-map LAB-IN` before, eight after; then
+    /// the port's policy and the one).
+    fn separators_at_15_2_7(&mut self, policies: &[String]) {
+        let shown = show::configuration(&self.device);
+        let Some(layout) = self.device.layout.as_mut() else {
+            return;
+        };
+        let key = crate::device::layout_key;
+        let bang = |n: usize| std::iter::repeat_n("!".to_string(), n);
+        let tops: Vec<String> = (shown.iter())
+            .filter(|l| !l.starts_with([' ', '\t']) && *l != "!" && !l.is_empty())
+            .map(|l| key(l))
+            .collect();
+        let maps: Vec<String> = (CPL_PARAMETER_MAPS_2960X.iter())
+            .map(|(h, _)| key(h))
+            .collect();
+        let at = |m: &String| tops.iter().position(|t| t == m);
+        if let (Some(first), Some(last)) = (at(&maps[0]), at(&maps[maps.len() - 1]))
+            && first > 0
+            && last + 1 < tops.len()
+        {
+            let (p, n) = (tops[first - 1].clone(), tops[last + 1].clone());
+            if let Some(seps) = layout.pairs.get(&(p.clone(), n.clone())).cloned() {
+                let before = seps.into_iter().chain(bang(1)).collect();
+                layout.pairs.insert((p, maps[0].clone()), before);
+                for w in maps.windows(2) {
+                    layout
+                        .pairs
+                        .insert((w[0].clone(), w[1].clone()), bang(2).collect());
+                }
+                layout
+                    .pairs
+                    .insert((maps[maps.len() - 1].clone(), n), bang(2).collect());
+            }
+        }
+        let class = |k: &str| k.starts_with("class-map ");
+        let last = (layout.pairs.iter())
+            .filter(|((a, b), _)| class(a) && !class(b))
+            .max_by_key(|((a, _), _)| layout.order.get(a).copied())
+            .map(|(k, v)| (k.clone(), v.clone()));
+        let Some(((a, b), seps)) = last else {
+            return;
+        };
+        let more: Vec<String> = seps.iter().cloned().chain(bang(7)).collect();
+        match (policies.first(), policies.last()) {
+            (Some(first), Some(last)) => {
+                layout.pairs.insert((a, key(first)), more);
+                layout.pairs.insert((key(last), b), seps);
+            }
+            _ => {
+                layout.pairs.insert((a, b), more);
+            }
+        }
     }
 
     /// The top-level line the service templates print after: the one before an identity policy, else
@@ -4732,9 +4869,16 @@ impl<'a> Session<'a> {
         // a refusal of the image's own switch past the books' stands where its crawl reads every
         // word before the caret: the lab WS-C2960X-24PS-L (15.2(2)E5) refused `key chain TESTMS
         // macsec` at `macsec`, where the 2960-X book holds no `key chain`
+        // and a line its answers hold incomplete stays so where the crawl reads every word, EXEC
+        // included: the same switch (15.2(7)E0a) answered `alias` in global configuration and
+        // `undebug` at the privileged prompt `% Incomplete command.`, where the book holds neither
         let held = match held {
             Some(Outcome::Invalid(at)) if !taken && self.crawl_reads_to(i, mode, line, at) => {
                 o = Outcome::Invalid(at);
+                None
+            }
+            Some(Outcome::Incomplete) if !taken && self.crawl_reads_every_word(i, mode, line) => {
+                o = Outcome::Incomplete;
                 None
             }
             h => h,
@@ -4760,6 +4904,18 @@ impl<'a> Session<'a> {
         self.engine.held.crawls.contains_key(&level)
             && self
                 .crawl_reading(&level, mode, &context, &line[..at], false)
+                .is_some()
+    }
+
+    /// Whether this image's own crawl at the session's level reads every word of `line` in the mode
+    /// and context of frame `i`, EXEC included, whatever the answer after the last offers.
+    fn crawl_reads_every_word(&self, i: usize, mode: &str, line: &str) -> bool {
+        let (Some(level), Some(context)) = (self.level(), self.context_at(i)) else {
+            return false;
+        };
+        self.engine.held.crawls.contains_key(&level)
+            && self
+                .crawl_reading(&level, mode, &context, line, false)
                 .is_some()
     }
 
@@ -5583,6 +5739,33 @@ impl<'a> Session<'a> {
     }
 
     /// Whether this session's release is `release` or a later one.
+    /// What IOS answers to privileged command `root` typed alone, as the lab switches answered their
+    /// roots on Enter: `% Type "<root> ?" for a list of subcommands` after `show` (the lab
+    /// C9300-24T, 17.6.4), `show`, `clear` and `debug` (the lab C9200L-48T-4G, 17.6.4 and 17.15.6,
+    /// which answered `set` incomplete) and `set` too (the lab WS-C2960X-24PS-L, 15.2(7)E0a); `%
+    /// No connections open` after `where` (the C9200L and the 2960-X). Typed whole.
+    fn root_alone(&self, root: &str) -> Option<(Vec<String>, Result)> {
+        use crate::platform::Family;
+        let release = self.engine.grammar.release.as_str();
+        let (lists, wheres): (&[&str], bool) = match self.device.stack.family() {
+            Some(Family::C9300) if release == "17.6" => (&["show"], false),
+            Some(Family::C9200 | Family::C9200L | Family::C9200B)
+                if ["17.6", "17.15"].contains(&release) =>
+            {
+                (&["show", "clear", "debug"], true)
+            }
+            Some(Family::C2960X) if self.since("15.2(7)E") => {
+                (&["show", "clear", "debug", "set"], true)
+            }
+            _ => (&[], false),
+        };
+        if lists.contains(&root) {
+            let said = format!("% Type \"{root} ?\" for a list of subcommands");
+            return Some((vec![said], Result::Error));
+        }
+        (wheres && root == "where").then(|| (vec!["% No connections open".into()], Result::Ok))
+    }
+
     fn since(&self, release: &str) -> bool {
         crate::release::Release::parse(&self.device.release)
             .zip(crate::release::Release::parse(release))
@@ -6210,7 +6393,6 @@ impl<'a> Session<'a> {
                         self.device.blocks[b].lines[i].text = t;
                     }
                     if header.starts_with("class-map ")
-                        && !self.device.stack.classic()
                         && let Some(t) = match_spacing(&self.device.blocks[b].lines[i].text)
                     {
                         self.device.blocks[b].lines[i].text = t;
@@ -6584,6 +6766,30 @@ const CPL_DEFAULTS_2960X: &[&str] = &[
     " voice vlan",
 ];
 
+/// `CPL_DEFAULTS_2960X` as the lab WS-C2960X-24PS-L printed it at 15.2(7)E0a (`show
+/// running-config`, from the crawl base and the rich one alike): the templates in another order,
+/// with `webauth-global-absolute`.
+const CPL_DEFAULTS_2960X_15_2_7: &[&str] = &[
+    "access-session mac-move deny",
+    "service-template DEFAULT_CRITICAL_VOICE_TEMPLATE",
+    " voice vlan",
+    "service-template webauth-global-inactive",
+    " inactivity-timer 3600",
+    "service-template webauth-global-absolute",
+    "service-template DEFAULT_LINKSEC_POLICY_MUST_SECURE",
+    "service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
+    "ip access-list extended AI_PORT_ACL",
+    " permit ip any any",
+];
+
+/// The parameter maps converting adds on the 2960-X at 15.2(7)E0a with or without a port, each
+/// with its one line (the lab WS-C2960X-24PS-L, `show running-config`, `show parameter-map type
+/// webauth all`). They are written, not typed: no crawl entered a parameter map.
+const CPL_PARAMETER_MAPS_2960X: &[(&str, &str)] = &[
+    ("parameter-map type webauth AI_NRH_PMAP", "type authbypass"),
+    ("parameter-map type webauth AI_WEBAUTH_PMAP", "type webauth"),
+];
+
 /// The class maps converting adds, which the C9200L-48T-4G adds with `CPL_DEFAULTS` and the
 /// WS-C2960X-24PS-L where a port converts (17.6.4 and 17.15.6; 15.2(2)E5).
 const CPL_CLASSES: &[&str] = &[
@@ -6611,6 +6817,12 @@ const CPL_CLASSES: &[&str] = &[
     "class-map type control subscriber match-all MAB_FAILED",
     " match method mab",
     " match result-type method mab authoritative",
+];
+
+/// The class map the WS-C2960X-24PS-L adds after `CPL_CLASSES` at 15.2(7)E0a.
+const CPL_CLASSES_2960X_15_2_7: &[&str] = &[
+    "class-map type control subscriber match-all SESSION_UNAUTH",
+    " match authorization-status unauthorized",
 ];
 
 /// The control policy converting a legacy port makes for it, `POLICY_<port>`: what the lab
@@ -7315,10 +7527,11 @@ fn best_fit(answer: &[String], typed: &str) -> Fit {
         .unwrap_or(Fit::No)
 }
 
-/// A class map's `match` on DSCP, precedence or CoS values as IOS XE writes it: each DSCP or
+/// A class map's `match` on DSCP, precedence or CoS values as IOS writes it: each DSCP or
 /// precedence value followed by a space, the values a space apart (the lab C9300-24T, 17.6.4: `match
-/// dscp cs4  cs5  ef `; 41 17.15 captures `match dscp ef `), a CoS value with a space either side
-/// (`match cos  5 `; more than one inferred the same).
+/// dscp cs4  cs5  ef `; 41 17.15 captures `match dscp ef `; classic IOS the same, the lab
+/// WS-C2960X-24PS-L at 15.2(2)E5 and 15.2(7)E0a: `match ip dscp ef `), a CoS value with a space
+/// either side (`match cos  5 `; more than one, and classic IOS's, inferred the same).
 fn match_spacing(text: &str) -> Option<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let (head, values) = match words.as_slice() {
@@ -14939,6 +15152,181 @@ mod tests {
     }
 
     #[test]
+    fn a_root_alone_answers_as_the_lab_switches_answered_it_on_enter() {
+        // the lab WS-C2960X-24PS-L's Enter audit (15.2(7)E0a): roots its book does not hold, which
+        // its crawl offers with no `<cr>` after them, are incomplete
+        let r = crate::release::Release::parse("15.2(7)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        let incomplete = (
+            vec!["% Incomplete command.".to_string(), String::new()],
+            Result::Error,
+        );
+        for line in ["undebug", "verify", "license", "crypto"] {
+            assert_eq!(s.type_line(line), incomplete, "{line}");
+        }
+        let hint = |w: &str| {
+            (
+                vec![format!("% Type \"{w} ?\" for a list of subcommands")],
+                Result::Error,
+            )
+        };
+        for w in ["show", "clear", "debug", "set"] {
+            assert_eq!(s.type_line(w), hint(w));
+        }
+        assert_eq!(
+            s.type_line("where"),
+            (vec!["% No connections open".to_string()], Result::Ok)
+        );
+        s.type_line("configure terminal");
+        for line in ["alias", "arp", "kron", "service-template"] {
+            assert_eq!(s.type_line(line), incomplete, "{line}");
+            assert_eq!(s.mode(), "config");
+        }
+        // the lab C9200L-48T-4G's (17.6.4 and 17.15.6) answered `set` incomplete
+        for release in ["17.6", "17.15"] {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar("c9200", r).unwrap());
+            let stack = crate::platform::parse_stack("C9200L-48T-4G").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            s.type_line("enable");
+            for w in ["show", "clear", "debug"] {
+                assert_eq!(s.type_line(w), hint(w), "{release}");
+            }
+            assert_eq!(s.type_line("set"), incomplete, "{release}");
+        }
+    }
+
+    #[test]
+    fn a_2960_x_at_15_2_7_converts_as_the_lab_one_printed_it() {
+        // the lab WS-C2960X-24PS-L (15.2(7)E0a) converted its printed rich configuration on `yes`,
+        // with a legacy port and without
+        const BASE: &str = "!\nversion 15.2\n!\nhostname Switch\n!\n!\nudld enable\n\nmls qos\n!\n\
+            crypto pki trustpoint TP1\n enrollment selfsigned\n revocation-check none\n!\n!\n\
+            crypto pki certificate chain TP1\n!\nmac access-list extended M1\n permit any any\n!\n\
+            spanning-tree mode rapid-pvst\nspanning-tree extend system-id\n\
+            errdisable recovery cause bpduguard\n!\n!\n!\n!\n!\nlldp run\n!\n\
+            class-map match-all CM1\n match ip dscp ef \n!\npolicy-map PM1\n class CM1\n  set dscp ef\n!\n\
+            interface GigabitEthernet1/0/12\n switchport mode access\n\
+             authentication port-control auto\n mab\n dot1x pae authenticator\n!\n\
+            ip access-list standard S1\n permit 192.0.2.0 0.0.0.255\n!\n\
+            ip access-list extended E1\n permit ip any any\n!\nend\n";
+        let r = crate::release::Release::parse("15.2(7)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let session = |base: &str| {
+            let mut s = Session::new(&e, Device::new(stack.clone()));
+            crate::check::type_into(&mut s, base);
+            s.type_line("end");
+            s.type_line("configure terminal");
+            let (out, r) = s.type_line("class-map type control subscriber match-all TESTCC");
+            assert_eq!((out, r), (vec![CONVERT_SAY.to_string()], Result::Ok));
+            assert_eq!(s.type_line(""), (vec![], Result::Ok));
+            s.type_line("end");
+            show::configuration(&s.device)
+        };
+        let run = |shown: &[String], from: &str, n: usize| {
+            let at = (shown.iter().position(|x| x == from))
+                .unwrap_or_else(|| panic!("{from}: {shown:#?}"));
+            shown[at..at + n].to_vec()
+        };
+        let bangs = |n: usize| vec!["!"; n];
+        for port in [true, false] {
+            let base = if port {
+                BASE.to_string()
+            } else {
+                BASE.replace("authentication port-control auto\n", "")
+            };
+            let shown = session(&base);
+            // `access-session mac-move deny` and `mls qos` with no `!` between, as before
+            assert_eq!(
+                run(&shown, "udld enable", 4),
+                ["udld enable", "", "access-session mac-move deny", "mls qos"]
+            );
+            assert_eq!(
+                run(&shown, "crypto pki certificate chain TP1", 9),
+                [
+                    "crypto pki certificate chain TP1",
+                    "service-template DEFAULT_CRITICAL_VOICE_TEMPLATE",
+                    " voice vlan",
+                    "service-template webauth-global-inactive",
+                    " inactivity-timer 3600 ",
+                    "service-template webauth-global-absolute",
+                    "service-template DEFAULT_LINKSEC_POLICY_MUST_SECURE",
+                    "service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
+                    "!",
+                ]
+            );
+            // six `!` where five were, then two after each map
+            let mut maps = vec!["errdisable recovery cause bpduguard"];
+            maps.extend(bangs(6));
+            maps.extend(["parameter-map type webauth AI_NRH_PMAP", " type authbypass"]);
+            maps.extend(bangs(2));
+            maps.extend([
+                "parameter-map type webauth AI_WEBAUTH_PMAP",
+                " type webauth",
+            ]);
+            maps.extend(bangs(2));
+            maps.push("lldp run");
+            assert_eq!(run(&shown, maps[0], maps.len()), maps);
+            assert_eq!(
+                run(&shown, "ip access-list standard S1", 6),
+                [
+                    "ip access-list standard S1",
+                    " permit 192.0.2.0 0.0.0.255",
+                    "!",
+                    "ip access-list extended AI_PORT_ACL",
+                    " permit ip any any",
+                    "ip access-list extended E1",
+                ]
+            );
+            // eight `!` where one was after the QoS class map, then the port's policy and the one
+            let mut qos = vec!["class-map match-all CM1", " match ip dscp ef "];
+            qos.extend(bangs(8));
+            let next = if port {
+                "policy-map type control subscriber POLICY_Gi1/0/12"
+            } else {
+                "policy-map PM1"
+            };
+            qos.push(next);
+            assert_eq!(run(&shown, qos[0], qos.len()), qos);
+            let controls: Vec<&String> = (shown.iter())
+                .filter(|l| l.starts_with("class-map type control "))
+                .collect();
+            if !port {
+                assert_eq!(
+                    controls,
+                    ["class-map type control subscriber match-all TESTCC"]
+                );
+                assert_eq!(run(&shown, "lldp run", 2)[1], controls[0].as_str());
+                continue;
+            }
+            assert_eq!(controls.len(), 11, "{controls:#?}");
+            assert_eq!(
+                run(
+                    &shown,
+                    "class-map type control subscriber match-all SESSION_UNAUTH",
+                    4
+                ),
+                [
+                    "class-map type control subscriber match-all SESSION_UNAUTH",
+                    " match authorization-status unauthorized",
+                    "!",
+                    "class-map type control subscriber match-all TESTCC",
+                ]
+            );
+            let policy = run(&shown, next, CPL_PORT_POLICY_2960X.len() + 3);
+            assert_eq!(
+                policy[1..=CPL_PORT_POLICY_2960X.len()],
+                *CPL_PORT_POLICY_2960X
+            );
+            assert_eq!(policy[policy.len() - 2..], ["!", "policy-map PM1"]);
+        }
+    }
+
+    #[test]
     fn a_first_word_a_submode_only_abbreviates_is_the_enclosing_mode_s_whole_word() {
         let e = c9300_17_6();
         // the key chain's `key` takes a number; the key's own `key-string` is not read
@@ -15420,6 +15808,73 @@ mod tests {
             s.type_line("vtp mode server"),
             refused("Device mode cannot be VTP Server for VLANS because extended VLAN(s) exist")
         );
+    }
+
+    #[test]
+    fn vtp_lines_say_what_they_did_as_the_lab_2960x_said_it() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a, the book's VTP examples in order
+        let r = crate::release::Release::parse("15.2(7)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        let said = |m: &str| (vec![m.to_string()], Result::Ok);
+        let refused = |m: &str| (vec![m.to_string()], Result::Error);
+        for (line, answer) in [
+            ("vlan 200", (vec![], Result::Ok)),
+            ("exit", (vec![], Result::Ok)),
+            (
+                "vtp mode transparent",
+                said("Setting device to VTP Transparent mode for VLANS."),
+            ),
+            ("vlan 2000", (vec![], Result::Ok)),
+            ("exit", (vec![], Result::Ok)),
+            (
+                "vtp file vtpfilename",
+                said("Setting device to store VLAN database at filename vtpfilename."),
+            ),
+            (
+                "no vtp file vtpconfig",
+                said("Clearing device storage filename."),
+            ),
+            (
+                "vtp domain OurDomainName",
+                said("Changing VTP domain name from NULL to OurDomainName"),
+            ),
+            (
+                "vtp mode transparent",
+                said("Device mode already VTP Transparent for VLANS."),
+            ),
+            (
+                "vtp password ThisIsOurDomainsPassword",
+                said("Setting device VTP password to ThisIsOurDomainsPassword"),
+            ),
+            (
+                "vtp pruning",
+                refused("Cannot modify pruning unless in VTP server mode"),
+            ),
+            ("vtp version 2", (vec![], Result::Ok)),
+            (
+                "vtp domain eng_group",
+                said("Changing VTP domain name from OurDomainName to eng_group"),
+            ),
+            (
+                "vtp mode server",
+                refused(
+                    "Device mode cannot be VTP Server for VLANS because extended VLAN(s) exist",
+                ),
+            ),
+            (
+                "vtp password mypassword hidden",
+                said(
+                    "Device is operating in VTP version 2. hidden option is allowed from VTP version 3 only.",
+                ),
+            ),
+            ("vtp version 2", said("VTP version is already in V2.")),
+        ] {
+            assert_eq!(s.type_line(line), answer, "{line}");
+        }
     }
 
     #[test]

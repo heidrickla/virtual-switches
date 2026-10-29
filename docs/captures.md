@@ -294,7 +294,7 @@ A donor answers for an image at a level only once that book, release and level i
 
 ### Lines refused on Enter
 
-A configuration or privileged EXEC line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line. A configuration line's refusal past the books' own stands where the image's own crawl reads every word before its caret, as a line it takes is read (`shell::Session::crawl_reads_to`): the lab WS-C2960X-24PS-L (15.2(2)E5) refused `key chain TESTMS macsec` at `macsec`, where the 2960-X book holds no `key chain`, and the C9200L and C9300 book examples replayed 25 more lines with the switch's caret.
+A configuration or privileged EXEC line is read against the image's own answers after each whole word, in the same mode and context, and refused where the switch refused it, where that comes before the books' own refusal or the books take the line. A configuration line's refusal past the books' own stands where the image's own crawl reads every word before its caret, as a line it takes is read (`shell::Session::crawl_reads_to`): the lab WS-C2960X-24PS-L (15.2(2)E5) refused `key chain TESTMS macsec` at `macsec`, where the 2960-X book holds no `key chain`, and the C9200L and C9300 book examples replayed 25 more lines with the switch's caret. A line the answers hold incomplete stays so over the books' refusal where the crawl reads every word, EXEC included (`shell::Session::crawl_reads_every_word`): the same switch (15.2(7)E0a) answered `alias` in global configuration and `undebug` at the privileged prompt `% Incomplete command.`, where the 2960-X book holds neither, as it did 63 more roots of global configuration and 6 more privileged ones.
 
 - A word no row of the answer before it offers is invalid there. A line whose answer after its last word holds no `<cr>` is incomplete, unless that answer offers again what the one before it offered (a list, which ends anywhere).
 - A word with no answer held before it is not read. Reading stops at a held refusal for the line so far and at a `LINE` row.
@@ -378,6 +378,7 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 | C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
 | C9200 17.15 | C9200L-48T-4G, 17.15.6 | `network-advantage`, `network-essentials` |
 | C2960-X 15.2(2)E | WS-C2960X-24PS-L, 15.2(2)E5 | `lanbase` |
+| C2960-X 15.2(7)E | WS-C2960X-24PS-L, 15.2(7)E0a | `lanbase` |
 
 ### Sweep folders
 

@@ -50,6 +50,10 @@ pub struct Device {
     /// ports whose forced speed `no speed` removed, by full name, with that speed:
     /// the lab C9300, 17.6.4 kept costing them at it (`spanning.rs`)
     pub held_speed: std::collections::BTreeMap<String, u32>,
+    /// port-channels given an access VLAN since the boot, by full name: `switchport access vlan`
+    /// typed on one, or its `no`. With no member bundled one of these prints its access VLAN, the
+    /// others `unassigned` (`show.rs`)
+    pub channel_vlans: std::collections::BTreeSet<String>,
     /// transceivers fitted in ports, by full name, and whether each is third-party (a lab's
     /// `[[switch.transceiver]]`)
     pub transceivers: std::collections::BTreeMap<String, (&'static crate::platform::Optic, bool)>,
@@ -801,6 +805,7 @@ impl Device {
             vtp: Vtp::default(),
             factory: false,
             held_speed: Default::default(),
+            channel_vlans: Default::default(),
             transceivers: Default::default(),
             layout: None,
             last_change: None,

@@ -504,13 +504,17 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
 /// The `!` lines the lab C9300 (17.6.4) printed between two top-level lines where its replayed
 /// configuration had none between them: a static route after the `ip http` lines, an extended
 /// access list after the route, and the control-plane block after the access list; and those the
-/// lab WS-C2960X-24PS-L (15.2(2)E5) printed between its control class maps and a class map after
-/// them.
+/// lab WS-C2960X-24PS-L printed between its control class maps and a class map after them
+/// (15.2(2)E5), and between two extended access lists, none (15.2(7)E0a).
 fn lab_gap(d: &Device) -> impl Fn(&str, &str) -> Option<usize> {
     let at = !d.stack.classic()
         && crate::release::Release::parse(&d.release).is_some_and(|r| r.config_version() == "17.6");
     let c2960x = d.stack.family() == Some(crate::platform::Family::C2960X);
     move |a: &str, b: &str| {
+        let extended = |l: &str| l.starts_with("ip access-list extended ");
+        if c2960x && extended(a) && extended(b) {
+            return Some(0);
+        }
         let (a, b) = (command(a), command(b));
         if c2960x && a == "class-map type" && b.starts_with("class-map match-") {
             return Some(2);
@@ -838,11 +842,13 @@ fn interface_order(header: &str, d: &Device) -> (u8, usize, usize) {
 
 /// The size `Current configuration` names: each line from the first `!` through `end` with its
 /// newline, plus one (the lab C9300, 17.6.4: the whole configuration and one interface's). An empty
-/// line counts nothing (the same switch named 25775 bytes for a configuration with two, after `udld
-/// enable` and `errdisable recovery interval 60`).
-fn config_bytes(body: &[String]) -> usize {
+/// line counts nothing on IOS XE (the same switch named 25775 bytes for a configuration with two,
+/// after `udld enable` and `errdisable recovery interval 60`) and its newline on classic IOS (the
+/// lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a: 5388 bytes for a configuration with one after
+/// `udld enable`, and its views with none one byte over their lines).
+fn config_bytes(d: &Device, body: &[String]) -> usize {
     body.iter()
-        .filter(|l| !l.is_empty())
+        .filter(|l| d.stack.classic() || !l.is_empty())
         .map(|l| l.len() + 1)
         .sum::<usize>()
         + 1
@@ -852,7 +858,7 @@ fn config_bytes(body: &[String]) -> usize {
 /// C9300, 17.6.4).
 pub fn running_config(d: &Device) -> Vec<String> {
     let body = configuration(d);
-    let bytes = config_bytes(&body);
+    let bytes = config_bytes(d, &body);
     let mut out = vec![
         "Building configuration...".to_string(),
         String::new(),
@@ -867,10 +873,12 @@ pub fn running_config(d: &Device) -> Vec<String> {
 pub fn configuration(d: &Device) -> Vec<String> {
     let mut body = vec!["!".to_string()];
     // IOS XE 17.6 names the last change between two `!` lines, counted in the size (the lab C9300,
-    // 17.6.4); other releases print none here (inferred)
+    // 17.6.4), as classic IOS does (the lab WS-C2960X-24PS-L, 15.2(7)E0a, and every classic
+    // capture); other IOS XE releases print none here (inferred). Classic IOS's `! NVRAM config
+    // last updated` after a save is not modelled
     if let Some(at) = d.last_change.filter(|_| {
-        !d.stack.classic()
-            && crate::release::Release::parse(&d.release)
+        d.stack.classic()
+            || crate::release::Release::parse(&d.release)
                 .is_some_and(|r| r.config_version() == "17.6")
     }) {
         let by = d
@@ -897,15 +905,26 @@ pub fn configuration(d: &Device) -> Vec<String> {
     // a VTP server or client keeps the VLANs and its VTP settings in vlan.dat
     let in_config = d.vlans_in_running_config();
     let off = d.global_value("vtp mode ") == Some("off");
+    // the 2960-X prints `vtp interface` whatever the mode and never `vtp version` or `vtp
+    // password` (the lab WS-C2960X-24PS-L, 15.2(7)E0a: transparent at versions 1, 2 and 3, off at
+    // 3, a server at 2)
+    let x2960 = d.stack.family() == Some(crate::platform::Family::C2960X);
+    let vtp_kept = |t: &str| {
+        if x2960 {
+            t.starts_with("vtp interface ")
+                || (in_config && !t.starts_with("vtp version ") && !t.starts_with("vtp password "))
+        } else {
+            // `vtp version` prints whatever the mode (six C9200s at 17.9 and 17.12 print `vtp
+            // version 1` with no `vtp mode` line); VTP mode off prints none (the lab C9300, 17.6.4,
+            // at versions 1 and 3)
+            (in_config || t.starts_with("vtp version ")) && !(off && t.starts_with("vtp version "))
+        }
+    };
     let kept: Vec<_> = d
         .global
         .iter()
         .filter(|e| !starts(&e.text, NOT_STORED) && !typed_version(&e.text))
-        // `vtp version` prints whatever the mode (six C9200s at 17.9 and 17.12 print `vtp version
-        // 1` with no `vtp mode` line)
-        .filter(|e| in_config || !e.text.starts_with("vtp ") || e.text.starts_with("vtp version "))
-        // VTP mode off prints no `vtp version` line (the lab C9300, 17.6.4, at versions 1 and 3)
-        .filter(|e| !(off && e.text.starts_with("vtp version ")))
+        .filter(|e| !e.text.starts_with("vtp ") || vtp_kept(&e.text))
         .filter(|e| !d.held_top.contains(&e.text))
         .collect();
     // banners print after the global lines that follow the interfaces, before the line blocks
@@ -1101,8 +1120,9 @@ pub fn configuration(d: &Device) -> Vec<String> {
         .collect();
     // IOS XE writes the standard lists, then the extended, each by name, whatever order they were
     // typed in (the lab C9300-24T, 17.6.4: `ZZ-FIRST` typed before `AA-SECOND`; 42 captures at
-    // 17.6 and 17.15 holding two or more)
-    if !d.stack.classic() {
+    // 17.6 and 17.15 holding two or more), and so does the 2960-X (the lab WS-C2960X-24PS-L,
+    // 15.2(7)E0a: `AI_PORT_ACL`, which converting to new-style 802.1X made, before `LAB-EXT`)
+    if !d.stack.classic() || d.stack.family() == Some(crate::platform::Family::C2960X) {
         fn rank(b: &Block) -> Option<(bool, &str)> {
             crate::acl::of(&b.header).map(|(kind, name)| (kind != crate::acl::Kind::Standard, name))
         }
@@ -1178,7 +1198,7 @@ pub fn configuration(d: &Device) -> Vec<String> {
         body.push("!".into());
     }
     place_held(d, &mut body);
-    vtp_together(&mut body);
+    vtp_together(&mut body, x2960);
     body.push("end".into());
     separate(d, body)
 }
@@ -1239,10 +1259,18 @@ fn vlan_units(vlans: &[&Block]) -> Vec<Block> {
 
 /// The VTP lines together where the first of them prints, in the order IOS writes them whatever
 /// order they were typed in: `vtp domain` before `vtp mode` (the lab C9300, 17.6.4, with `vtp mode
-/// off` loaded and the domain typed), then `vtp version` and `vtp password` (inferred).
-fn vtp_together(body: &mut Vec<String>) {
-    const ORDER: [&str; 4] = ["vtp domain ", "vtp mode ", "vtp version ", "vtp password "];
-    let rank = |t: &str| ORDER.iter().position(|p| t.starts_with(p));
+/// off` loaded and the domain typed), then `vtp version` and `vtp password` (inferred); the 2960-X
+/// writes `vtp interface` first (the lab WS-C2960X-24PS-L, 15.2(7)E0a).
+fn vtp_together(body: &mut Vec<String>, x2960: bool) {
+    const ORDER: [&str; 5] = [
+        "vtp interface ",
+        "vtp domain ",
+        "vtp mode ",
+        "vtp version ",
+        "vtp password ",
+    ];
+    let order = if x2960 { &ORDER[..] } else { &ORDER[1..] };
+    let rank = |t: &str| order.iter().position(|p| t.starts_with(p));
     let Some(first) = body.iter().position(|l| rank(l).is_some()) else {
         return;
     };
@@ -1423,6 +1451,211 @@ pub fn vlan_database(d: &Device) -> Vec<String> {
     out
 }
 
+/// The top-level lines `keep` takes, each with the lines indented under it.
+fn sections(body: &[String], keep: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out = vec![];
+    let mut taking = false;
+    for l in body {
+        if !l.starts_with(' ') {
+            taking = keep(l);
+        }
+        if taking {
+            out.push(l.clone());
+        }
+    }
+    out
+}
+
+/// A view's lines numbered as `linenum` prints them: right-aligned in 5 columns, 6 from 100 lines
+/// (the lab WS-C2960X-24PS-L, 15.2(7)E0a: 4, 7 and 246 lines; the lab C9200L-48T-4G, 17.6.4: 12 and
+/// 709), one more for each digit past three (inferred). An empty line is left out, unnumbered (the
+/// same switches and the lab C9300-24T, 17.6.4, after `udld enable`).
+fn numbered(body: &[String]) -> Vec<String> {
+    let lines: Vec<&String> = body.iter().filter(|l| !l.is_empty()).collect();
+    let w = (lines.len().to_string().len() + 3).max(5);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{:>w$} : {l}", i + 1))
+        .collect()
+}
+
+/// `show running-config <view>`, as the lab WS-C2960X-24PS-L (15.2(7)E0a) and C9200L-48T-4G
+/// (17.6.4) printed each, or `None` for a view with no output model:
+/// - `full` and `view` the whole configuration; `brief` without the certificates' bodies;
+///   `linenum` with them, the lines numbered (`numbered`) and the size unchanged;
+/// - `class-map` and `policy-map`, all or the one named (none named prints nothing), between `!`
+///   and `end` (a `!` before `end` after the policy maps), one byte more than their lines count;
+/// - `ip dhcp pool` each pool after a `!`, a `!` after the last, with no heading;
+/// - `vlan`, `vlan <id>`: the VLANs the configuration holds, with no size (`Current
+///   configuration:`), `end` alone with none (a VTP server's, and a VLAN it does not hold);
+/// - `aaa authentication`, `authorization`, `accounting`, `username`: a `!` and those lines; with
+///   AAA off, `aaa` a `!`, `no aaa new-model` and the users, and its other sections a `!`;
+/// - `identity profile`, `identity policy`, `map-class`, `vrf` and classic IOS's `eap profiles`,
+///   `eap method profiles` and `flow` views with none configured: `end` alone, a blank line for
+///   `eap`, and the heading alone for `flow`.
+///
+/// A named pool, AAA's views with it on, `all` and the partitions are not modelled.
+fn running_view(d: &Device, rest: &[String]) -> Option<Vec<String>> {
+    let linenum = rest.iter().any(|w| w == "linenum");
+    let r: Vec<&str> = rest
+        .iter()
+        .map(String::as_str)
+        .filter(|w| *w != "linenum")
+        .collect();
+    let all = configuration(d);
+    let none = |prefixes: &[&str]| {
+        !d.blocks
+            .iter()
+            .any(|b| prefixes.iter().any(|p| b.header.starts_with(p)))
+    };
+    let sized = |body: Vec<String>, extra: usize| {
+        let mut out = vec![
+            "Building configuration...".to_string(),
+            String::new(),
+            format!(
+                "Current configuration : {} bytes",
+                config_bytes(d, &body) + extra
+            ),
+        ];
+        out.extend(if linenum { numbered(&body) } else { body });
+        out.push(String::new());
+        out
+    };
+    let no_size = |body: Vec<String>| {
+        let mut out = vec![
+            "Building configuration...".to_string(),
+            String::new(),
+            "Current configuration:".to_string(),
+        ];
+        out.extend(body);
+        out.push(String::new());
+        out
+    };
+    let named =
+        |l: &str, name: Option<&&str>| name.is_none_or(|n| l.split_whitespace().last() == Some(*n));
+    Some(match r[..] {
+        [] | ["full"] | ["view"] | ["view", "full"] => sized(all, 0),
+        ["brief"] => {
+            // the certificates' hex and `quit`, indented under each `certificate` line
+            let mut chain = false;
+            let body = all
+                .into_iter()
+                .filter(|l| {
+                    if !l.starts_with(' ') {
+                        chain = l.starts_with("crypto pki certificate chain ");
+                    }
+                    !(chain && l.starts_with("  "))
+                })
+                .collect();
+            sized(body, 0)
+        }
+        ["class-map", ref name @ ..] | ["policy-map", ref name @ ..] if name.len() <= 1 => {
+            let kind = format!("{} ", r[0]);
+            let maps = sections(&all, |l| l.starts_with(&kind) && named(l, name.first()));
+            if maps.is_empty() && !name.is_empty() {
+                return Some(vec![]);
+            }
+            let mut body = vec!["!".to_string()];
+            body.extend(maps);
+            if r[0] == "policy-map" {
+                body.push("!".into());
+            }
+            body.push("end".into());
+            sized(body, 1)
+        }
+        ["ip", "dhcp", "pool"] => {
+            let mut out = vec!["!".to_string()];
+            for l in sections(&all, |l| l.starts_with("ip dhcp pool ")) {
+                if !l.starts_with(' ') && out.len() > 1 {
+                    out.push("!".into());
+                }
+                out.push(l);
+            }
+            if out.len() > 1 {
+                out.push("!".into());
+            }
+            out.push(String::new());
+            out
+        }
+        ["vlan", ref id @ ..] if id.len() <= 1 && !linenum => {
+            let held = |l: &str| {
+                l.strip_prefix("vlan ").is_some_and(|v| {
+                    v.chars()
+                        .all(|c| c.is_ascii_digit() || c == ',' || c == '-')
+                        && id.first().is_none_or(|want| v == *want)
+                })
+            };
+            let mut body = vec![];
+            for l in sections(&all, held) {
+                if !l.starts_with(' ') {
+                    body.push("!".to_string());
+                }
+                body.push(l);
+            }
+            body.push("end".into());
+            no_size(body)
+        }
+        ["aaa", sub]
+            if !linenum
+                && matches!(
+                    sub,
+                    "authentication" | "authorization" | "accounting" | "username"
+                ) =>
+        {
+            let prefix = if sub == "username" {
+                "username ".to_string()
+            } else {
+                format!("aaa {sub} ")
+            };
+            let mut out = vec!["!".to_string()];
+            out.extend(all.into_iter().filter(|l| l.starts_with(&prefix)));
+            out.push(String::new());
+            out
+        }
+        // with AAA off, the whole view is `no aaa new-model` before the users, and each other
+        // section a `!` alone (the lab WS-C2960X-24PS-L, 15.2(7)E0a)
+        ["aaa", ref sub @ ..] if !linenum && !all.iter().any(|l| l == "aaa new-model") => {
+            let mut out = vec!["!".to_string()];
+            if sub.is_empty() {
+                out.extend(all.iter().filter(|l| l.starts_with("no aaa ")).cloned());
+                out.extend(all.into_iter().filter(|l| l.starts_with("username ")));
+            }
+            out.push(String::new());
+            out
+        }
+        ["identity", "profile" | "policy", ..]
+            if !linenum && none(&["identity profile ", "identity policy "]) =>
+        {
+            no_size(vec!["end".into()])
+        }
+        // IOS XE sizes the empty map-class view (the lab C9200L-48T-4G: 6 bytes), classic IOS does not
+        ["map-class", ..] if !linenum && none(&["map-class "]) => {
+            if d.stack.classic() {
+                no_size(vec!["end".into()])
+            } else {
+                sized(vec!["end".into()], 1)
+            }
+        }
+        ["vrf"] if !linenum && none(&["vrf definition ", "ip vrf "]) => {
+            sized(vec!["end".into()], 0)
+        }
+        ["eap", "profiles", ..] | ["eap", "method", "profiles", ..]
+            if !linenum && d.stack.classic() && none(&["eap profile ", "eap method "]) =>
+        {
+            vec![String::new()]
+        }
+        // classic IOS's empty flow views: the heading alone, with no blank line after it (the lab
+        // WS-C2960X-24PS-L, 15.2(7)E0a)
+        ["flow", "monitor" | "exporter" | "record", ..]
+            if !linenum && d.stack.classic() && none(&["flow "]) =>
+        {
+            vec!["Current configuration:".into()]
+        }
+        _ => return None,
+    })
+}
+
 /// What an EXEC command prints. The line as written out picks the output: the books list some forms
 /// as commands of their own (`show running-config interface`).
 pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
@@ -1466,7 +1699,7 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 // an interface not made prints `end` alone (the lab C9300-24T, 17.6.4: Bluetooth0/4
                 // before it was typed, `Current configuration : 5 bytes`)
                 body.push("end".into());
-                let bytes = config_bytes(&body);
+                let bytes = config_bytes(&s.device, &body);
                 let mut out = vec![
                     "Building configuration...".to_string(),
                     String::new(),
@@ -1476,7 +1709,15 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                 out.push(String::new());
                 return out;
             }
-            all
+            if words.len() == 2 {
+                return all;
+            }
+            running_view(&s.device, &words[2..]).unwrap_or_else(|| {
+                vec![format!(
+                    "% vswitch has no output model for '{}' yet",
+                    p.canonical()
+                )]
+            })
         }
         n if n.starts_with("show") => {
             // the books spell some commands `show interface ...`, which IOS reads as `interfaces`
@@ -1550,6 +1791,18 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                     ]
                 }
                 "show vtp counters" => vtp_counters(d),
+                // the lab WS-C2960X-24PS-L (15.2(7)E0a); version 3's device list is not measured
+                "show vtp interface"
+                    if d.stack.family() == Some(crate::platform::Family::C2960X) =>
+                {
+                    vtp_interface(d)
+                }
+                "show vtp devices"
+                    if d.stack.family() == Some(crate::platform::Family::C2960X)
+                        && d.vtp_settings().0 != "3" =>
+                {
+                    vec!["Device information can be only retrieved in VTP version 3".into()]
+                }
                 "show switch" => crate::version::show_switch(d).unwrap_or_else(|| {
                     vec![format!("% vswitch has no output model for '{c}' yet")]
                 }),
@@ -1567,11 +1820,18 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                     }
                     None => vec!["startup-config is not present".into()],
                 },
+                _ if c.starts_with("show ip access-lists interface ") => {
+                    interface_access_lists(&s.device, &c["show ip access-lists interface ".len()..])
+                }
                 // IPv4 access lists, all or the one named (c9300 17.6 capture 1 and the lab 2960G, 2026-10-07)
                 _ if c == "show ip access-lists" || c.starts_with("show ip access-lists ") => {
                     access_lists(&s.device, c.split_whitespace().nth(3))
                 }
-                _ if c == "show access-lists" || c.starts_with("show access-lists ") => {
+                // `ipc` and `hardware counters` are counters, not lists (the lab WS-C2960X-24PS-L,
+                // 15.2(7)E0a), and have no model
+                _ if (c == "show access-lists" || c.starts_with("show access-lists "))
+                    && !matches!(c.split_whitespace().nth(2), Some("ipc" | "hardware")) =>
+                {
                     all_access_lists(&s.device, c.split_whitespace().nth(2))
                 }
                 _ if c == "show ipv6 access-list" || c.starts_with("show ipv6 access-list ") => {
@@ -2037,10 +2297,24 @@ fn system_lists(d: &Device) -> bool {
         && crate::release::Release::parse(&d.release).is_some_and(|r| r.config_version() == "17.6")
 }
 
+fn x2960(d: &Device) -> bool {
+    d.stack.family() == Some(crate::platform::Family::C2960X)
+}
+
+/// The lists the image makes itself that `show` titles `(per-user)` (the 2960-X's preauth lists).
+fn per_user(d: &Device, system: bool, name: &str) -> &'static str {
+    if system && x2960(d) && name.starts_with("preauth_") {
+        " (per-user)"
+    } else {
+        ""
+    }
+}
+
 /// `show ip access-lists [<name>]`: each IPv4 access list, or the one named; nothing when there is
-/// none (the lab 2960G with none configured). Classic IOS lists them as created; IOS XE the standard
-/// lists, then the extended, each by name in byte order, with the lists it makes itself (the lab
-/// C9300-24T, 17.6.4).
+/// none (the lab 2960G with none configured). Classic IOS lists them as created; IOS XE and the
+/// 2960-X the standard lists, then the extended, each by name in byte order, with the lists the
+/// image makes itself (the lab C9300-24T, 17.6.4; the lab WS-C2960X-24PS-L, 15.2(2)E5 and
+/// 15.2(7)E0a: `LAB-STD`, then `CISCO-CWA-URL-REDIRECT-ACL`, `LAB-EXT` and `preauth_ipv4_acl`).
 pub fn access_lists(d: &Device, name: Option<&str>) -> Vec<String> {
     let classic = d.stack.classic();
     let mut lists: Vec<(crate::acl::Kind, &str, Vec<String>)> = d
@@ -2049,30 +2323,38 @@ pub fn access_lists(d: &Device, name: Option<&str>) -> Vec<String> {
         .filter_map(|b| crate::acl::of(&b.header).map(|(kind, n)| (kind, n, b)))
         .map(|(kind, n, b)| (kind, n, crate::acl::show(kind, n, &b.lines, classic)))
         .collect();
-    if system_lists(d) {
-        for (n, entries) in crate::acl::SYSTEM_V4 {
-            if lists.iter().any(|(_, have, _)| have == n) {
-                continue;
-            }
-            // the HTTP servers' list holds an entry while each server runs (the lab C9300-24T,
-            // 17.6.4: both gone after `no ip http server` and `no ip http secure-server`, the list
-            // kept; one entry per server inferred)
-            let off = |server: &str| {
-                d.global
-                    .iter()
-                    .any(|e| e.text == format!("no ip http {server}"))
-            };
-            let served = |e: &&&str| {
-                *n != "IP-Adm-V4-Int-ACL-global"
-                    || !(e.ends_with(" eq www") && off("server")
-                        || e.ends_with(" eq 443") && off("secure-server"))
-            };
-            let mut out = vec![format!("Extended IP access list {n}")];
-            out.extend(entries.iter().filter(served).map(|e| format!("    {e}")));
-            lists.push((crate::acl::Kind::Extended, n, out));
+    let system = if system_lists(d) {
+        crate::acl::SYSTEM_V4
+    } else if x2960(d) {
+        crate::acl::SYSTEM_2960X_V4
+    } else {
+        &[]
+    };
+    for (n, entries) in system {
+        if lists.iter().any(|(_, have, _)| have == n) {
+            continue;
         }
+        // the HTTP servers' list holds an entry while each server runs (the lab C9300-24T,
+        // 17.6.4: both gone after `no ip http server` and `no ip http secure-server`, the list
+        // kept; one entry per server inferred)
+        let off = |server: &str| {
+            d.global
+                .iter()
+                .any(|e| e.text == format!("no ip http {server}"))
+        };
+        let served = |e: &&&str| {
+            *n != "IP-Adm-V4-Int-ACL-global"
+                || !(e.ends_with(" eq www") && off("server")
+                    || e.ends_with(" eq 443") && off("secure-server"))
+        };
+        let mut out = vec![format!(
+            "Extended IP access list {n}{}",
+            per_user(d, true, n)
+        )];
+        out.extend(entries.iter().filter(served).map(|e| format!("    {e}")));
+        lists.push((crate::acl::Kind::Extended, n, out));
     }
-    if !classic {
+    if !classic || x2960(d) {
         lists.sort_by(|a, b| {
             (a.0 != crate::acl::Kind::Standard, a.1).cmp(&(b.0 != crate::acl::Kind::Standard, b.1))
         });
@@ -2084,37 +2366,83 @@ pub fn access_lists(d: &Device, name: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// `show ipv6 access-list [<name>]`: each IPv6 access list by name in byte order, with the lists IOS
-/// XE makes itself (as `access_lists`).
+/// `show ip access-lists interface <name> [in | out]`: each IPv4 list the interface applies, its
+/// title naming the direction; nothing where it applies none (the lab WS-C2960X-24PS-L,
+/// 15.2(7)E0a: `Standard IP access list LAB-STD in` on Vlan10, nothing on its other interfaces).
+/// Inbound first where it applies both (inferred).
+fn interface_access_lists(d: &Device, rest: &str) -> Vec<String> {
+    let mut words: Vec<&str> = rest.split_whitespace().collect();
+    let only = match words.last() {
+        Some(&w) if w == "in" || w == "out" => {
+            words.pop();
+            Some(w)
+        }
+        _ => None,
+    };
+    let c = config_of(d, &words.concat());
+    let mut out = vec![];
+    for dir in ["in", "out"] {
+        if only.is_some_and(|o| o != dir) {
+            continue;
+        }
+        let Some(name) = c.iter().find_map(|l| {
+            l.strip_prefix("ip access-group ")?
+                .strip_suffix(&format!(" {dir}"))
+        }) else {
+            continue;
+        };
+        let mut list = access_lists(d, Some(name));
+        if let Some(title) = list.first_mut() {
+            title.push_str(&format!(" {dir}"));
+        }
+        out.extend(list);
+    }
+    out
+}
+
+/// `show ipv6 access-list [<name>]`: each IPv6 access list by name in byte order, with the lists the
+/// image makes itself (as `access_lists`).
 pub fn ipv6_access_lists(d: &Device, name: Option<&str>) -> Vec<String> {
-    let mut lists: Vec<(&str, Vec<String>)> = d
+    let mut lists: Vec<(&str, &str, Vec<String>)> = d
         .blocks
         .iter()
         .filter_map(|b| {
             let n = b.header.strip_prefix("ipv6 access-list ")?;
-            (!n.contains(' ')).then(|| (n, crate::acl::show_v6(&b.lines)))
+            (!n.contains(' ')).then(|| (n, "", crate::acl::show_v6(&b.lines)))
         })
         .collect();
-    if system_lists(d) {
-        for (n, entries) in crate::acl::SYSTEM_V6 {
-            if !lists.iter().any(|(have, _)| have == n) {
-                lists.push((n, entries.iter().map(|e| format!("    {e}")).collect()));
-            }
+    let system = if system_lists(d) {
+        crate::acl::SYSTEM_V6
+    } else if x2960(d) {
+        crate::acl::SYSTEM_2960X_V6
+    } else {
+        &[]
+    };
+    for (n, entries) in system {
+        if !lists.iter().any(|(have, _, _)| have == n) {
+            lists.push((
+                n,
+                per_user(d, true, n),
+                entries.iter().map(|e| format!("    {e}")).collect(),
+            ));
         }
     }
     lists.sort_by(|a, b| a.0.cmp(b.0));
     lists
         .into_iter()
-        .filter(|(n, _)| name.is_none_or(|want| want == *n))
-        .flat_map(|(n, entries)| std::iter::once(format!("IPv6 access list {n}")).chain(entries))
+        .filter(|(n, _, _)| name.is_none_or(|want| want == *n))
+        .flat_map(|(n, title, entries)| {
+            std::iter::once(format!("IPv6 access list {n}{title}")).chain(entries)
+        })
         .collect()
 }
 
 /// `show access-lists [<name>]`: the IPv4 lists, the IPv6 lists, then the MAC lists, each MAC
-/// list's title with a space after it (the lab C9300-24T, 17.6.4).
+/// list's title with a space after it (the lab C9300-24T, 17.6.4, and the lab WS-C2960X-24PS-L,
+/// 15.2(2)E5 and 15.2(7)E0a); the 2960G's the IPv4 lists alone.
 pub fn all_access_lists(d: &Device, name: Option<&str>) -> Vec<String> {
     let mut out = access_lists(d, name);
-    if d.stack.classic() {
+    if d.stack.classic() && !x2960(d) {
         return out;
     }
     out.extend(ipv6_access_lists(d, name));
@@ -2212,13 +2540,18 @@ pub(crate) fn monitoring(d: &Device, p: &str) -> bool {
     up(d, p).is_some() && span_destination(d, p)
 }
 
-/// A port-channel no member is bundled in: no VLAN (`unassigned`), its native VLAN 0, whatever its
-/// mode or members (the lab C9300, 17.6.4, and the lab C2960G, 15.0(2)SE11); classic IOS from 15.2
-/// shows the access VLAN (a 2960-X capture at 15.2).
+/// A port-channel no member is bundled in: its native VLAN 0, whatever its mode or members (the lab
+/// C9300, 17.6.4, the lab C2960G, 15.0(2)SE11, and the lab WS-C2960X-24PS-L, 15.2(7)E0a).
 fn channel_down(d: &Device, p: &str) -> bool {
-    p.starts_with("Port-channel")
-        && bundle(d, p).is_none()
-        && (!d.stack.classic() || before_15_2(d))
+    p.starts_with("Port-channel") && bundle(d, p).is_none()
+}
+
+/// A port-channel down with no access VLAN given since the boot (`Device::channel_vlans`): no VLAN
+/// (`unassigned`). The lab WS-C2960X-24PS-L (15.2(7)E0a) printed its Po1 so whatever its speed,
+/// duplex or members' shutdown, and `1` once an access VLAN was given and taken back; a 2960-X
+/// capture's Po1 at 15.2(7)E, down, `1`.
+fn channel_unassigned(d: &Device, p: &str) -> bool {
+    channel_down(d, p) && !d.channel_vlans.contains(p)
 }
 
 /// The speed a port's link runs (Mb/s): its transceiver's, a copper link's negotiated speed, else
@@ -2313,6 +2646,11 @@ pub fn enabled_uplinks(d: &Device) -> std::collections::BTreeSet<(u32, u32)> {
 /// `show interfaces status err-disabled`, laid out as the lab C9300 printed it (17.6.4):
 /// BPDU guard the only reason modelled; the 12-character name cut is inferred.
 fn interfaces_status_errdisabled(d: &Device) -> Vec<String> {
+    // no port err-disabled prints nothing, not the heading (the lab C9200L-48T-4G, 17.6.4, and the
+    // lab WS-C2960X-24PS-L, 15.2(7)E0a)
+    if !ports(d).iter().any(|p| d.errdisabled.contains_key(p)) {
+        return vec![];
+    }
     let mut out = vec![
         "Port         Name         Status       Reason               Err-disabled Vlans"
             .to_string(),
@@ -2368,12 +2706,13 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
         // an empty Type keeps the space before it (the lab C2960G's Po1)
         format!("{p:<port_width$} {n:<18} {st:<12} {v:<10} {du:>6} {sp:>6} {ty}")
     };
-    // a 2960-Plus at 15.2(6)E1 keeps a space after Type (c2960 15.2(6)E capture 5); the C2960G at 15.0(2)SE11
-    // does not
+    // a 2960-Plus at 15.2(6)E1 keeps a space after Type (c2960 15.2(6)E capture 5), as the lab
+    // WS-C2960X-24PS-L does at 15.2(2)E5 and 15.2(7)E0a; the C2960G at 15.0(2)SE11 does not
     let header = row("Port", "Name", "Status", "Vlan", "Duplex", "Speed", "Type");
+    let x2960 = d.stack.family() == Some(crate::platform::Family::C2960X);
     let mut out = vec![
         String::new(),
-        if d.stack.family().is_some_and(|f| f.classic_two_part()) && !before_15_2(d) {
+        if x2960 || d.stack.family().is_some_and(|f| f.classic_two_part()) && !before_15_2(d) {
             format!("{header} ")
         } else {
             header
@@ -2410,7 +2749,7 @@ pub fn interfaces_status(d: &Device) -> Vec<String> {
         };
         let vlan = if c.contains(&"no switchport") {
             "routed"
-        } else if channel_down(d, &p) {
+        } else if channel_unassigned(d, &p) {
             "unassigned"
         } else if link.as_ref().is_some_and(|(_, l)| l.trunk) && !monitoring(d, &p) {
             "trunk"
@@ -2947,15 +3286,19 @@ fn switchport_blocks(d: &Device) -> Vec<(String, Vec<String>)> {
             Some(_) => "static access",
         };
         // a bundled member names its port-channel; IOS XE calls an LACP member it has not bundled,
-        // linked or not, suspended (the lab C9300, 17.6.4)
+        // linked or not, suspended (the lab C9300, 17.6.4), and classic IOS one with no link (the
+        // lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a: Po1's Gi1/0/3 and Gi1/0/4)
         let channel = channel_of(d, &p).filter(|_| !p.starts_with("Port-channel"));
         let mut held = false;
         match channel {
             Some((n, _)) if link.is_some_and(|l| l.bundled) => {
                 b.push(format!("Operational Mode: {oper} (member of bundle Po{n})"));
             }
-            // a PAgP or `on` member with no link too (the lab C9300-24T, 17.6.4: Po2's and Po3's)
-            Some((n, _)) if !d.stack.classic() && (link.is_none() || suspended(d, &p)) => {
+            // a PAgP or `on` member with no link too on IOS XE (the lab C9300-24T, 17.6.4: Po2's
+            // and Po3's); classic IOS's is not known
+            Some((n, lacp))
+                if (lacp || !d.stack.classic()) && (link.is_none() || suspended(d, &p)) =>
+            {
                 held = true;
                 b.push(format!(
                     "Operational Mode: down (suspended member of bundle Po{n})"
@@ -2988,14 +3331,17 @@ fn switchport_blocks(d: &Device) -> Vec<(String, Vec<String>)> {
                 .find_map(|v| v.parse().ok())
                 .unwrap_or(default)
         };
-        if channel_down(d, &p) {
+        if channel_unassigned(d, &p) {
             b.push("Access Mode VLAN: unassigned".into());
-            b.push("Trunking Native Mode VLAN: 0 (Inactive)".into());
         } else {
             b.push(format!(
                 "Access Mode VLAN: {}",
                 named(number("switchport access vlan ", 1))
             ));
+        }
+        if channel_down(d, &p) {
+            b.push("Trunking Native Mode VLAN: 0 (Inactive)".into());
+        } else {
             b.push(format!(
                 "Trunking Native Mode VLAN: {}",
                 named(number("switchport trunk native vlan ", 1))
@@ -3276,9 +3622,11 @@ pub fn etherchannel_summary(d: &Device) -> Vec<String> {
         let po = format!("Po{n}({layer}{state})");
         // no protocol prints ` -` (the lab C9300, 17.6.4, and the lab C2960G)
         let protocol = if protocol == "-" { " -" } else { protocol };
-        if classic && before_15_2(d) {
-            // before 15.2 each member is padded to 12, its padding kept (the lab C2960G,
-            // 15.0(2)SE11); wrapping as 15.2 does is inferred
+        if classic {
+            // each member is padded to 12, its padding kept (the lab C2960G, 15.0(2)SE11, and the
+            // lab WS-C2960X-24PS-L, 15.2(7)E0a), and the members wrap under the Ports column before
+            // column 79 (c2960x 15.2(7)E capture 7's four, its log trimmed); a group with none keeps
+            // its padding (the lab C2960G's Po1)
             let mut line = format!("{n:<7}{po:<16}{protocol:<10}");
             for (i, m) in members.iter().enumerate() {
                 if i > 0 && line.trim_end().len() + 1 + m.len() > 78 {
@@ -3288,24 +3636,6 @@ pub fn etherchannel_summary(d: &Device) -> Vec<String> {
                 line.push_str(&format!("{m:<12}"));
             }
             out.push(line);
-        } else if classic {
-            // the members wrap under the Ports column before column 79 (c2960x 15.2(7)E capture 7's
-            // four); a group with none keeps its padding (the lab C2960G's Po1)
-            let mut line = format!("{n:<7}{po:<16}{protocol:<10}");
-            for (i, m) in members.iter().enumerate() {
-                if i > 0 && line.len() + 1 + m.len() > 78 {
-                    out.push(line);
-                    line = format!("{:33}", "");
-                } else if i > 0 {
-                    line.push(' ');
-                }
-                line.push_str(m);
-            }
-            out.push(if members.is_empty() {
-                line
-            } else {
-                line.trim_end().to_string()
-            });
         } else {
             // IOS XE: each member padded to 16, two a line, the rest under the Ports column, at
             // any terminal width (the lab C9300, 17.6.4, at widths 80, 100 and 512)
@@ -3324,9 +3654,10 @@ pub fn etherchannel_summary(d: &Device) -> Vec<String> {
     out
 }
 
-/// The VTP updater: the lowest-numbered VLAN interface with an address, else the first layer 3
-/// interface with one (the lab C9300, 17.6.4: Lo0 while Vlan10 waited on DHCP), as its short name,
-/// its address and why IOS chose it.
+/// The VTP updater: the `vtp interface` named, with an address (the lab WS-C2960X-24PS-L,
+/// 15.2(7)E0a: `vtp interface Vlan54`), else the lowest-numbered VLAN interface with one, else the
+/// first layer 3 interface with one (the lab C9300, 17.6.4: Lo0 while Vlan10 waited on DHCP), as its
+/// short name, its address and why IOS chose it.
 pub fn vtp_updater(d: &Device) -> Option<(String, String, &'static str)> {
     let address = |b: &Block| {
         b.lines
@@ -3337,6 +3668,17 @@ pub fn vtp_updater(d: &Device) -> Option<(String, String, &'static str)> {
             .filter(|ip| ip.contains('.'))
             .map(str::to_string)
     };
+    let preferred = d.global_value("vtp interface ").and_then(|v| {
+        let name = v.split_whitespace().next()?;
+        let b = d
+            .blocks
+            .iter()
+            .find(|b| b.header == format!("interface {name}"))?;
+        Some((short(name), address(b)?, "preferred interface"))
+    });
+    if preferred.is_some() {
+        return preferred;
+    }
     d.blocks
         .iter()
         .filter_map(|b| {
@@ -3521,25 +3863,30 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
         // a block per feature; MST and the unknown feature stay transparent, and an off or
         // transparent VLAN feature prints no revision (the lab C9300, 17.6.4). A client prints a
         // server's lines (inferred): no capture holds one
+        // the 2960-X counts the normal range apart from the extended VLANs, keeps 1005 and has no
+        // unknown feature (the lab WS-C2960X-24PS-L, 15.2(7)E0a: 14 and 1 with VLAN 2000)
+        let x2960 = d.stack.family() == Some(crate::platform::Family::C2960X);
         out.push(String::new());
         out.push("Feature VLAN:".into());
         out.push("--------------".into());
         out.push(feature("VTP Operating Mode", mode));
-        out.push(feature(
-            "Number of existing VLANs",
-            &vlans.len().to_string(),
-        ));
         let extended = vlans.iter().filter(|&&v| v > 1005).count();
+        let existing = if x2960 {
+            vlans.len() - extended
+        } else {
+            vlans.len()
+        };
+        out.push(feature("Number of existing VLANs", &existing.to_string()));
         out.push(feature(
             "Number of existing extended VLANs",
             &extended.to_string(),
         ));
         // a C9200L holds 1024 (the lab C9200L-48T-4G, 17.6.4), the lab C9300 4096; the other
-        // families are inferred to hold the C9300's
-        let most = if d.stack.family() == Some(crate::platform::Family::C9200L) {
-            "1024"
-        } else {
-            "4096"
+        // IOS XE families are inferred to hold the C9300's
+        let most = match d.stack.family() {
+            Some(crate::platform::Family::C9200L) => "1024",
+            _ if x2960 => "1005",
+            _ => "4096",
         };
         out.push(feature("Maximum VLANs supported locally", most));
         // no primary server, which vswitch does not model: the primary's ID is zero and the digest
@@ -3553,7 +3900,8 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
             out.push(feature("Primary Description", ""));
             out.push(feature("MD5 digest", ""));
         }
-        for other in ["MST", "UNKNOWN"] {
+        let others: &[&str] = if x2960 { &["MST"] } else { &["MST", "UNKNOWN"] };
+        for other in others {
             out.push(String::new());
             out.push(String::new());
             out.push(format!("Feature {other}:"));
@@ -3574,6 +3922,14 @@ pub fn vtp_status(d: &Device) -> Vec<String> {
             Some((n, ip, why)) => format!("Local updater ID is {ip} on interface {n} ({why})"),
             None => "Local updater ID is 0.0.0.0 (no valid interface found)".into(),
         });
+        // and the name `vtp interface` gave, two spaces after it (the lab WS-C2960X-24PS-L,
+        // 15.2(7)E0a, a server)
+        if let Some(name) = d
+            .global_value("vtp interface ")
+            .and_then(|v| v.split_whitespace().next())
+        {
+            out.push(format!("Preferred interface name is {name}  "));
+        }
     }
     out.extend([
         String::new(),
@@ -3634,6 +3990,48 @@ pub fn vtp_counters(d: &Device) -> Vec<String> {
     ]);
     for p in trunking_ports(d) {
         out.push(format!("{:<20}{:<17}{:<17}{:<9}", short(&p), 0, 0, 0));
+    }
+    out
+}
+
+/// `show vtp interface` as the lab WS-C2960X-24PS-L printed it (15.2(7)E0a): a blank line, the
+/// heading, then each front port, the two ten-gigabit ports `show interfaces status` leaves out
+/// (`Te1/1/1`, `Te1/1/2`; that model alone measured) and each port-channel, the management port left
+/// out, `disabled` where `no vtp` stands.
+pub fn vtp_interface(d: &Device) -> Vec<String> {
+    let mut ports: Vec<String> = (d.stack.physical().into_iter())
+        .filter(|p| Some(p.as_str()) != d.stack.management())
+        .collect();
+    for m in d
+        .stack
+        .members
+        .iter()
+        .filter(|m| m.model == "WS-C2960X-24PS-L")
+    {
+        ports.extend((1..=2).map(|p| format!("TenGigabitEthernet{}/1/{p}", m.number)));
+    }
+    let mut channels: Vec<&Block> = (d.blocks.iter())
+        .filter(|b| b.header.starts_with("interface Port-channel"))
+        .collect();
+    channels.sort_by_key(|b| interface_order(&b.header, d));
+    ports.extend(
+        channels
+            .iter()
+            .filter_map(|b| b.header.strip_prefix("interface ").map(str::to_string)),
+    );
+    let mut out = vec![
+        String::new(),
+        " Interface               VTP Status".to_string(),
+        "-".repeat(36),
+    ];
+    for p in ports {
+        let off = (d.blocks.iter())
+            .find(|b| b.header == format!("interface {p}"))
+            .is_some_and(|b| b.lines.iter().any(|e| e.text == "no vtp"));
+        out.push(format!(
+            " {p:<21}    {}",
+            if off { "disabled" } else { "enabled" }
+        ));
     }
     out
 }
@@ -4658,6 +5056,301 @@ mod tests {
     }
 
     #[test]
+    fn the_2960x_prints_vtp_as_the_lab_2960x_did() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a: `vtp interface` first and in every mode, no `vtp
+        // version` or `vtp password`, the preferred interface named on a server, and at version 3
+        // the normal range counted apart, 1005 kept and no unknown feature
+        let e = engine("c2960x", "15.2(7)E");
+        let vtp = |s: &shell::Session| -> Vec<String> {
+            configuration(&s.device)
+                .into_iter()
+                .filter(|l| l.starts_with("vtp "))
+                .collect()
+        };
+        let mut s = typed(
+            &e,
+            "WS-C2960X-24PS-L",
+            &[
+                "interface Vlan54",
+                "ip address 192.0.2.61 255.255.255.0",
+                "exit",
+                "vtp mode transparent",
+                "vtp domain LABDOM",
+                "vtp version 2",
+                "vtp password LABPW",
+                "vtp interface Vlan54",
+                "vlan 2000",
+                "name EXT2000",
+                "exit",
+            ],
+        );
+        assert_eq!(
+            vtp(&s),
+            [
+                "vtp interface Vlan54",
+                "vtp domain LABDOM",
+                "vtp mode transparent"
+            ]
+        );
+        for l in ["configure terminal", "vtp version 3", "end"] {
+            s.type_line(l);
+        }
+        assert_eq!(
+            vtp_status(&s.device)[6..],
+            [
+                "",
+                "Feature VLAN:",
+                "--------------",
+                "VTP Operating Mode                : Transparent",
+                "Number of existing VLANs          : 5",
+                "Number of existing extended VLANs : 1",
+                "Maximum VLANs supported locally   : 1005",
+                "",
+                "",
+                "Feature MST:",
+                "--------------",
+                "VTP Operating Mode                : Transparent",
+                "",
+            ]
+        );
+        for l in [
+            "configure terminal",
+            "vtp mode transparent",
+            "vtp version 2",
+            "no vlan 2000",
+            "vtp mode server",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert_eq!(vtp(&s), ["vtp interface Vlan54"]);
+        let status = vtp_status(&s.device);
+        assert_eq!(
+            status[7..9],
+            [
+                "Local updater ID is 192.0.2.61 on interface Vl54 (preferred interface)",
+                "Preferred interface name is Vlan54  ",
+            ]
+        );
+        for l in [
+            "configure terminal",
+            "interface GigabitEthernet1/0/12",
+            "no vtp",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        let rows = vtp_interface(&s.device);
+        assert_eq!(
+            rows[..4],
+            [
+                "",
+                " Interface               VTP Status",
+                "------------------------------------",
+                " GigabitEthernet1/0/1     enabled",
+            ]
+        );
+        assert!(rows.contains(&" GigabitEthernet1/0/12    disabled".to_string()));
+        assert!(rows.contains(&" TenGigabitEthernet1/1/1    enabled".to_string()));
+        assert!(!rows.iter().any(|r| r.contains("FastEthernet0")));
+    }
+
+    #[test]
+    fn the_2960x_prints_its_status_channels_and_access_lists_as_the_lab_2960x_did() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a
+        let e = engine("c2960x", "15.2(7)E");
+        let mut s = typed(
+            &e,
+            "WS-C2960X-24PS-L",
+            &[
+                "ip access-list extended LAB-EXT",
+                "permit tcp any any eq 22",
+                "exit",
+                "ip access-list standard LAB-STD",
+                "permit 192.0.2.0 0.0.0.255",
+                "exit",
+                "ipv6 access-list LAB-V6",
+                "permit ipv6 any any",
+                "exit",
+                "mac access-list extended LAB-MAC",
+                "permit any any",
+                "exit",
+                "interface Vlan10",
+                "ip access-group LAB-STD in",
+                "exit",
+                "interface range GigabitEthernet1/0/3 - 4",
+                "channel-group 1 mode active",
+                "exit",
+            ],
+        );
+        let d = &s.device;
+        // no port err-disabled: nothing, not the heading
+        assert!(interfaces_status_errdisabled(d).is_empty());
+        let status = interfaces_status(d);
+        assert_eq!(
+            status[1],
+            "Port      Name               Status       Vlan       Duplex  Speed Type "
+        );
+        // a port-channel no member bundles in has no VLAN
+        assert_eq!(
+            row(&status, "Po1"),
+            "Po1                          notconnect   unassigned   auto   auto "
+        );
+        assert!(
+            etherchannel_summary(d)
+                .contains(&"1      Po1(SD)         LACP      Gi1/0/3(D)  Gi1/0/4(D)  ".to_string())
+        );
+        // the lists the image makes itself, sorted among the others; the IPv6 and MAC lists after
+        let all = all_access_lists(d, None);
+        let titles: Vec<&str> = all
+            .iter()
+            .filter(|l| !l.starts_with(' '))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Standard IP access list LAB-STD",
+                "Extended IP access list CISCO-CWA-URL-REDIRECT-ACL",
+                "Extended IP access list LAB-EXT",
+                "Extended IP access list preauth_ipv4_acl (per-user)",
+                "IPv6 access list LAB-V6",
+                "IPv6 access list preauth_ipv6_acl (per-user)",
+                "Extended MAC access list LAB-MAC ",
+            ]
+        );
+        assert_eq!(
+            all_access_lists(d, Some("LAB-MAC")),
+            ["Extended MAC access list LAB-MAC ", "    permit any any"]
+        );
+        // an interface's list names its direction; one applying none prints nothing
+        for rest in ["Vlan10", "Vlan10 in"] {
+            assert_eq!(
+                interface_access_lists(d, rest),
+                [
+                    "Standard IP access list LAB-STD in",
+                    "    10 permit 192.0.2.0, wildcard bits 0.0.0.255"
+                ],
+                "{rest}"
+            );
+        }
+        assert!(interface_access_lists(d, "Vlan10 out").is_empty());
+        assert!(interface_access_lists(d, "GigabitEthernet1/0/11").is_empty());
+        // an LACP member with no link is suspended, with no operational encapsulation
+        let out = interfaces_switchport(d);
+        assert_eq!(
+            switchport_field(&out, "Gi1/0/3", "Operational Mode: "),
+            "Operational Mode: down (suspended member of bundle Po1)"
+        );
+        let at = out.iter().position(|l| l == "Name: Gi1/0/3").unwrap();
+        assert_eq!(out[at + 4], "Administrative Trunking Encapsulation: dot1q");
+        assert_eq!(out[at + 5], "Negotiation of Trunking: On");
+        assert!(matches!(
+            s.type_line("show access-lists ipc").0.first().map(String::as_str),
+            Some(l) if l.contains("no output model")
+        ));
+    }
+
+    #[test]
+    fn the_2960x_sizes_and_numbers_its_running_config_views_as_the_lab_2960x_did() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a
+        let e = engine("c2960x", "15.2(7)E");
+        let s = typed(
+            &e,
+            "WS-C2960X-24PS-L",
+            &[
+                "class-map match-all LAB-VOICE",
+                "match ip dscp ef",
+                "exit",
+                "policy-map LAB-IN",
+                "class LAB-VOICE",
+                "set dscp ef",
+                "police 1000000 8000 exceed-action drop",
+                "exit",
+                "exit",
+                "no aaa new-model",
+            ],
+        );
+        let d = &s.device;
+        let view = |w: &str| {
+            let words: Vec<String> = w.split_whitespace().map(String::from).collect();
+            running_view(d, &words).unwrap_or_else(|| panic!("{w}"))
+        };
+        let sized = |bytes: usize, body: &[&str]| {
+            let mut out = vec![
+                "Building configuration...".to_string(),
+                String::new(),
+                format!("Current configuration : {bytes} bytes"),
+            ];
+            out.extend(body.iter().map(|l| l.to_string()));
+            out.push(String::new());
+            out
+        };
+        assert_eq!(
+            view("class-map"),
+            sized(
+                57,
+                &[
+                    "!",
+                    "class-map match-all LAB-VOICE",
+                    " match ip dscp ef ",
+                    "end"
+                ]
+            )
+        );
+        assert_eq!(
+            view("policy-map LAB-IN"),
+            sized(
+                100,
+                &[
+                    "!",
+                    "policy-map LAB-IN",
+                    " class LAB-VOICE",
+                    "  set dscp ef",
+                    "  police 1000000 8000 exceed-action drop",
+                    "!",
+                    "end"
+                ]
+            )
+        );
+        assert!(view("class-map ZZ").is_empty());
+        assert_eq!(
+            view("policy-map LAB-IN linenum")[3..6],
+            [
+                "    1 : !",
+                "    2 : policy-map LAB-IN",
+                "    3 :  class LAB-VOICE"
+            ]
+        );
+        // an empty line counts its newline here, not on IOS XE, and goes unnumbered
+        let body: Vec<String> = ["!", "udld enable", "", "end"].map(String::from).into();
+        assert_eq!(config_bytes(d, &body), 2 + 12 + 1 + 4 + 1);
+        assert_eq!(
+            numbered(&body),
+            ["    1 : !", "    2 : udld enable", "    3 : end"]
+        );
+        // with AAA off: `no aaa new-model` alone, and each other section a `!`
+        assert_eq!(view("aaa"), ["!", "no aaa new-model", ""]);
+        assert_eq!(view("aaa ldap"), ["!", ""]);
+        assert_eq!(view("aaa group server radius"), ["!", ""]);
+        assert_eq!(view("eap method profiles"), [""]);
+        assert_eq!(view("flow monitor"), ["Current configuration:"]);
+        assert_eq!(
+            view("identity profile dot1x"),
+            [
+                "Building configuration...",
+                "",
+                "Current configuration:",
+                "end",
+                ""
+            ]
+        );
+        let e = engine("c9300", "17.6");
+        let s = typed(&e, "C9300-24T", &[]);
+        assert_eq!(config_bytes(&s.device, &body), 2 + 12 + 4 + 1);
+    }
+
+    #[test]
     fn vtp_version_3_prints_a_block_per_feature_and_mode_off_its_vlans_on_one_line() {
         let e = engine("c9300", "17.6");
         let s = vtp_switch(
@@ -5087,8 +5780,7 @@ mod tests {
     }
 
     #[test]
-    fn a_classic_group_with_no_members_keeps_its_padding_and_a_down_port_channel_its_vlan_from_15_2()
-     {
+    fn a_classic_group_with_no_members_keeps_its_padding_and_a_down_port_channel_no_vlan() {
         let mut d = device::Device::new(platform::parse_stack("WS-C2960G-8TC-L").unwrap());
         d.blocks.push(device::Block {
             header: "interface Port-channel1".into(),
@@ -5106,11 +5798,83 @@ mod tests {
             row(&status, "Po1"),
             "Po1                          notconnect   unassigned   auto   auto "
         );
-        // a 2960-X capture at 15.2: the access VLAN
+        // the lab WS-C2960X-24PS-L (15.2(7)E0a): unassigned too
         d.release = "15.2(7)E".into();
         assert_eq!(
             row(&interfaces_status(&d), "Po1").split_whitespace().nth(2),
-            Some("1")
+            Some("unassigned")
+        );
+    }
+
+    #[test]
+    fn a_down_port_channel_prints_its_access_vlan_once_one_was_given_as_the_lab_2960x_did() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a: Po1 a trunk, its LACP members with no cable
+        let e = engine("c2960x", "15.2(7)E");
+        let mut s = typed(
+            &e,
+            "WS-C2960X-24PS-L",
+            &[
+                "interface Port-channel1",
+                "switchport mode trunk",
+                "speed 1000",
+                "duplex full",
+                "exit",
+                "interface range GigabitEthernet1/0/3 - 4",
+                "switchport mode trunk",
+                "channel-group 1 mode active",
+                "shutdown",
+            ],
+        );
+        let vlan = |s: &shell::Session| {
+            let status = interfaces_status(&s.device);
+            row(&status, "Po1")
+                .split_whitespace()
+                .nth(2)
+                .unwrap()
+                .to_string()
+        };
+        let access = |s: &shell::Session| {
+            let out = interfaces_switchport(&s.device);
+            let at = out.iter().position(|l| l == "Name: Po1").unwrap();
+            let line = |w: &str| out[at..].iter().find(|l| l.starts_with(w)).unwrap().clone();
+            (
+                line("Access Mode VLAN: "),
+                line("Trunking Native Mode VLAN: "),
+            )
+        };
+        // its speed, duplex and members' shutdown leave it unassigned
+        assert_eq!(vlan(&s), "unassigned");
+        assert_eq!(
+            access(&s),
+            (
+                "Access Mode VLAN: unassigned".to_string(),
+                "Trunking Native Mode VLAN: 0 (Inactive)".to_string()
+            )
+        );
+        for l in [
+            "configure terminal",
+            "interface Port-channel1",
+            "switchport access vlan 20",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert_eq!(vlan(&s), "20");
+        for l in [
+            "configure terminal",
+            "interface Port-channel1",
+            "no switchport access vlan 20",
+            "end",
+        ] {
+            s.type_line(l);
+        }
+        assert_eq!(vlan(&s), "1");
+        assert_eq!(
+            access(&s),
+            (
+                "Access Mode VLAN: 1 (default)".to_string(),
+                "Trunking Native Mode VLAN: 0 (Inactive)".to_string()
+            )
         );
     }
 

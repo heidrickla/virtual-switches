@@ -958,6 +958,25 @@ fn run(args: &[String]) -> Result<bool, String> {
                             names.len(),
                             names.join(", ")
                         );
+                        // the platform's patches of a command its books lacked and the general
+                        // references lent (the C9300's `show spanning-tree` at 16.x)
+                        if let Some(t) = &overrides {
+                            let mut o: serde_json::Value =
+                                serde_json::from_str(t).map_err(|e| format!("--overrides: {e}"))?;
+                            if let Some(cs) = o["commands"].as_array_mut() {
+                                cs.retain(|c| {
+                                    c["platform"].as_str() == Some(g.platform.as_str())
+                                        && c["lines"].as_array().is_none_or(|l| l.is_empty())
+                                        && !c["remove"].as_bool().unwrap_or(false)
+                                        && names
+                                            .iter()
+                                            .any(|n| c["name"].as_str() == Some(n.as_str()))
+                                });
+                            }
+                            if o["commands"].as_array().is_some_and(|c| !c.is_empty()) {
+                                compile::apply_overrides(g, &o.to_string(), &Default::default())?;
+                            }
+                        }
                     }
                 }
                 // general IOS commands a capture of the book's switches uses, from the donor book

@@ -883,7 +883,9 @@ fn block(sp: &Spanning, d: &Device, v: Instance, t: &stp::Tree) -> Option<Vec<St
 
 /// `show spanning-tree summary`'s settings: IOS XE pads its labels to two widths (the lab C9300,
 /// 17.6.4, as the 9300 command reference prints them); classic IOS to one, `EtherChannel misconfig
-/// guard` after `Loopguard Default` (the lab 2960G, 15.0(2)SE11).
+/// guard` after `Loopguard Default` before 15.2 (the lab 2960G, 15.0(2)SE11) and first from it (the
+/// lab WS-C2960X-24PS-L, 15.2(2)E5). From 15.2(7)E classic IOS pads them to 40, names the PortFast
+/// edge defaults and adds PVST Simulation and Bridge Assurance (the lab WS-C2960X-24PS-L, 15.2(7)E0a).
 fn settings(d: &Device) -> Vec<String> {
     let on = |b: bool| if b { "enabled" } else { "disabled" };
     let either = |a: &str, b: &str| has(d, a) || has(d, b);
@@ -917,18 +919,55 @@ fn settings(d: &Device) -> Vec<String> {
         .iter()
         .any(|e| e.text.starts_with("spanning-tree uplinkfast"));
     let backbonefast = has(d, "spanning-tree backbonefast");
-    if d.stack.classic() {
-        let l = |name: &str, v: &str| format!("{name:<28} is {v}");
+    let release = |r: &str| crate::release::Release::parse(r);
+    let edge = release(&d.release)
+        .zip(release("15.2(7)E"))
+        .is_some_and(|(r, e)| r.classic() && r >= e);
+    if edge {
+        let l = |name: &str, v: &str| format!("{name:<39} is {v}");
+        // PVST Simulation is inactive outside MST (the lab WS-C2960X-24PS-L in rapid-pvst mode);
+        // MST's and `pvst` mode's wording are inferred
+        let pvst = if has(d, "no spanning-tree pvst-simulation") {
+            "disabled".to_string()
+        } else if mode == "mst" {
+            "enabled".to_string()
+        } else {
+            format!("enabled but inactive in {mode} mode")
+        };
+        let assurance = !has(d, "no spanning-tree bridge assurance");
         vec![
+            l("EtherChannel misconfig guard", on(misconfig)),
+            l("Extended system ID", "enabled"),
+            l("Portfast Default", on(portfast)),
+            l("Portfast Edge BPDU Guard Default", on(guard)),
+            l("Portfast Edge BPDU Filter Default", on(filter)),
+            l("Loopguard Default", on(loopguard)),
+            l("PVST Simulation Default", &pvst),
+            l("Bridge Assurance", on(assurance)),
+            l("UplinkFast", &fast(uplinkfast)),
+            l("BackboneFast", &fast(backbonefast)),
+        ]
+    } else if d.stack.classic() {
+        let l = |name: &str, v: &str| format!("{name:<28} is {v}");
+        let misconfig = l("EtherChannel misconfig guard", on(misconfig));
+        let old = crate::show::before_15_2(d);
+        let mut out = vec![
             l("Extended system ID", "enabled"),
             l("Portfast Default", on(portfast)),
             l("PortFast BPDU Guard Default", on(guard)),
             l("Portfast BPDU Filter Default", on(filter)),
             l("Loopguard Default", on(loopguard)),
-            l("EtherChannel misconfig guard", on(misconfig)),
+        ];
+        if old {
+            out.push(misconfig);
+        } else {
+            out.insert(0, misconfig);
+        }
+        out.extend([
             l("UplinkFast", &fast(uplinkfast)),
             l("BackboneFast", &fast(backbonefast)),
-        ]
+        ]);
+        out
     } else {
         let wide = |name: &str, v: &str| format!("{name:<39} is {v}");
         let narrow = |name: &str, v: &str| format!("{name:<38} is {v}");
@@ -1326,6 +1365,23 @@ pub(crate) fn mst_configuration(d: &Device) -> Vec<String> {
     out
 }
 
+/// `show spanning-tree mst configuration digest` for the region with no instance and no name, at
+/// any revision: its IEEE and Cisco pre-standard digests as the lab C9200L-48T-4G (17.6.4) and
+/// WS-C2960X-24PS-L (15.2(7)E0a) printed them. The IEEE digest of the four other regions the lab
+/// C9300 and 2960G printed is HMAC-MD5 over each VLAN's instance, but their pre-standard digests
+/// follow no rule found (the same at revisions 3 and 4), so another region has no output model.
+pub(crate) fn mst_digest(d: &Device) -> Option<Vec<String>> {
+    let m = Mst::of(d);
+    if !m.name.is_empty() || m.instances.keys().any(|&i| i != 0) {
+        return None;
+    }
+    let mut out = mst_configuration(d);
+    out.truncate(2);
+    out.push("Digest          0xAC36177F50283CD4B83821D8AB26DE62".into());
+    out.push("Pre-std Digest  0xBB3B6C15EF8D089BB55ED10D24DF44DE".into());
+    Some(out)
+}
+
 /// `show spanning-tree interface <port>`: its row in each instance, or with `portfast` whether
 /// PortFast is set on it in each. A port of the switch that runs no instance prints IOS's message
 /// (the lab C9300, 17.6.4: `no spanning tree info available for GigabitEthernet1/0/10 `).
@@ -1441,8 +1497,8 @@ fn blocks(sp: &Spanning, d: &Device, c: &str, list: Option<&str>) -> Vec<String>
 }
 
 /// What a `show spanning-tree ...` line prints (`c`, written out in full), or `None` for any other
-/// command. The forms that print counters, topology changes or ages, and the MST digests, have no
-/// output model.
+/// command. The forms that print counters, topology changes or ages, and the MST digests of a
+/// region other than the default (`mst_digest`), have no output model.
 pub fn show(local: &Device, view: Option<&LabView>, c: &str) -> Option<Vec<String>> {
     let rest = c.strip_prefix("show spanning-tree")?;
     if !rest.is_empty() && !rest.starts_with(' ') {
@@ -1495,8 +1551,10 @@ pub fn show(local: &Device, view: Option<&LabView>, c: &str) -> Option<Vec<Strin
             method_name(local)
         )],
         ["interface", ref port @ ..] => interface(&sp, local, c, port),
-        // the region as configured, whatever the mode (inferred outside MST mode)
+        // the region as configured, whatever the mode (the lab C9200L-48T-4G and WS-C2960X-24PS-L
+        // in rapid-pvst mode, after `% Switch is not in mst mode`)
         ["mst", "configuration"] => mst_configuration(local),
+        ["mst", "configuration", "digest"] => mst_digest(local).unwrap_or_else(|| no_model(c)),
         ["mst"] if mst_mode => mst(&sp, local, None).unwrap_or_else(|| no_model(c)),
         ["mst", n] if mst_mode => n
             .parse::<Instance>()
@@ -2020,6 +2078,61 @@ mod tests {
             shown(s, "show spanning-tree root")[4],
             "VLAN0001         32769 0011.2233.4410         4    2   20  15  Gi0/1           "
         );
+    }
+
+    #[test]
+    fn the_2960x_lays_out_its_summary_by_release_and_prints_the_default_region_s_digests() {
+        // the lab WS-C2960X-24PS-L in rapid-pvst mode with no port up, at 15.2(2)E5 and 15.2(7)E0a
+        let old = [
+            "EtherChannel misconfig guard is enabled",
+            "Extended system ID           is enabled",
+            "Portfast Default             is disabled",
+            "PortFast BPDU Guard Default  is disabled",
+            "Portfast BPDU Filter Default is disabled",
+            "Loopguard Default            is disabled",
+            "UplinkFast                   is disabled",
+            "BackboneFast                 is disabled",
+        ];
+        let new = [
+            "EtherChannel misconfig guard            is enabled",
+            "Extended system ID                      is enabled",
+            "Portfast Default                        is disabled",
+            "Portfast Edge BPDU Guard Default        is disabled",
+            "Portfast Edge BPDU Filter Default       is disabled",
+            "Loopguard Default                       is disabled",
+            "PVST Simulation Default                 is enabled but inactive in rapid-pvst mode",
+            "Bridge Assurance                        is enabled",
+            "UplinkFast                              is disabled",
+            "BackboneFast                            is disabled",
+        ];
+        for (release, want) in [("15.2(2)E", &old[..]), ("15.2(7)E", &new[..])] {
+            let e =
+                Engine::new(grammars::grammar("c2960x", Release::parse(release).unwrap()).unwrap());
+            let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+            let mut s = crate::shell::Session::new(&e, Device::new(stack));
+            for l in [
+                "enable",
+                "configure terminal",
+                "spanning-tree mode rapid-pvst",
+                "end",
+            ] {
+                s.type_line(l);
+            }
+            let out = s.type_line("show spanning-tree summary").0;
+            assert_eq!(out[2..2 + want.len()], *want, "{release}: {out:?}");
+            // the region unconfigured, after the warning (the lab C9200L-48T-4G too)
+            assert_eq!(
+                s.type_line("show spanning-tree mst configuration digest").0,
+                [
+                    "% Switch is not in mst mode",
+                    "Name      []",
+                    "Revision  0     Instances configured 1",
+                    "Digest          0xAC36177F50283CD4B83821D8AB26DE62",
+                    "Pre-std Digest  0xBB3B6C15EF8D089BB55ED10D24DF44DE",
+                ],
+                "{release}"
+            );
+        }
     }
 
     #[test]
