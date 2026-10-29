@@ -349,8 +349,11 @@ pub struct Corpus {
     pub release_order: Vec<(String, String, Precedence)>,
     /// classic IOS, then IOS XE
     pub family_order: [Precedence; 2],
-    pub interface_order: Precedence,
-    pub line_order: Precedence,
+    /// the lines under an interface and under a `line` block, classic IOS, then IOS XE (the lab
+    /// WS-C2960X-24PS-L, 15.2(7)E0a, printed `mac access-group` before `storm-control`, the lab
+    /// C9300-24T, 17.6.4, after)
+    pub interface_order: [Precedence; 2],
+    pub line_order: [Precedence; 2],
     /// (book, bytes of NVRAM its `show version` names)
     pub nvram: Vec<(String, u64)>,
     /// (book, release, block kind, the keywords of a command a capture used)
@@ -961,13 +964,15 @@ pub fn build(src: &Source) -> Corpus {
     };
     let mut release: BTreeMap<(String, String), Gathering> = BTreeMap::new();
     let mut gaps: BTreeMap<(String, String, usize, usize, usize), usize> = BTreeMap::new();
-    let (mut interface, mut line) = (Gathering::default(), Gathering::default());
+    let mut interface = [Gathering::default(), Gathering::default()];
+    let mut line = [Gathering::default(), Gathering::default()];
     for f in &src.running {
         let mut top = vec![];
         let mut block: Option<(bool, Vec<usize>)> = None;
+        let at = usize::from(!classic(&f.release));
         let mut close = |block: Option<(bool, Vec<usize>)>| match block {
-            Some((true, commands)) => interface.add(commands),
-            Some((false, commands)) => line.add(commands),
+            Some((true, commands)) => interface[at].add(commands),
+            Some((false, commands)) => line[at].add(commands),
             None => {}
         };
         for l in live::body(&f.text) {
@@ -1019,8 +1024,8 @@ pub fn build(src: &Source) -> Corpus {
         .map(|((b, r), g)| (b.clone(), r.clone(), g.settled()))
         .collect();
     c.family_order = [family[0].settled(), family[1].settled()];
-    c.interface_order = interface.settled();
-    c.line_order = line.settled();
+    c.interface_order = interface.map(|g| g.settled());
+    c.line_order = line.map(|g| g.settled());
     let books: BTreeSet<&str> = src.logs.iter().map(|f| f.book.as_str()).collect();
     for b in books {
         if let Some(n) = nvram(src, b) {

@@ -323,7 +323,8 @@ A configuration a switch printed (one with a `version` line) keeps its layout wh
 - Two of its top-level lines that meet again keep the `!` and comment lines printed between them, a `! ` with its space included.
 - An indented `!` before a line in a block stays before that line.
 - Each line keeps its own spacing and case (certificate hex, `match cos  5 `, `mdns-sd service-list <name> IN`); two lines differing only in case each print as printed.
-- Its top-level lines print in its order; a line added since follows the line computed before it and every one of its lines whose command IOS prints before its own (the lab C2960G at 15.0(2)SE11: a new `spanning-tree mst configuration` after `spanning-tree extend system-id`).
+- Its top-level lines print in its order; a line added since follows the line computed before it and every one of its lines whose command IOS prints before its own (the lab C2960G at 15.0(2)SE11: a new `spanning-tree mst configuration` after `spanning-tree extend system-id`). It goes before the first of its lines whose command IOS prints after its own, where none of its lines from there to the line computed before it prints before it (the lab WS-C2960X-24PS-L at 15.2(7)E0a: `no ip source-route` before `ip arp inspection vlan 10`). Lines added after one of its own print in IOS's order among themselves (`ip igmp snooping` before `login on-success log`).
+- A line added after a held line, which prints after the line typed before it, follows the latest of its lines computed before it, and the `!` closing a block before it in the computed order stays with that block (the same switch: its control class maps after `lldp run`, where `mac access-list` was held after the certificate chain).
 - Its blank lines and the comment lines inside its blocks stay where it printed them, and a `no` line it printed is kept (` no protocol udp`).
 - Lines added between two of its own take the printed `!` lines before the first added line, all of them less those computed after it where those are fewer; the rest take their computed ones.
 - At 17.6 a static route follows the `ip http` lines with no `!`, an access list follows the route after one, and `control-plane` follows the access list after three, the block's own closing `!` counted.
@@ -351,7 +352,8 @@ These come from captured Catalyst 9400 running configurations at 17.5, and the l
 
 - A line a real switch printed prints back as printed with its `no` form kept.
 - A first word the books read as an abbreviation of another command is taken as held (`service call-home` where a book has `service-template` alone).
-- A line taken from a capture is placed after the line typed before it, else after the line before it in the first capture that held it.
+- A line taken from a capture is placed after the line typed before it, else after the line before it in the first capture that held it. After a block it follows the `!` closing the block, a block with nothing under it included (a `mac access-list` after an empty certificate chain).
+- The lines under an interface and under a `line` block print in the order the captures of their family printed them, classic IOS or IOS XE: the lab WS-C2960X-24PS-L (15.2(7)E0a) printed `mac access-group` before `storm-control`, the lab C9300-24T (17.6.4) after.
 
 ### Spanning-tree lines
 

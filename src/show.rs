@@ -176,9 +176,10 @@ struct Orders {
     release: std::collections::HashMap<(String, String), Precedence>,
     /// top-level lines by family, classic IOS then IOS XE, from every capture of the family
     family: [Precedence; 2],
-    /// the lines of interface blocks and of line blocks, from every capture
-    interface: Precedence,
-    line: Precedence,
+    /// the lines of interface blocks and of line blocks by family, classic IOS then IOS XE, from
+    /// every capture of the family
+    interface: [Precedence; 2],
+    line: [Precedence; 2],
     /// commands whose site values the corpus characterized, by number (`live::fits`)
     fitted: Vec<(String, usize)>,
     /// the `!` lines between two top-level commands that a release's captures printed most often,
@@ -220,8 +221,8 @@ fn orders() -> &'static Orders {
                 Precedence::of(&c.family_order[0]),
                 Precedence::of(&c.family_order[1]),
             ],
-            interface: Precedence::of(&c.interface_order),
-            line: Precedence::of(&c.line_order),
+            interface: [0, 1].map(|f| Precedence::of(&c.interface_order[f])),
+            line: [0, 1].map(|f| Precedence::of(&c.line_order[f])),
             fitted: c
                 .numbers
                 .iter()
@@ -386,14 +387,33 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
     // computed before it (the lab C9300-24T, 17.6.4: 48 of 251 top-level lines placed otherwise)
     let key = |l: &str| crate::device::layout_key(l.trim_end());
     let mut groups: Vec<(Option<usize>, Vec<Unit>)> = vec![];
-    for u in units {
+    let mut after_block = false;
+    for mut u in units {
+        // after a held line, which prints after the line typed before it, out of the computed
+        // order: after the latest of the replayed lines computed before it (the lab
+        // WS-C2960X-24PS-L, 15.2(7)E0a: the control class maps after `lldp run`, held after
+        // `errdisable recovery`, where `mac access-list` was held after the certificate chain)
+        let spliced = |g: &(Option<usize>, Vec<Unit>)| d.held_top.contains(&g.1[0].line);
+        let latest = groups.last().is_some_and(spliced) && !d.held_top.contains(&u.line);
+        let block = !u.under.is_empty();
         match layout.order.get(&key(&u.line)) {
             Some(&at) => groups.push((Some(at), vec![u])),
+            None if latest => match groups.iter_mut().max_by_key(|g| g.0) {
+                Some(g) => {
+                    // the `!` closing the block before it in the computed order stays with it
+                    if after_block && g.1.last().is_some_and(|l| l.under.is_empty()) {
+                        u.bangs = u.bangs.saturating_sub(1);
+                    }
+                    g.1.push(u);
+                }
+                None => groups.push((None, vec![u])),
+            },
             None => match groups.last_mut() {
                 Some(g) => g.1.push(u),
                 None => groups.push((None, vec![u])),
             },
         }
+        after_block = block;
     }
     groups.sort_by_key(|g| g.0);
     // and after every replayed line whose command IOS prints before its own (the lab
@@ -404,11 +424,27 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
         (Some(x), Some(y)) => x != y && top.iter().any(|p| p.before(x, y)),
         _ => false,
     };
+    // and before the first replayed line whose command IOS prints after its own, where none of
+    // those before it prints before it (the lab WS-C2960X-24PS-L, 15.2(7)E0a: `no ip source-route`
+    // typed on its base after `switch 1 provision`, before `ip arp inspection vlan 10`, which
+    // vswitch computes after `lldp run`)
+    let replayed = |k: usize, groups: &[(Option<usize>, Vec<Unit>)]| groups[k].0.is_some();
     for i in 0..groups.len() {
         let at = groups[i].0;
         let mut j = usize::from(at.is_some());
         while j < groups[i].1.len() {
             let line = &groups[i].1[j].line;
+            let first_after = (0..=i)
+                .filter(|&k| replayed(k, &groups))
+                .find(|&k| precedes(line, &groups[k].1[0].line));
+            if let Some(k) = first_after
+                && k > 0
+                && !(k..=i).any(|m| replayed(m, &groups) && precedes(&groups[m].1[0].line, line))
+            {
+                let u = groups[i].1.remove(j);
+                groups[k - 1].1.push(u);
+                continue;
+            }
             let later = (i + 1..groups.len())
                 .rev()
                 .find(|&k| precedes(&groups[k].1[0].line, line));
@@ -421,7 +457,16 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
             }
         }
     }
-    let units: Vec<Unit> = groups.into_iter().flat_map(|g| g.1).collect();
+    // the lines added after one replayed line in IOS's order among themselves (the same switch:
+    // `ip igmp snooping` before `login on-success log`, typed after it)
+    let units: Vec<Unit> = groups
+        .into_iter()
+        .flat_map(|(at, mut g)| {
+            let added = g.split_off(usize::from(at.is_some()).min(g.len()));
+            g.extend(in_ios_order(added, |u: &Unit| u.line.as_str(), &top));
+            g
+        })
+        .collect();
     let version = head
         .iter()
         .find(|l| l.starts_with("version "))
@@ -723,9 +768,9 @@ fn block_lines(b: &Block, d: &Device) -> Vec<String> {
             .collect();
     }
     let order = if b.header.starts_with("interface ") {
-        Some(&orders().interface)
+        Some(&orders().interface[usize::from(!classic)])
     } else if b.header.starts_with("line ") {
-        Some(&orders().line)
+        Some(&orders().line[usize::from(!classic)])
     } else {
         None
     };
@@ -1408,13 +1453,15 @@ fn place_held(d: &Device, body: &mut Vec<String>) {
             anchor = d.held_after.get(a);
         }
         let to = match at {
-            // past the anchor's indented lines and the `!` closing its block
+            // past the anchor's indented lines and the `!` closing its block, one with nothing under
+            // it too (a certificate chain with no certificate, a `mac access-list` typed after it)
             Some(i) => {
                 let mut j = i + 1;
                 while j < body.len() && body[j].starts_with([' ', '\t']) {
                     j += 1;
                 }
-                if j > i + 1 && body.get(j).is_some_and(|l| l == "!") && !open(&unit[0]) {
+                let block = j > i + 1 || d.blocks.iter().any(|b| b.header == body[i]);
+                if block && body.get(j).is_some_and(|l| l == "!") && !open(&unit[0]) {
                     j += 1;
                 }
                 j
