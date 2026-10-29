@@ -503,15 +503,21 @@ fn separate(d: &Device, body: Vec<String>) -> Vec<String> {
 
 /// The `!` lines the lab C9300 (17.6.4) printed between two top-level lines where its replayed
 /// configuration had none between them: a static route after the `ip http` lines, an extended
-/// access list after the route, and the control-plane block after the access list.
+/// access list after the route, and the control-plane block after the access list; and those the
+/// lab WS-C2960X-24PS-L (15.2(2)E5) printed between its control class maps and a class map after
+/// them.
 fn lab_gap(d: &Device) -> impl Fn(&str, &str) -> Option<usize> {
     let at = !d.stack.classic()
         && crate::release::Release::parse(&d.release).is_some_and(|r| r.config_version() == "17.6");
+    let c2960x = d.stack.family() == Some(crate::platform::Family::C2960X);
     move |a: &str, b: &str| {
+        let (a, b) = (command(a), command(b));
+        if c2960x && a == "class-map type" && b.starts_with("class-map match-") {
+            return Some(2);
+        }
         if !at {
             return None;
         }
-        let (a, b) = (command(a), command(b));
         match (a.as_str(), b.as_str()) {
             ("ip http", "ip route") => Some(0),
             ("ip route", "ip access-list") => Some(1),
@@ -1105,11 +1111,15 @@ pub fn configuration(d: &Device) -> Vec<String> {
     let (mut post, pre): (Vec<&Block>, Vec<&Block>) = others
         .into_iter()
         .partition(|b| starts(&b.header, AFTER_VLAN_BLOCKS));
-    // every class map, then every policy map (the 62 captures that hold them)
+    // every class map, then every policy map (the 62 captures that hold them); the 2960-X writes its
+    // control class maps and policies before the others (the lab WS-C2960X-24PS-L, 15.2(2)E5)
+    let c2960x = d.stack.family() == Some(crate::platform::Family::C2960X);
+    let control = |b: &Block| c2960x && b.header.contains(" type control ");
     post.sort_by_key(|b| {
-        AFTER_VLAN_BLOCKS
+        let kind = AFTER_VLAN_BLOCKS
             .iter()
-            .position(|p| b.header.starts_with(p))
+            .position(|p| b.header.starts_with(p));
+        (kind, !control(b))
     });
     for b in &pre {
         block(&mut body, b);
@@ -1314,8 +1324,12 @@ fn spanning_vlans_in_order<T>(items: Vec<T>, text: impl Fn(&T) -> &str) -> Vec<T
 }
 
 /// Puts the lines and blocks taken as a real switch held them where that switch printed them:
-/// after the top-level line before them in its capture, or the nearest earlier one present.
+/// after the top-level line before them in its capture, or the nearest earlier one present. The
+/// 2960-X prints its service templates with no `!` after them, inside the `!` closing the block
+/// before (the lab WS-C2960X-24PS-L, 15.2(2)E5: four after the last certificate chain's `quit`).
 fn place_held(d: &Device, body: &mut Vec<String>) {
+    let c2960x = d.stack.family() == Some(crate::platform::Family::C2960X);
+    let open = |header: &str| c2960x && header.starts_with("service-template ");
     let units = d
         .global
         .iter()
@@ -1328,7 +1342,9 @@ fn place_held(d: &Device, body: &mut Vec<String>) {
                 .map(|b| {
                     let mut u = vec![b.header.clone()];
                     u.extend(block_lines(b, d));
-                    u.push("!".into());
+                    if !open(&b.header) {
+                        u.push("!".into());
+                    }
                     u
                 }),
         );
@@ -1370,7 +1386,7 @@ fn place_held(d: &Device, body: &mut Vec<String>) {
                 while j < body.len() && body[j].starts_with([' ', '\t']) {
                     j += 1;
                 }
-                if j > i + 1 && body.get(j).is_some_and(|l| l == "!") {
+                if j > i + 1 && body.get(j).is_some_and(|l| l == "!") && !open(&unit[0]) {
                     j += 1;
                 }
                 j

@@ -1138,7 +1138,8 @@ impl<'a> Session<'a> {
                 for o in self.offered_at(self.mode(), &toks[..i]).0 {
                     let typed = format!("{}{}", &line[..at], o.shown);
                     if !words.contains(&o.shown)
-                        && crate::context::unjudged(self.mode(), &typed, configured)
+                        && (crate::context::unjudged(self.mode(), &typed, configured)
+                            || self.unjudged_on_this_port(self.mode(), &typed))
                     {
                         words.push(o.shown);
                     }
@@ -1884,12 +1885,13 @@ impl<'a> Session<'a> {
                 );
             }
         }
-        // IOS XE asks before it takes the first line that needs the 802.1X configuration
-        // new-style (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the lab C9300-24T's crawl, 17.6.4)
+        // IOS XE and the 2960-X ask before they take the first line that needs the 802.1X
+        // configuration new-style (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the lab C9300-24T's
+        // crawl, 17.6.4; the lab WS-C2960X-24PS-L, 15.2(2)E5)
         if cli::is_config(&mode)
             && !self.redacted
             && !p.negated
-            && !self.device.stack.classic()
+            && self.has_new_style()
             && !self.new_style()
             && NEW_STYLE.iter().any(|s| canonical.starts_with(s))
         {
@@ -3620,6 +3622,14 @@ impl<'a> Session<'a> {
         self.converted || new_style(&self.device)
     }
 
+    /// Whether the image converts its 802.1X configuration to new-style and names the style
+    /// (`authentication display`): IOS XE, and of classic IOS the 2960-X (the lab
+    /// WS-C2960X-24PS-L, 15.2(2)E5).
+    fn has_new_style(&self) -> bool {
+        !self.device.stack.classic()
+            || self.device.stack.family() == Some(crate::platform::Family::C2960X)
+    }
+
     /// The keyword after `authentication display` in a privileged line that is one.
     fn display_style<'p>(&self, mode: &str, p: &'p Parse) -> Option<&'p str> {
         let kws: Vec<&str> = (p.items.iter())
@@ -3630,7 +3640,7 @@ impl<'a> Session<'a> {
             .collect();
         match kws[..] {
             ["authentication", "display", w]
-                if mode == "privileged" && !p.negated && !self.device.stack.classic() =>
+                if mode == "privileged" && !p.negated && self.has_new_style() =>
             {
                 Some(w)
             }
@@ -3645,7 +3655,7 @@ impl<'a> Session<'a> {
         mode == "privileged"
             && text.ends_with(' ')
             && self.new_style()
-            && !self.device.stack.classic()
+            && self.has_new_style()
             && matches!(&words[..], [a, d] if "authentication".starts_with(a.as_str())
                 && "display".starts_with(d.as_str()))
     }
@@ -3654,9 +3664,12 @@ impl<'a> Session<'a> {
     /// C9200L-48T-4G, 17.6.4 and 17.15.6): an identity policy becomes the service template of its
     /// name (17.15.6; 17.6.4 inferred), `CPL_DEFAULTS` are added, and a legacy port's
     /// `authentication` lines become `access-session` lines and a control policy of its own,
-    /// `CPL_PORT_POLICY`, its classes printed twice; the port keeps `mab` and `dot1x pae`.
+    /// `CPL_PORT_POLICY`, its classes printed twice; the port keeps `mab` and `dot1x pae`. The 2960-X
+    /// adds `CPL_DEFAULTS_2960X`, the class maps of `CPL_CLASSES` only where a port converts, and
+    /// `CPL_PORT_POLICY_2960X`, its classes printed once (the lab WS-C2960X-24PS-L, 15.2(2)E5).
     fn convert_to_new_style(&mut self) {
         self.converted = true;
+        let classic = self.device.stack.classic();
         let anchor = self.service_templates_after();
         let identity = |t: &str| t.strip_prefix("identity policy ").map(str::to_string);
         let mut lines: Vec<String> = (self.device.global.iter().map(|e| e.text.as_str()))
@@ -3670,7 +3683,12 @@ impl<'a> Session<'a> {
         self.device
             .blocks
             .retain(|b| !b.header.starts_with("identity policy "));
-        lines.extend(CPL_DEFAULTS.iter().map(|l| l.to_string()));
+        let defaults = if classic {
+            CPL_DEFAULTS_2960X
+        } else {
+            CPL_DEFAULTS
+        };
+        lines.extend(defaults.iter().map(|l| l.to_string()));
         let mut ports = vec![];
         for b in &mut self.device.blocks {
             let Some(port) = b.header.strip_prefix("interface ") else {
@@ -3696,6 +3714,9 @@ impl<'a> Session<'a> {
             });
             ports.push((port.to_string(), control, host, open));
         }
+        if !classic || !ports.is_empty() {
+            lines.extend(CPL_CLASSES.iter().map(|l| l.to_string()));
+        }
         let mut policies = vec![];
         for (port, ..) in &ports {
             let policy = format!(
@@ -3720,12 +3741,23 @@ impl<'a> Session<'a> {
         self.configure_quietly(&lines);
         // `access-session mac-move deny`, then the service templates where an identity policy
         // prints, each after the one before, and the parameter maps typed next (the lab
-        // C9200L-48T-4G, 17.6.4 and 17.15.6, `show running-config | section`)
+        // C9200L-48T-4G, 17.6.4 and 17.15.6, `show running-config | section`); the 2960-X prints
+        // `access-session mac-move deny` after `udld enable` and the templates after the last
+        // certificate chain (the lab WS-C2960X-24PS-L, 15.2(2)E5)
+        let udld = self.running_has("udld enable");
         let mut prev = anchor;
         let placed = lines
             .iter()
             .filter(|l| *l == "access-session mac-move deny" || l.starts_with("service-template "));
         for l in placed {
+            if classic && l == "access-session mac-move deny" {
+                if udld {
+                    self.device.held_top.insert(l.clone());
+                    (self.device.held_after).insert(l.clone(), "udld enable".into());
+                    self.between_udld_and_next(l);
+                }
+                continue;
+            }
             self.device.held_top.insert(l.clone());
             if let Some(p) = prev {
                 self.device.held_after.insert(l.clone(), p);
@@ -3766,15 +3798,21 @@ impl<'a> Session<'a> {
             }
         }
         // a converted port's policy as the switch printed it, each class twice (17.6.4 and
-        // 17.15.6). Its lines are written, not typed: the crawls asked `?` under `event
-        // session-started match-all` alone, and the actions differ by event (the switch offered no
-        // `terminate` there, and its policy terminates under two other events)
+        // 17.15.6; once on the 2960-X). Its lines are written, not typed: the crawls asked `?` under
+        // `event session-started match-all` alone, and the actions differ by event (the switch
+        // offered no `terminate` there, and its policy terminates under two other events)
+        let policy_lines = if classic {
+            CPL_PORT_POLICY_2960X
+        } else {
+            CPL_PORT_POLICY
+        };
         for policy in policies {
             let b = self.device.block(&policy);
             let mut new = vec![];
             let mut class: Vec<Entry> = vec![];
             let flush = |class: &mut Vec<Entry>, new: &mut Vec<Entry>| {
                 let again: Vec<Entry> = (class.iter())
+                    .filter(|_| !classic)
                     .map(|e| Entry {
                         key: format!("{} @again", e.key),
                         text: e.text.clone(),
@@ -3787,7 +3825,7 @@ impl<'a> Session<'a> {
             // indent, classes at one, actions at two; a class is keyed by its event too, as a
             // section in a section is
             let mut event = String::new();
-            for l in CPL_PORT_POLICY {
+            for l in policy_lines {
                 let text = l[1..].to_string();
                 let depth = text.len() - text.trim_start().len();
                 if depth == 0 || (depth == 1 && !class.is_empty()) {
@@ -3808,6 +3846,29 @@ impl<'a> Session<'a> {
             flush(&mut class, &mut new);
             self.device.blocks[b].lines = new;
         }
+    }
+
+    /// Puts top-level line `l` between `udld enable` and the line a replayed configuration printed
+    /// after it, the empty line `udld enable` prints staying after it and the `!` lines before the
+    /// next (the lab WS-C2960X-24PS-L, 15.2(2)E5: `udld enable`, an empty line, `access-session
+    /// mac-move deny`, `!`, `mls qos`).
+    fn between_udld_and_next(&mut self, l: &str) {
+        let Some(layout) = self.device.layout.as_mut() else {
+            return;
+        };
+        let udld = crate::device::layout_key("udld enable");
+        let Some(((_, next), seps)) = (layout.pairs.iter())
+            .find(|((a, _), _)| *a == udld)
+            .map(|(k, v)| (k.clone(), v.clone()))
+        else {
+            return;
+        };
+        let blank = seps.iter().take_while(|s| s.is_empty()).count();
+        let key = crate::device::layout_key(l);
+        layout
+            .pairs
+            .insert((udld, key.clone()), seps[..blank].to_vec());
+        layout.pairs.insert((key, next), seps[blank..].to_vec());
     }
 
     /// The top-level line the service templates print after: the one before an identity policy, else
@@ -4880,6 +4941,7 @@ impl<'a> Session<'a> {
         // need list them
         if ["do", "end"].contains(&first.as_str())
             || crate::context::unjudged(mode, line, configured)
+            || self.unjudged_on_this_port(mode, line)
             || level
                 .as_deref()
                 .is_some_and(|l| self.level_takes(i, l, mode, line))
@@ -5120,7 +5182,9 @@ impl<'a> Session<'a> {
         let took = held.took(&level, mode, &context, line);
         if routed
             || power
-            || (crate::context::unjudged(mode, line, configured) && !took)
+            || ((crate::context::unjudged(mode, line, configured)
+                || self.unjudged_on_this_port(mode, line))
+                && !took)
             || (mode == "config" && self.provisions_another_family(Some(&level), &context, line))
         {
             return None;
@@ -5565,6 +5629,18 @@ impl<'a> Session<'a> {
     /// Whether the running configuration holds `line` at its top level.
     fn running_has(&self, line: &str) -> bool {
         self.device.global.iter().any(|e| e.text.trim() == line)
+    }
+
+    /// Whether `line` is one the 2960-X's crawl does not judge here: an interface whose own lines
+    /// put it in access or trunk mode (`context::UNJUDGED_ON_A_SET_PORT`).
+    fn unjudged_on_this_port(&self, mode: &str, line: &str) -> bool {
+        mode == "config-if"
+            && self.device.stack.family() == Some(crate::platform::Family::C2960X)
+            && crate::context::unjudged_on_a_set_port(line)
+            && self
+                .own_lines(mode)
+                .iter()
+                .any(|l| matches!(*l, "switchport mode access" | "switchport mode trunk"))
     }
 
     /// The session's license level: its running configuration's `license boot level`, else the
@@ -6478,8 +6554,8 @@ const NEW_STYLE: &[&str] = &[
 pub(crate) const CONVERT_SAY: &str = "This operation will permanently convert all relevant authentication commands to their CPL control-policy equivalents. As this conversion is irreversible and will disable the conversion CLI 'authentication display [legacy|new-style]', you are strongly advised to back up your current configuration before proceeding. ";
 const CONVERT_ASK: &str = "Do you wish to continue? [yes]: ";
 
-/// What converting the 802.1X configuration to new-style adds at the top, as the lab
-/// C9200L-48T-4G printed it at 17.6.4 and 17.15.6 (`show archive config differences`): a
+/// What converting the 802.1X configuration to new-style adds at the top, with `CPL_CLASSES`, as
+/// the lab C9200L-48T-4G printed it at 17.6.4 and 17.15.6 (`show archive config differences`): a
 /// configuration file's lines, typed from `(config)#`.
 const CPL_DEFAULTS: &[&str] = &[
     "access-session mac-move deny",
@@ -6492,6 +6568,25 @@ const CPL_DEFAULTS: &[&str] = &[
     "service-template DEFAULT_CRITICAL_DATA_TEMPLATE",
     "service-template webauth-global-inactive",
     " inactivity-timer 3600",
+];
+
+/// What converting the 802.1X configuration to new-style adds on the 2960-X, as the lab
+/// WS-C2960X-24PS-L printed it at 15.2(2)E5 (`show archive config differences`, `show
+/// running-config`): the C9200L's service templates in another order, with no `linksec` lines and
+/// no critical data template.
+const CPL_DEFAULTS_2960X: &[&str] = &[
+    "access-session mac-move deny",
+    "service-template webauth-global-inactive",
+    " inactivity-timer 3600",
+    "service-template DEFAULT_LINKSEC_POLICY_MUST_SECURE",
+    "service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
+    "service-template DEFAULT_CRITICAL_VOICE_TEMPLATE",
+    " voice vlan",
+];
+
+/// The class maps converting adds, which the C9200L-48T-4G adds with `CPL_DEFAULTS` and the
+/// WS-C2960X-24PS-L where a port converts (17.6.4 and 17.15.6; 15.2(2)E5).
+const CPL_CLASSES: &[&str] = &[
     "class-map type control subscriber match-all AAA_SVR_DOWN_AUTHD_HOST",
     " match result-type aaa-timeout",
     " match authorization-status authorized",
@@ -6531,6 +6626,35 @@ const CPL_PORT_POLICY: &[&str] = &[
     "  5 class DOT1X_FAILED do-until-failure",
     "   10 terminate dot1x",
     "   20 authentication-restart 60",
+    "  10 class DOT1X_NO_RESP do-until-failure",
+    "   10 terminate dot1x",
+    "   20 authenticate using mab priority 20",
+    "  20 class MAB_FAILED do-until-failure",
+    "   10 terminate mab",
+    "   20 authentication-restart 60",
+    "  40 class always do-until-failure",
+    "   10 terminate dot1x",
+    "   20 terminate mab",
+    "   30 authentication-restart 60",
+    " event agent-found match-all",
+    "  10 class always do-until-failure",
+    "   10 terminate mab",
+    "   20 authenticate using dot1x priority 10",
+    " event authentication-success match-all",
+    "  10 class always do-until-failure",
+    "   10 activate service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
+];
+
+/// `CPL_PORT_POLICY` as the lab WS-C2960X-24PS-L (15.2(2)E5) made it for the same port: a failed
+/// dot1x falls back to MAB, as no response does.
+const CPL_PORT_POLICY_2960X: &[&str] = &[
+    " event session-started match-all",
+    "  10 class always do-until-failure",
+    "   10 authenticate using dot1x priority 10",
+    " event authentication-failure match-first",
+    "  5 class DOT1X_FAILED do-until-failure",
+    "   10 terminate dot1x",
+    "   20 authenticate using mab priority 20",
     "  10 class DOT1X_NO_RESP do-until-failure",
     "   10 terminate dot1x",
     "   20 authenticate using mab priority 20",
@@ -8193,6 +8317,62 @@ mod tests {
         assert_ne!(out[0], format!("{}^", " ".repeat(caret + 4)), "{out:?}");
         assert_eq!(s.type_line("key chain TESTMS").1, Result::Ok);
         assert_eq!(s.mode(), "config-keychain");
+    }
+
+    #[test]
+    fn a_2960_x_takes_802_1x_port_lines_on_a_port_set_to_access_or_trunk() {
+        // the lab WS-C2960X-24PS-L, with AAA off, took these on an access port (15.2(2)E5 and
+        // 15.2(7)E0a) and on a trunk (15.2(7)E0a), and refused them on a port left to negotiate
+        // (15.2(7)E0a), the state its crawl ran in
+        for release in ["15.2(2)E"] {
+            let r = crate::release::Release::parse(release).unwrap();
+            let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+            let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+            let mut s = Session::new(&e, Device::new(stack));
+            let lines = [
+                "authentication port-control auto",
+                "mab",
+                "dot1x pae authenticator",
+            ];
+            for line in [
+                "enable",
+                "configure terminal",
+                "interface GigabitEthernet1/0/13",
+            ] {
+                assert_eq!(s.type_line(line).1, Result::Ok, "{line}");
+            }
+            for (line, at) in lines.iter().zip([3, 2, 2]) {
+                let (out, r) = s.type_line(line);
+                assert_eq!(r, Result::Error, "{release} {line}");
+                let caret = "Switch(config-if)#".len() + at;
+                assert_eq!(out[0], format!("{}^", " ".repeat(caret)), "{line}: {out:?}");
+            }
+            for (port, mode) in [("1/0/12", "access"), ("1/0/14", "trunk")] {
+                s.type_line(&format!("interface GigabitEthernet{port}"));
+                s.type_line(&format!("switchport mode {mode}"));
+                for line in lines {
+                    assert_eq!(s.type_line(line).1, Result::Ok, "{release} {mode}: {line}");
+                }
+            }
+            s.type_line("end");
+            let (out, _) = s.type_line("show running-config interface GigabitEthernet1/0/12");
+            let at = out
+                .iter()
+                .position(|l| l == "interface GigabitEthernet1/0/12");
+            let block = &out[at.unwrap()..];
+            assert_eq!(
+                block[..6],
+                [
+                    "interface GigabitEthernet1/0/12",
+                    " switchport mode access",
+                    " authentication port-control auto",
+                    " mab",
+                    " dot1x pae authenticator",
+                    "end",
+                ],
+                "{release}: {out:?}"
+            );
+        }
     }
 
     #[test]
@@ -14630,6 +14810,131 @@ mod tests {
                 "%Command deprecated (authentication port-control auto) - use access-session instead",
                 ""
             ]
+        );
+    }
+
+    #[test]
+    fn a_2960_x_converts_to_new_style_802_1x_as_the_lab_one_printed_it() {
+        // the lab WS-C2960X-24PS-L (15.2(2)E5) converted its printed configuration on `yes`
+        const BASE: &str = "!\nversion 15.2\n!\nhostname Switch\n!\n!\nudld enable\n\n!\nmls qos\n!\n\
+            crypto pki trustpoint TP1\n enrollment selfsigned\n revocation-check none\n!\n!\n\
+            crypto pki certificate chain TP1\n!\nmac access-list extended M1\n permit any any\n!\n\
+            lldp run\n!\nclass-map match-all CM1\n match ip dscp ef \n!\n\
+            policy-map PM1\n class CM1\n  set dscp ef\n!\n\
+            interface GigabitEthernet1/0/12\n switchport mode access\n\
+             authentication port-control auto\n mab\n dot1x pae authenticator\n!\nend\n";
+        let r = crate::release::Release::parse("15.2(2)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let session = |base: &str| {
+            let mut s = Session::new(&e, Device::new(stack.clone()));
+            crate::check::type_into(&mut s, base);
+            s.type_line("end");
+            s.type_line("configure terminal");
+            let (out, r) = s.type_line("class-map type control subscriber match-all TESTCC");
+            assert_eq!((out, r), (vec![CONVERT_SAY.to_string()], Result::Ok));
+            assert_eq!(s.type_line(""), (vec![], Result::Ok));
+            assert_eq!(s.mode(), "config-filter-control-classmap");
+            s.type_line("end");
+            s
+        };
+        let mut s = session(BASE);
+        assert_eq!(
+            s.type_line("authentication display config-mode").0,
+            ["Current configuration mode is new-style ", ""]
+        );
+        let shown_all = show::configuration(&s.device);
+        let at = |l: &str| {
+            shown_all
+                .iter()
+                .position(|x| x == l)
+                .unwrap_or_else(|| panic!("{l}: {shown_all:#?}"))
+        };
+        let run = |from: &str, n: usize| shown_all[at(from)..at(from) + n].to_vec();
+        assert_eq!(
+            run("udld enable", 5),
+            [
+                "udld enable",
+                "",
+                "access-session mac-move deny",
+                "!",
+                "mls qos"
+            ]
+        );
+        assert_eq!(
+            run("crypto pki certificate chain TP1", 8),
+            [
+                "crypto pki certificate chain TP1",
+                "service-template webauth-global-inactive",
+                " inactivity-timer 3600 ",
+                "service-template DEFAULT_LINKSEC_POLICY_MUST_SECURE",
+                "service-template DEFAULT_LINKSEC_POLICY_SHOULD_SECURE",
+                "service-template DEFAULT_CRITICAL_VOICE_TEMPLATE",
+                " voice vlan",
+                "!",
+            ]
+        );
+        assert_eq!(
+            run("lldp run", 2),
+            [
+                "lldp run",
+                "class-map type control subscriber match-all AAA_SVR_DOWN_AUTHD_HOST"
+            ]
+        );
+        assert_eq!(
+            run("class-map type control subscriber match-all TESTCC", 4),
+            [
+                "class-map type control subscriber match-all TESTCC",
+                "!",
+                "!",
+                "class-map match-all CM1"
+            ]
+        );
+        let order = [
+            "class-map match-all CM1",
+            "policy-map type control subscriber POLICY_Gi1/0/12",
+            "policy-map PM1",
+            "interface GigabitEthernet1/0/12",
+        ];
+        for pair in order.windows(2) {
+            assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+        }
+        assert!(
+            !shown_all
+                .iter()
+                .any(|l| l.contains("linksec") || l.contains("CRITICAL_DATA"))
+        );
+        // each class once, a failed dot1x falling back to MAB
+        let policy = block_of(&s, "policy-map type control subscriber POLICY_Gi1/0/12");
+        assert_eq!(policy[1..], *CPL_PORT_POLICY_2960X, "{policy:#?}");
+        assert_eq!(
+            block_of(&s, "interface GigabitEthernet1/0/12"),
+            [
+                "interface GigabitEthernet1/0/12",
+                " switchport mode access",
+                " access-session host-mode single-host",
+                " access-session closed",
+                " access-session port-control auto",
+                " mab",
+                " dot1x pae authenticator",
+                " service-policy type control subscriber POLICY_Gi1/0/12",
+            ]
+        );
+        // with no legacy port it adds the templates alone
+        let s = session(&BASE.replace("authentication port-control auto\n", ""));
+        let shown_all = show::configuration(&s.device);
+        assert!(
+            shown_all
+                .iter()
+                .any(|l| l == "service-template webauth-global-inactive")
+        );
+        let controls: Vec<&String> = (shown_all.iter())
+            .filter(|l| l.contains(" type control "))
+            .collect();
+        assert_eq!(
+            controls,
+            ["class-map type control subscriber match-all TESTCC"],
+            "{shown_all:#?}"
         );
     }
 

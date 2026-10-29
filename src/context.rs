@@ -232,11 +232,8 @@ pub const UNJUDGED: &[(&str, &str, &str)] = &[
 /// (17.15.6) took `exit`, `exit-router-lisp`, `exit-service-ipv4` and the others its `?` hid
 /// (17.6.4's listed the `exit-` ones, never `exit`).
 pub fn unjudged(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> bool {
-    let line = line.trim_start().to_lowercase();
-    let line = ["no ", "default "]
-        .iter()
-        .find_map(|n| line.strip_prefix(n))
-        .unwrap_or(&line);
+    let line = bare(line);
+    let line = line.as_str();
     if (mode.starts_with("config-lisp") || mode.starts_with("config-router-lisp"))
         && (line.trim_end() == "exit" || line.starts_with("exit-"))
     {
@@ -245,6 +242,38 @@ pub fn unjudged(mode: &str, line: &str, configured: impl Fn(&str) -> bool) -> bo
     UNJUDGED.iter().any(|(m, start, state)| {
         *m == mode && line.starts_with(start) && (state.is_empty() || configured(state))
     })
+}
+
+/// Port lines the 2960-X's crawl does not judge on a port its own lines put in access or trunk
+/// mode: the lab WS-C2960X-24PS-L's crawl (15.2(2)E5) ran on factory ports, which negotiate
+/// (`dynamic auto`) and refuse `authentication`, `mab` and `dot1x` (15.2(7)E0a, at `aut|h`, `ma|b`
+/// and `do|t1x`), and with AAA off both images took all three on an access port and 15.2(7)E0a on a
+/// trunk. Its new-style conversion writes `access-session` and `service-policy type control` lines
+/// on an access port.
+pub const UNJUDGED_ON_A_SET_PORT: &[&str] = &[
+    "authentication",
+    "dot1x",
+    "mab",
+    "access-session",
+    "service-policy type control",
+];
+
+/// Whether `line` starts as one of `UNJUDGED_ON_A_SET_PORT`, past `no` or `default`.
+pub fn unjudged_on_a_set_port(line: &str) -> bool {
+    let line = bare(line);
+    UNJUDGED_ON_A_SET_PORT.iter().any(|s| line.starts_with(s))
+}
+
+/// `line` in lower case, past its leading space and a `no` or `default`.
+fn bare(line: &str) -> String {
+    let line = line.trim_start().to_lowercase();
+    match ["no ", "default "]
+        .iter()
+        .find_map(|n| line.strip_prefix(n))
+    {
+        Some(rest) => rest.to_string(),
+        None => line,
+    }
 }
 
 /// Where a refused line's caret stands: under a word, or past its end.

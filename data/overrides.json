@@ -3809,6 +3809,13 @@
       "modes": ["privileged"],
       "lines": ["authentication display {config-mode | legacy | new-style}"],
       "evidence": "the lab C9200L-48T-4G (17.6.4 and 17.15.6) offered config-mode, legacy and new-style after 'authentication display', each ending the line, and at 17.6.4 answered 'authentication display config-mode' with the configuration's style"
+    },
+    {
+      "name": "authentication display",
+      "platform": "Catalyst 2960x",
+      "modes": ["privileged"],
+      "lines": ["authentication display {config-mode | legacy | new-style}"],
+      "evidence": "the 2960-X books document no authentication display; the lab WS-C2960X-24PS-L's crawl (15.2(2)E5) offered config-mode, legacy and new-style after 'authentication display', each ending the line, and the switch answered 'authentication display config-mode' with the configuration's style"
     }
   ]
 }
