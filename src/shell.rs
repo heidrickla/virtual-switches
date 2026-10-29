@@ -99,6 +99,10 @@ pub struct Session<'a> {
     /// a line that needs the 802.1X configuration new-style, held while IOS XE asks whether to
     /// convert it
     converting: Option<String>,
+    /// `no aaa new-model` with AAA on, held while the 2960-X asks to confirm it, and whether the
+    /// held line is being taken
+    confirming: Option<String>,
+    confirmed: bool,
     /// the 802.1X configuration was converted to new-style at the console, which IOS cannot undo:
     /// no line asks again, after a configuration replaced to legacy lines too
     converted: bool,
@@ -240,6 +244,8 @@ impl<'a> Session<'a> {
             banner: None,
             certificate: None,
             converting: None,
+            confirming: None,
+            confirmed: false,
             converted: false,
             pubkey: None,
             last_top: None,
@@ -1125,6 +1131,7 @@ impl<'a> Session<'a> {
     pub fn cancel(&mut self) {
         self.asking = false;
         self.converting = None;
+        self.confirming = None;
     }
 
     pub fn prompt(&self) -> String {
@@ -1133,6 +1140,9 @@ impl<'a> Session<'a> {
         }
         if self.converting.is_some() {
             return CONVERT_ASK.into();
+        }
+        if self.confirming.is_some() {
+            return CONFIRM_ASK.into();
         }
         let h = &self.device.hostname;
         match self.mode() {
@@ -1351,6 +1361,7 @@ impl<'a> Session<'a> {
     pub fn warning(&self, line: &str) -> Option<String> {
         if self.asking
             || self.converting.is_some()
+            || self.confirming.is_some()
             || self.banner.is_some()
             || self.certificate.is_some()
             || self.pubkey.is_some()
@@ -1400,6 +1411,18 @@ impl<'a> Session<'a> {
             if answer.is_empty() || "yes".starts_with(&answer) {
                 self.convert_to_new_style();
                 return self.typed(&held);
+            }
+            return (vec![], Result::Ok);
+        }
+        // `[confirm]`: Enter, or a start of `yes`, takes the held line; anything else drops it
+        // (inferred)
+        if let Some(held) = self.confirming.take() {
+            let answer = line.trim().to_lowercase();
+            if answer.is_empty() || "yes".starts_with(&answer) {
+                self.confirmed = true;
+                let done = self.typed(&held);
+                self.confirmed = false;
+                return done;
             }
             return (vec![], Result::Ok);
         }
@@ -1926,6 +1949,18 @@ impl<'a> Session<'a> {
                 );
             }
         }
+        // the 2960-X asks before it takes AAA back off (the lab WS-C2960X-24PS-L, 15.2(7)E0a:
+        // `no aaa new-model`, with `aaa new-model` configured)
+        if mode == "config"
+            && !self.redacted
+            && !self.confirmed
+            && self.device.stack.family() == Some(crate::platform::Family::C2960X)
+            && canonical == "no aaa new-model"
+            && self.running_has("aaa new-model")
+        {
+            self.confirming = Some(line.to_string());
+            return (vec![AAA_OFF_SAY.into()], Result::Ok);
+        }
         // IOS XE and the 2960-X ask before they take the first line that needs the 802.1X
         // configuration new-style (the lab C9200L-48T-4G, 17.6.4 and 17.15.6; the lab C9300-24T's
         // crawl, 17.6.4; the lab WS-C2960X-24PS-L, 15.2(2)E5)
@@ -2036,6 +2071,18 @@ impl<'a> Session<'a> {
                 ]
                 .map(String::from),
             );
+        }
+        // the 2960-X's IGMP querier, switched on, says some VLANs lack what it needs (the lab
+        // WS-C2960X-24PS-L, five times at 15.2(2)E5 and 15.2(7)E0a; the querier's options say
+        // nothing)
+        if r == Result::Ok
+            && !self.redacted
+            && !p.negated
+            && mode == "config"
+            && self.device.stack.family() == Some(crate::platform::Family::C2960X)
+            && canonical == "ip igmp snooping querier"
+        {
+            out.insert(0, IGMP_QUERIER_SAY.into());
         }
         // a legacy 802.1X line IOS XE takes and calls deprecated once the configuration is
         // new-style (the lab C9300-24T, 17.6.4); a legacy one takes it silently (the lab C9200L)
@@ -2156,11 +2203,17 @@ impl<'a> Session<'a> {
     /// `no` lines are taken, but for a missing policy map's removal and `no switchport` on a port
     /// under 802.1X port control.
     fn unconfigured(&self, mode: &str, p: &Parse) -> Option<String> {
-        if self.device.stack.classic() {
-            return None;
-        }
         let canonical = p.canonical();
         let words: Vec<&str> = canonical.split_whitespace().collect();
+        if self.device.stack.classic() {
+            // a RIP or OSPF process with IP routing off (the lab WS-C2960X-24PS-L, 15.2(7)E0a)
+            let c2960x = self.device.stack.family() == Some(crate::platform::Family::C2960X);
+            let process = matches!(words.as_slice(), ["router", "rip" | "ospf", ..]);
+            return (c2960x && mode == "config" && !p.negated && process)
+                .then_some(())
+                .filter(|()| !self.running_has("ip routing"))
+                .map(|()| "IP routing not enabled".to_string());
+        }
         let named = |prefix: &str, name: &str| {
             self.device
                 .blocks
@@ -4570,6 +4623,69 @@ impl<'a> Session<'a> {
             .collect()
     }
 
+    /// Classic IOS reads `interface` with the type and number typed together (`g1/0/3`) against the
+    /// types the switch has, its ports' and the logical ones, where `?` lists more: the lab
+    /// WS-C2960X-24PS-L (15.2(7)E0a) took `g1/0/3`, `G1/0/3` and `p1` though its `interface ?` lists
+    /// `Group-Async`, `GroupVI`, `Portgroup` and `Pos-channel`, read `t1/0/1` as Tunnel and refused
+    /// it under the `/`, and refused `gr1` under the `r` and `te1/0/1` under the `e` (it has no
+    /// ten-gigabit port). It refused `v1` under the `1`, as a start of two of its types: the virtual
+    /// types its `?` lists are counted (inferred: which of them it has was not probed).
+    fn joined_interface(&self, mode: &str, line: &str) -> Option<Outcome> {
+        if mode != "config" || !self.device.stack.classic() {
+            return None;
+        }
+        let toks = cli::tokens(line);
+        let [kw, word] = toks.as_slice() else {
+            return None;
+        };
+        let k = kw.text.to_lowercase();
+        if k.len() < 3 || !"interface".starts_with(&k) {
+            return None;
+        }
+        let split = word.text.find(|c: char| c.is_ascii_digit())?;
+        let (letters, number) = word.text.split_at(split);
+        if letters.is_empty() || !letters.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        let mut types = self.interface_types();
+        types.extend(["Vif", "Virtual-Template", "Virtual-TokenRing"].map(String::from));
+        let lower = letters.to_lowercase();
+        let starts: Vec<&String> = types
+            .iter()
+            .filter(|t| t.to_lowercase().starts_with(&lower))
+            .collect();
+        let at = word.at;
+        match starts.as_slice() {
+            [] => {
+                let shared = types
+                    .iter()
+                    .map(|t| {
+                        lower
+                            .chars()
+                            .zip(t.to_lowercase().chars())
+                            .take_while(|(a, b)| a == b)
+                            .count()
+                    })
+                    .max()
+                    .unwrap_or(0);
+                Some(Outcome::Invalid(at + shared))
+            }
+            [full] => {
+                // a logical interface is numbered by one number
+                let physical = cli::PHYSICAL_TYPES.iter().any(|(t, _)| t == full);
+                let digits = number.chars().take_while(char::is_ascii_digit).count();
+                if !physical && digits < number.len() {
+                    return Some(Outcome::Invalid(at + letters.len() + digits));
+                }
+                match self.books(mode, &format!("{} {full}{number}", kw.text)) {
+                    o @ Outcome::Ok(_) => Some(o),
+                    _ => None,
+                }
+            }
+            _ => Some(Outcome::Invalid(at + letters.len())),
+        }
+    }
+
     /// A held `?` answer as this session's switch prints it: an interface-type list (one with a
     /// physical-type row) offers the stack's physical types, not the crawled switch's, the logical
     /// ones as held; at `>`, no row for a command `privilege exec level` raised above it.
@@ -4835,6 +4951,9 @@ impl<'a> Session<'a> {
     fn read_unmeasured(&self, i: usize, mode: &str, line: &str) -> Outcome {
         // a word the level takes though no book or answer lists it: its refusal stands
         if let Some(o) = self.unlisted_refusal(i, mode, line) {
+            return o;
+        }
+        if let Some(o) = self.joined_interface(mode, line) {
             return o;
         }
         let mut o = self.books(mode, line);
@@ -6735,6 +6854,9 @@ const NEW_STYLE: &[&str] = &[
 /// the question (the lab C9200L-48T-4G, 17.6.4 and 17.15.6).
 pub(crate) const CONVERT_SAY: &str = "This operation will permanently convert all relevant authentication commands to their CPL control-policy equivalents. As this conversion is irreversible and will disable the conversion CLI 'authentication display [legacy|new-style]', you are strongly advised to back up your current configuration before proceeding. ";
 const CONVERT_ASK: &str = "Do you wish to continue? [yes]: ";
+const CONFIRM_ASK: &str = "Continue?[confirm]";
+const AAA_OFF_SAY: &str = "Changing configuration back to no aaa new-model is not supported. ";
+const IGMP_QUERIER_SAY: &str = "IGMP Querier function cannot be operationally enabled on some VLANs because the required conditions have not been met.";
 
 /// What converting the 802.1X configuration to new-style adds at the top, with `CPL_CLASSES`, as
 /// the lab C9200L-48T-4G printed it at 17.6.4 and 17.15.6 (`show archive config differences`): a
@@ -16015,5 +16137,78 @@ mod tests {
             [" event session-started match-all"],
             "{lines:#?}"
         );
+    }
+
+    #[test]
+    fn a_2960_x_reads_an_interface_typed_with_its_number_against_its_own_types() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a: taken, or the column of its caret
+        let r = crate::release::Release::parse("15.2(7)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        for (line, caret) in [
+            ("interface g1/0/3", None),
+            ("interface G1/0/3", None),
+            ("interface g 1/0/3", None),
+            ("interface p1", None),
+            ("interface gr1", Some(26)),
+            ("interface v1", Some(26)),
+            ("interface t1/0/1", Some(27)),
+            ("interface te1/0/1", Some(26)),
+            ("interface te1/1/1", Some(26)),
+        ] {
+            let (out, r) = s.type_line(line);
+            match caret {
+                None => {
+                    assert_eq!((r, s.mode()), (Result::Ok, "config-if"), "{line}: {out:?}");
+                    s.type_line("exit");
+                }
+                Some(at) => {
+                    assert_eq!(r, Result::Error, "{line}");
+                    assert_eq!(out[0].find('^'), Some(at), "{line}: {out:?}");
+                    assert_eq!(s.mode(), "config");
+                }
+            }
+        }
+        // with IP routing off a RIP or OSPF process stays out
+        for line in ["router rip", "router ospf 1"] {
+            let (out, _) = s.type_line(line);
+            assert_eq!(out, ["IP routing not enabled"], "{line}");
+            assert_eq!(s.mode(), "config");
+        }
+    }
+
+    #[test]
+    fn a_2960_x_asks_before_aaa_goes_back_off_and_its_querier_says_what_vlans_lack() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a
+        let r = crate::release::Release::parse("15.2(7)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        assert_eq!(
+            s.type_line("ip igmp snooping querier").0,
+            [IGMP_QUERIER_SAY]
+        );
+        assert!(s.running_has("ip igmp snooping querier"));
+        assert_eq!(
+            s.type_line("ip igmp snooping querier version 2").0,
+            Vec::<String>::new()
+        );
+        // with AAA off nothing asks
+        assert_eq!(s.type_line("no aaa new-model"), (vec![], Result::Ok));
+        s.type_line("aaa new-model");
+        assert_eq!(s.type_line("no aaa new-model").0, [AAA_OFF_SAY]);
+        assert_eq!(s.prompt(), CONFIRM_ASK);
+        // any answer but Enter or a start of `yes` drops the line
+        s.type_line("n");
+        assert!(s.running_has("aaa new-model"));
+        s.type_line("no aaa new-model");
+        assert_eq!(s.type_line(""), (vec![], Result::Ok));
+        assert!(!s.running_has("aaa new-model"));
+        assert_eq!(s.prompt(), "Switch(config)#");
     }
 }

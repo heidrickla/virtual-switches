@@ -26,6 +26,7 @@ Some privileged commands typed alone print a line of their own, as the lab switc
 | a number past the range offered | under the digit that takes it past the top (`terminal length 600` under the last `0`) |
 | a number below the range, or a word where only a number stands | at the start of the word |
 | an interface the stack does not have | classic IOS: under the start of its number (`GigabitEthernet9/0/1` under the `9`). IOS XE: past the start the word shares with another row of `?`, the type it names not counted (`interface gigabitethernet4/0/1` on a one-member C9300-24T under the `g`, and under the `i` where `GMPLS` is listed); a number going on past a port the stack has, under the `/` after that port (`GigabitEthernet1/0/13/0`), and one departing from the management port's number, past their shared start (`gigabitethernet 0/1` under the `1`), as the lab C9200L-48T-4G (17.6.4) put them; a module no member's ports of the type carry, under it (`gigabitethernet 6/2` and `2/3/0` under the `2` and the `3`, the lab C9300-24T and C9200L-48T-4G); on a C9200, a member past the stack's most, under it (`gigabitethernet 9/0/6` under the `9`); on IOS XE a port past the most ports of its type have at that level, under the first digit that begins no port up to it (`GigabitEthernet1/0/49` under the `9` on the lab C9200L-48T-4G, 17.6.4, whose uplinks number to 4), and a range's end alike (`interface range GigabitEthernet1/0/47 - 49` under the `9`). A port channel, VLAN, loopback or tunnel typed with its number, under the first digit that begins no number of its range, as IOS reads a bounded number while its digits can still reach one (`Po10` on a 2960G under the `0`; `Port-channel128` under the `8` against `<1-48>` and `Vlan0` under the `0` against `<1-4094>`, the lab C9200L-48T-4G, 17.6.4) |
+| an interface type typed with its number, on classic IOS | read against the types the switch has, its ports' and the logical ones (`Loopback`, `Null`, `Port-channel`, `Tunnel`, `Vlan`), with the virtual types `?` lists (inferred): `g1/0/3`, `G1/0/3` and `p1` are taken. A type none begins, past the start it shares with one (`gr1` under the `r`, and `te1/0/1` under the `e` on a switch with no ten-gigabit port); the start of two, under its number (`v1` under the `1`); a logical type's number going on past its digits, under the first other character (`t1/0/1` under the `/`). The lab WS-C2960X-24PS-L (15.2(7)E0a) |
 
 The place of the caret in a word comes from a 2960-X session, checked against the words its own `?` offered where a capture has them.
 
@@ -39,7 +40,7 @@ A loopback refuses `ip address dhcp` under `dhcp` (the lab C9200L-48T-4G, 17.6.4
 
 ### Messages the configuration gives
 
-On IOS XE a line the configuration so far does not let the switch take prints the lab C9300-24T's (17.6.4) message and changes nothing. `no` lines are taken, a service policy's removal and `no switchport` under 802.1X port control excepted. Classic IOS prints none of these.
+On IOS XE a line the configuration so far does not let the switch take prints the lab C9300-24T's (17.6.4) message and changes nothing. `no` lines are taken, a service policy's removal and `no switchport` under 802.1X port control excepted. Classic IOS prints none of these. The 2960-X prints `IP routing not enabled` for `router rip` and `router ospf` while `ip routing` is off, and stays in global configuration (the lab WS-C2960X-24PS-L, 15.2(7)E0a).
 
 | Line | State | Message |
 |---|---|---|
@@ -190,6 +191,7 @@ These lines are taken with a warning first:
 | `ipv6 dhcp server automatic` on an interface | | `% Warning: Pool  not configured globally - configuring anyway.` |
 | `ipv6 dhcp server <name>` on an interface | no `ipv6 dhcp pool <name>` | `% Warning: Pool <name> not configured globally - configuring anyway.` |
 | `auto qos global compact` | | `%Warning: This command will reset all autoqos generated configurations` |
+| `ip igmp snooping querier` on a 2960-X | | `IGMP Querier function cannot be operationally enabled on some VLANs because the required conditions have not been met.`, the line taken (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a; the querier's options print nothing) |
 | `location civic-location identifier <id>` | the location holds no attributes | `% 250 bytes available to configure civic address attributes`, then `(config-civic)#` |
 | `cts role-based sgt-map 0.0.0.0/0 ...` | no `ip route 0.0.0.0 0.0.0.0` | `%Please ensure default route is created using ip route 0.0.0.0 command` |
 | `spanning-tree portfast [trunk]` | PortFast changes | `%Warning: portfast should only be enabled on ports connected to a single`, ` host. Connecting hubs, concentrators, switches, bridges, etc... to this`, ` interface  when portfast is enabled, can cause temporary bridging loops.`, ` Use with CAUTION`, a blank line; without `trunk` then `%Portfast has been configured on <port> but will only` and ` have effect when the interface is in a non-trunking mode.` |
@@ -209,6 +211,10 @@ IOS XE and the 2960-X say what these lines did (the lab C9200L-48T-4G and C9300-
 | `no vtp password` | `Clearing device VTP password.`; none set: `No password currently set.` |
 | `vtp pruning`, `no vtp pruning` on a server | `Pruning switched on`, `Pruning switched off` |
 | `vtp file <name>`, `no vtp file` | `Setting device to store VLAN database at filename <name>.`, `Clearing device storage filename.` (the lab WS-C2960X-24PS-L; IOS XE inferred alike) |
+
+### Turning AAA back off
+
+On the 2960-X `no aaa new-model` typed with `aaa new-model` configured prints `Changing configuration back to no aaa new-model is not supported. ` and asks `Continue?[confirm]`; Enter takes the line (the lab WS-C2960X-24PS-L, 15.2(7)E0a). A start of `yes` takes it too and any other answer drops it (inferred).
 
 ### Converting 802.1X to new-style
 
