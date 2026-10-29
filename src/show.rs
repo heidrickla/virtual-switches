@@ -1857,6 +1857,11 @@ pub fn render(s: &Session, name: &str, p: &Parse, _line: &str) -> Vec<String> {
                     vec![format!("% vswitch has no output model for '{c}' yet")]
                 }),
                 "show vtp password" => vtp_password(d),
+                _ if (c == "show sdm prefer" || c.starts_with("show sdm prefer "))
+                    && sdm_prefer(d, c.split_whitespace().nth(3), s.sdm_next).is_some() =>
+                {
+                    sdm_prefer(d, c.split_whitespace().nth(3), s.sdm_next).unwrap_or_default()
+                }
                 "show license summary" => crate::version::license_summary(d),
                 "show version" => crate::version::show_version(d, s.now(), s.booted),
                 // the configuration saved or booted from, as NVRAM keeps it (`startup`); a switch
@@ -2346,6 +2351,124 @@ fn system_lists(d: &Device) -> bool {
 
 fn x2960(d: &Device) -> bool {
     d.stack.family() == Some(crate::platform::Family::C2960X)
+}
+
+/// The SDM template a 2960-X runs: vswitch reloads none, so the one it boots with, which `no sdm
+/// prefer` chooses (the lab WS-C2960X-24PS-L, 15.2(2)E5, came up from its factory configuration
+/// taking `ip routing`, which template `default` refuses).
+pub const SDM_IN_EFFECT: &str = "lanbase-default";
+
+/// The 2960-X's SDM templates, the VLANs each supports and the resources it sizes, as `show sdm
+/// prefer` prints them at 15.2(2)E (the lab WS-C2960X-24PS-L, 15.2(2)E5); `SDM_15_2_7` holds what
+/// 15.2(7)E sizes otherwise.
+const SDM_TEMPLATES: &[(&str, u32, [&str; 15])] = &[
+    (
+        "default",
+        255,
+        [
+            "8K", "0.375k", "0.375k", "0.375k", "64", "0.25K", "0.25K", "0.25K", "32", "0",
+            "0.375k", "0.375k", "0", "60", "0.125k",
+        ],
+    ),
+    (
+        "lanbase-default",
+        1024,
+        [
+            "16K", "1K", "3K", "2K", "1K", "1K", "3K", "2K", "1K", "0", "0.5K", "0.625k", "0",
+            "0.5K", "0.625k",
+        ],
+    ),
+    (
+        "lanbase-routing",
+        255,
+        [
+            "4K", "0.375k", "0.875k", "0.875k", "80", "0.25K", "0.875k", "0.75K", "32", "0",
+            "0.375k", "0.375k", "0", "0.125k", "0.25K",
+        ],
+    ),
+];
+
+/// What each row of an SDM template sizes, indented as the switch indents it.
+const SDM_ROWS: [&str; 15] = [
+    "  number of unicast mac addresses:",
+    "  number of IPv4 IGMP groups + multicast routes:",
+    "  number of IPv4 unicast routes:",
+    "    number of directly-connected IPv4 hosts:",
+    "    number of indirect IPv4 routes:",
+    "  number of IPv6 multicast groups:",
+    "  number of IPv6 unicast routes:",
+    "    number of directly-connected IPv6 addresses:",
+    "    number of indirect IPv6 unicast routes:",
+    "  number of IPv4 policy based routing aces:",
+    "  number of IPv4/MAC qos aces:",
+    "  number of IPv4/MAC security aces:",
+    "  number of IPv6 policy based routing aces:",
+    "  number of IPv6 qos aces:",
+    "  number of IPv6 security aces:",
+];
+
+/// The 2960-X SDM template a word names, as the switch spells it.
+pub fn sdm_template(word: &str) -> Option<&'static str> {
+    SDM_TEMPLATES
+        .iter()
+        .map(|t| t.0)
+        .find(|t| t.eq_ignore_ascii_case(word))
+}
+
+/// The rows 15.2(7)E sizes otherwise than 15.2(2)E, by template and row (the lab WS-C2960X-24PS-L,
+/// 15.2(7)E0a: lanbase-default's unicast MAC addresses and IPv4 policy based routing aces; every
+/// other row, and the other templates, as at 15.2(2)E5).
+const SDM_15_2_7: &[(&str, usize, &str)] = &[
+    ("lanbase-default", 0, "32K"),
+    ("lanbase-default", 9, "0.5K"),
+];
+
+/// `show sdm prefer` on a 2960-X at 15.2(2)E or 15.2(7)E: the template in effect, and the one the
+/// next reload loads where `sdm prefer` stored another; `show sdm prefer <template>` that template
+/// alone, whatever is stored (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a, with
+/// lanbase-routing and then default stored). The values sit at column 52.
+fn sdm_prefer(d: &Device, named: Option<&str>, next: Option<&str>) -> Option<Vec<String>> {
+    let at = |r: &str| crate::release::Release::parse(r);
+    let within = |from: &str, to: &str| {
+        at(&d.release)
+            .is_some_and(|r| at(from).is_some_and(|e| r >= e) && at(to).is_some_and(|e| r < e))
+    };
+    let later = within("15.2(7)E", "15.2(8)E");
+    if !x2960(d) || !(later || within("15.2(2)E", "15.2(3)E")) {
+        return None;
+    }
+    let name = named.unwrap_or(SDM_IN_EFFECT);
+    let (_, vlans, values) = SDM_TEMPLATES.iter().find(|t| t.0 == name)?;
+    let mut values = *values;
+    for &(t, row, v) in SDM_15_2_7.iter().filter(|_| later) {
+        if t == name {
+            values[row] = v;
+        }
+    }
+    let mut out = vec![match named {
+        Some(t) => format!(" \"{t}\" template:"),
+        None => format!(" The current template is \"{name}\" template."),
+    }];
+    out.extend([
+        " The selected template optimizes the resources in".to_string(),
+        " the switch to support this level of features for".into(),
+        format!(" 0 routed interfaces and {vlans} VLANs. "),
+        String::new(),
+    ]);
+    out.extend(
+        SDM_ROWS
+            .iter()
+            .zip(values)
+            .map(|(r, v)| format!("{r:<52}{v}")),
+    );
+    out.push(" ".into());
+    if let (None, Some(t)) = (named, next) {
+        out.push(format!(
+            " On next reload, template will be \"{t}\" template."
+        ));
+        out.push(" ".into());
+    }
+    Some(out)
 }
 
 /// The lists the image makes itself that `show` titles `(per-user)` (the 2960-X's preauth lists).

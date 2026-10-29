@@ -137,6 +137,15 @@ pub struct Session<'a> {
     /// the licence level the switch booted at, as a replayed configuration's `license boot level`
     /// line states it wherever it stands in the file (`check::type_traced`)
     pub boot_level: Option<String>,
+    /// the names a classic switch looked up and found no address for, which it keeps as `(temp,
+    /// UN)` hosts and does not look up again until `clear host` (the lab WS-C2960X-24PS-L,
+    /// 15.2(2)E5)
+    unknown_hosts: Vec<String>,
+    /// the names the line being typed looked up and found no address for (`resolves`)
+    looked_up: std::cell::RefCell<Vec<String>>,
+    /// the SDM template a 2960-X loads at its next reload, where `sdm prefer` chose another than
+    /// the one in effect (`sdm_prefer`)
+    pub sdm_next: Option<&'static str>,
 }
 
 /// A time as VTP's last-change line prints it: month and day unpadded, the year in two digits
@@ -262,6 +271,9 @@ impl<'a> Session<'a> {
             vlans_seen: None,
             warned: 0,
             boot_level: None,
+            unknown_hosts: vec![],
+            looked_up: Default::default(),
+            sdm_next: None,
         }
     }
 
@@ -1324,7 +1336,21 @@ impl<'a> Session<'a> {
         let pruned = self.pruning();
         let taken = self.accepted.len();
         let pending = self.extended_pending();
+        self.looked_up.borrow_mut().clear();
         let mut out = self.typed(line);
+        // `ntp server` keeps a name it finds no address for (the lab WS-C2960X-24PS-L, 15.2(2)E5:
+        // `ntp server labhost3`)
+        if self.accepted.len() > taken
+            && self.device.stack.classic()
+            && let Some(a) = self.accepted.last()
+            && let ["ntp", "server", name] = a.line.split_whitespace().collect::<Vec<_>>()[..]
+            && !cli::ipv4(name)
+            && !name.contains(':')
+            && !self.resolves(name)
+        {
+            let blank = self.after_lookup(name);
+            out.0.extend(blank);
+        }
         // a version 1 or 2 server makes no extended VLAN: the VLAN submode says so when it is left,
         // and the VLAN is not made (the lab C9200L-48T-4G, 17.6.4: `vlan 4000`, `name LABEXT`,
         // `exit`, and `no vtp pruning` typed in the submode)
@@ -1348,6 +1374,8 @@ impl<'a> Session<'a> {
             }
         }
         self.vtp_after(before, pruned);
+        let said = self.translated();
+        out.0.splice(0..0, said);
         // a line taken at the console is the configuration's last change
         if !self.redacted && self.accepted.len() > taken {
             self.device.last_change = Some(self.now());
@@ -1485,6 +1513,9 @@ impl<'a> Session<'a> {
         if self.mode() == "privileged"
             && let Some(said) = self.root_alone(whole.trim())
         {
+            return said;
+        }
+        if let Some(said) = self.unresolved(whole, prompt_len) {
             return said;
         }
         // an EXEC line's output passes the modifier after `|` (`show running-config | include x`);
@@ -1629,6 +1660,13 @@ impl<'a> Session<'a> {
         let p = match outcome {
             Outcome::Ok(p) => p,
             other => {
+                // a word EXEC knows no command for names a host to connect to (`computer_name`)
+                if lead.is_none()
+                    && bar.is_none()
+                    && let Some(said) = self.computer_name(trimmed, &other)
+                {
+                    return said;
+                }
                 // a line real switches held at another level is not taken where this one's leaves
                 // its words out
                 if self.level_refusal(2, "config", trimmed).is_none()
@@ -2206,8 +2244,20 @@ impl<'a> Session<'a> {
         let canonical = p.canonical();
         let words: Vec<&str> = canonical.split_whitespace().collect();
         if self.device.stack.classic() {
-            // a RIP or OSPF process with IP routing off (the lab WS-C2960X-24PS-L, 15.2(7)E0a)
             let c2960x = self.device.stack.family() == Some(crate::platform::Family::C2960X);
+            // a certificate chain for a trustpoint the switch does not hold, and the session stays
+            // (the lab WS-C2960X-24PS-L, 15.2(2)E5 and 15.2(7)E0a: `crypto pki certificate chain
+            // myca`)
+            if c2960x
+                && mode == "config"
+                && !p.negated
+                && let ["crypto", "pki", "certificate", "chain", name] = words[..]
+                && !(self.device.blocks.iter())
+                    .any(|b| b.header == format!("crypto pki trustpoint {name}"))
+            {
+                return Some("% CA trustpoint for cert chain not known.\n\n".into());
+            }
+            // a RIP or OSPF process with IP routing off (the lab WS-C2960X-24PS-L, 15.2(7)E0a)
             let process = matches!(words.as_slice(), ["router", "rip" | "ospf", ..]);
             return (c2960x && mode == "config" && !p.negated && process)
                 .then_some(())
@@ -4180,6 +4230,44 @@ impl<'a> Session<'a> {
         out
     }
 
+    /// A 2960-X's `sdm prefer` line: the template it chooses is stored for the next reload, and
+    /// the switch says so, where it is not the one in effect; the one in effect stores nothing
+    /// and says nothing, and `no` and `default` choose lanbase-default. The running configuration
+    /// holds no `sdm prefer` line. The lab WS-C2960X-24PS-L (15.2(2)E5, under lanbase-default)
+    /// printed the message for `sdm prefer lanbase-routing` each time it was typed and for `sdm
+    /// prefer default` after it, then nothing for `sdm prefer lanbase-default`, `no sdm prefer`,
+    /// `default sdm prefer` and `no sdm prefer lanbase-routing`, whose `show sdm prefer` named no
+    /// next template; at 15.2(7)E0a it printed the same message for `sdm prefer default`.
+    fn sdm_prefer(&mut self, p: &Parse) -> Option<Vec<String>> {
+        if self.device.stack.family() != Some(crate::platform::Family::C2960X) {
+            return None;
+        }
+        let words: Vec<String> = p
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                Item::Kw { kw, .. } if !kw.eq_ignore_ascii_case("no") => Some(kw.to_lowercase()),
+                _ => None,
+            })
+            .collect();
+        let chosen = match words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            ["sdm", "prefer", ..] if p.negated => show::SDM_IN_EFFECT,
+            ["sdm", "prefer", t] => show::sdm_template(t)?,
+            _ => return None,
+        };
+        if chosen == show::SDM_IN_EFFECT {
+            self.sdm_next = None;
+            return Some(vec![]);
+        }
+        self.sdm_next = Some(chosen);
+        Some(vec![
+            "Changes to the running SDM preferences have been stored, but cannot take effect "
+                .into(),
+            "until the next reload.".into(),
+            "Use 'show sdm prefer' to see what SDM preference is currently active.".into(),
+        ])
+    }
+
     /// Where the command of a configuration line `do-exec <command>` starts, `do-exec` typed whole or
     /// abbreviated (`cli::names_do_exec`): IOS XE 17 and the 2960's 15.0 list `do-exec` in
     /// configuration modes and hide `do`.
@@ -4193,6 +4281,25 @@ impl<'a> Session<'a> {
     }
 
     fn run(&mut self, mode: &str, line: &str, p: &Parse) -> (Vec<String>, Result) {
+        // classic IOS writes `ip domain lookup` as `ip domain-lookup` (the lab WS-C2960X-24PS-L,
+        // 15.2(2)E5, printed `no ip domain-lookup` after `no ip domain lookup`)
+        if self.device.stack.classic() && cli::is_config(mode) {
+            let spelled = match p.canonical().as_str() {
+                "no ip domain lookup" => Some("no ip domain-lookup"),
+                "ip domain lookup" => Some("ip domain-lookup"),
+                _ => None,
+            };
+            if let Some(spelled) = spelled
+                && let Outcome::Ok(q) = self.engine.parse("config", spelled)
+            {
+                return self.run(mode, spelled, &q);
+            }
+        }
+        if cli::is_config(mode)
+            && let Some(said) = self.sdm_prefer(p)
+        {
+            return (said, Result::Ok);
+        }
         self.raw = line.to_string();
         let cmd = &self.engine.grammar.commands[p.command];
         // a line the crawl read runs as its first keyword's command (`exit-address-family`), into
@@ -4332,6 +4439,17 @@ impl<'a> Session<'a> {
             _ => {}
         }
         if !cli::is_config(mode) {
+            if let Some(said) = self.unreachable(p) {
+                return (said, Result::Error);
+            }
+            // `clear host` forgets the names a lookup found no address for (`unknown_hosts`)
+            match p.canonical().split_whitespace().collect::<Vec<_>>()[..] {
+                ["clear", "host", "*"] => self.unknown_hosts.clear(),
+                ["clear", "host", name] => {
+                    self.unknown_hosts.retain(|n| !n.eq_ignore_ascii_case(name))
+                }
+                _ => {}
+            }
             // EXEC: show commands print; the rest run silently
             return self.said(mode, line, p, show::render(self, name, p, line));
         }
@@ -5002,6 +5120,11 @@ impl<'a> Session<'a> {
             }
             h => h,
         };
+        // a value past the most its list takes is refused there, the crawl reading every word
+        // before it, whatever the books say of the line
+        if let Some(at) = self.list_full(i, mode, line) {
+            o = Outcome::Invalid(at);
+        }
         for refused in [level, held].into_iter().flatten() {
             if reach(&refused, line) < reach(&o, line) {
                 o = refused;
@@ -5390,14 +5513,20 @@ impl<'a> Session<'a> {
                 Some(Fit::Rest) => return None,
                 Some(Fit::Word) => before = rows.iter().map(|(w, _)| *w).collect(),
                 _ if self.names_configured(mode, &toks[..=k]) => before.clear(),
+                // a word the switch answered `?` after, where the answer before offers `<cr>`
+                // alone, is one it takes there: the lab WS-C2960X-24PS-L (15.2(2)E5) answered `no
+                // sdm prefer ?` with `<cr>` alone, and `no sdm prefer lanbase-routing ?` with `<cr>`
+                _ if rows.iter().all(|&(w, _)| w == "<cr>") && answered_after(k) => before.clear(),
                 _ => return Some((Outcome::Invalid(t.at), false)),
             }
         }
         None
     }
 
-    /// A configuration line the books refuse that this image's own crawl at the session's level
-    /// reads whole in the mode and context of frame `i`, as the engine's crawled command
+    /// A configuration line, or on a classic switch a privileged one, the books refuse that this
+    /// image's own crawl at the session's level reads whole in the mode and context of frame `i`
+    /// (the lab WS-C2960X-24PS-L, 15.2(2)E5, took `clear host *` and `clear counters`, which the
+    /// 2960-X book at 15.2(2)E lacks), as the engine's crawled command
     /// (`cli::Engine::crawled`): each word a keyword the answer before it offers, whole or as its
     /// unique start, or a value one of its value rows takes, an interface type and its number one
     /// value however typed; a `LINE` row takes the rest, else the answer after the last word offers
@@ -5408,7 +5537,7 @@ impl<'a> Session<'a> {
     /// `held_refusal` leaves the line to the books: a routed port, a PoE port's `power`, a line the
     /// crawl does not judge, a member another family provisions.
     fn crawled(&self, i: usize, mode: &str, line: &str) -> Option<Parse> {
-        if !cli::is_config(mode) {
+        if !cli::is_config(mode) && !(mode == "privileged" && self.device.stack.classic()) {
             return None;
         }
         let level = self.level()?;
@@ -5549,6 +5678,86 @@ impl<'a> Session<'a> {
         line: &str,
         whole: bool,
     ) -> Option<Parse> {
+        let full = std::cell::Cell::new(None);
+        self.crawl_reading_at(level, mode, context, line, whole, &full)
+    }
+
+    /// Where the image's own crawl at the session's level stops reading `line` in the mode and
+    /// context of frame `i` at a value one past the most its list takes (`list_limit`): the byte
+    /// it is refused at.
+    fn list_full(&self, i: usize, mode: &str, line: &str) -> Option<usize> {
+        if !cli::is_config(mode) {
+            return None;
+        }
+        let (level, context) = (self.level()?, self.context_at(i)?);
+        if !self.engine.held.crawls.contains_key(&level) {
+            return None;
+        }
+        let full = std::cell::Cell::new(None);
+        self.crawl_reading_at(&level, mode, &context, line, false, &full)
+            .is_none()
+            .then(|| full.get())
+            .flatten()
+    }
+
+    /// `crawl_reading`, setting `full` to the byte of a value one past the most its list takes,
+    /// where reading stops there. A `no` or `default` line the crawl asked no further of reads as
+    /// the line it undoes: the lab WS-C2960X-24PS-L (15.2(2)E5) took `no ip domain lookup`, where
+    /// its crawl asked `no ip ?` and `ip domain lookup ?` and nothing under `no ip domain`.
+    fn crawl_reading_at(
+        &self,
+        level: &str,
+        mode: &str,
+        context: &str,
+        line: &str,
+        whole: bool,
+        full: &std::cell::Cell<Option<usize>>,
+    ) -> Option<Parse> {
+        let unasked = std::cell::Cell::new(false);
+        let read = self.crawl_reading_words(level, mode, context, line, whole, full, &unasked);
+        if read.is_some() || !unasked.get() {
+            return read;
+        }
+        let toks = cli::tokens(line);
+        let (first, rest) = (toks.first()?, toks.get(1)?);
+        if !["no", "default"].contains(&first.text.to_lowercase().as_str()) {
+            return None;
+        }
+        let past = std::cell::Cell::new(None);
+        let unasked = std::cell::Cell::new(false);
+        let read = self.crawl_reading_words(
+            level,
+            mode,
+            context,
+            &line[rest.at..],
+            whole,
+            &past,
+            &unasked,
+        );
+        full.set(past.get().map(|at| at + rest.at).or(full.get()));
+        let mut p = read?;
+        p.negated = true;
+        for it in &mut p.items {
+            match it {
+                Item::Kw { tok, .. } | Item::Arg { tok, .. } => *tok += 1,
+            }
+        }
+        Some(p)
+    }
+
+    /// `crawl_reading_at` word by word, setting `unasked` where the crawl holds no answer at a
+    /// point the line reaches.
+    #[allow(clippy::too_many_arguments)]
+    fn crawl_reading_words(
+        &self,
+        level: &str,
+        mode: &str,
+        context: &str,
+        line: &str,
+        whole: bool,
+        full: &std::cell::Cell<Option<usize>>,
+        unasked: &std::cell::Cell<bool>,
+    ) -> Option<Parse> {
         let held = &self.engine.held;
         let configured = |l: &str| self.running_has(l);
         let answer = |typed: &str| {
@@ -5569,14 +5778,29 @@ impl<'a> Session<'a> {
         // where the crawl holds no answer after a word, the line reads on from the latest earlier
         // point answered as the last one is, as IOS loops back through a list: the lab
         // WS-C2960X-24PS-L (15.2(2)E5) took `match ip dscp 10 11 12` and `monitor session 2 filter
-        // vlan 1 - 5 , 9`, where its crawl asked `?` after two values and after `1 -` and `1 ,`
+        // vlan 1 - 5 , 9`, where its crawl asked `?` after two values and after `1 -` and `1 ,`;
+        // and from an earlier point answered as one the line has passed, the words typed since
+        // kept: the same switch took `mls qos map dscp-cos 10 11 12 13 14 15 16 17 to 1`, where
+        // its crawl asked `0 0 to ?` and, after one value, `0 to 1 ?`
         let looped = |seen: &[String], typed: &str| -> Vec<String> {
-            let here = answer(typed);
-            seen.iter()
-                .rev()
-                .filter(|p| p.as_str() != typed && here.is_some() && answer(p) == here)
-                .cloned()
-                .collect()
+            let mut out: Vec<String> = vec![];
+            for (j, at) in seen.iter().enumerate().rev() {
+                let (Some(rest), Some(here)) = (typed.strip_prefix(at.as_str()), answer(at)) else {
+                    continue;
+                };
+                for earlier in seen[..j].iter().rev() {
+                    let p = format!("{earlier}{rest}");
+                    if earlier != at
+                        && answer(earlier) == Some(here)
+                        && p != typed
+                        && !out.contains(&p)
+                        && answer(&p).is_some()
+                    {
+                        out.push(p);
+                    }
+                }
+            }
+            out
         };
         let toks = cli::tokens(line);
         let mut items = vec![];
@@ -5587,7 +5811,27 @@ impl<'a> Session<'a> {
         while k < toks.len() {
             let t = &toks[k];
             seen.push(typed.clone());
-            let rows = crate::live::answer_rows(answer(&typed)?);
+            let Some(here) = answer(&typed) else {
+                // a point the crawl asked no `?` at, though it asked past it: a word typed whole
+                // that the crawl typed next is its keyword (the lab WS-C2960X-24PS-L, 15.2(2)E5,
+                // asked `default mac address-table aging-time ?` and not `default mac
+                // address-table ?`)
+                if let Some(w) = held.crawled_after(level, mode, context, &typed, |w| {
+                    w.eq_ignore_ascii_case(&t.text) && crate::live::keyword(w)
+                }) {
+                    typed = format!("{typed}{w} ");
+                    items.push(Item::Kw {
+                        kw: w,
+                        tok: k,
+                        exact: true,
+                    });
+                    k += 1;
+                    continue;
+                }
+                unasked.set(true);
+                return None;
+            };
+            let rows = crate::live::answer_rows(here);
             let keywords: Vec<&str> = rows
                 .iter()
                 .map(|&(w, _)| w)
@@ -5699,6 +5943,19 @@ impl<'a> Session<'a> {
                     items,
                 });
             }
+            // a list holds no more values than its row says it takes
+            let book = crate::grammars::book_of(&self.engine.grammar.platform);
+            if let Some(most) = list_limit(book, mode, line, r, what) {
+                let listed = items
+                    .iter()
+                    .rev()
+                    .take_while(|it| matches!(it, Item::Arg { name, .. } if name == r))
+                    .count();
+                if listed >= most {
+                    full.set(Some(t.at));
+                    return None;
+                }
+            }
             items.push(Item::Arg {
                 name: r.into(),
                 value: t.text.clone(),
@@ -5712,7 +5969,11 @@ impl<'a> Session<'a> {
             })?;
             k += 1;
         }
-        let ends = crate::live::answer_rows(answer(&typed)?)
+        let Some(end) = answer(&typed) else {
+            unasked.set(true);
+            return None;
+        };
+        let ends = crate::live::answer_rows(end)
             .iter()
             .any(|(w, _)| *w == "<cr>");
         ((ends || !whole) && !items.is_empty()).then(|| Parse {
@@ -5916,16 +6177,225 @@ impl<'a> Session<'a> {
         Some(crate::context::of(&entered))
     }
 
-    /// Whether IOS resolves a host name: an `ip host` line names it, or name lookup is on (no `no ip
-    /// domain lookup`), where vswitch cannot tell and takes it.
+    /// Whether IOS resolves a host name: an `ip host` line names it, or a name server may answer,
+    /// where vswitch cannot tell and takes it. IOS XE asks one wherever name lookup is on (no `no ip
+    /// domain lookup`); classic IOS asks only one an `ip name-server` line names: the lab
+    /// WS-C2960X-24PS-L (15.2(2)E5), with none set, broadcast for the name and found no address,
+    /// and with name lookup off it read its own `ip host` names alone. A name a classic switch
+    /// finds no address for is looked up (`looked_up`).
     fn resolves(&self, name: &str) -> bool {
-        let global = &self.device.global;
-        global.iter().any(|e| {
+        if self.ip_host(name) {
+            return true;
+        }
+        let on = !self.lookup_off();
+        if !self.device.stack.classic() {
+            return on;
+        }
+        let served = on && self.name_server().is_some();
+        if !served {
+            self.look_up(name);
+        }
+        served
+    }
+
+    /// Whether an `ip host` line names `name`.
+    fn ip_host(&self, name: &str) -> bool {
+        self.device.global.iter().any(|e| {
             let w: Vec<&str> = e.text.split_whitespace().collect();
             matches!(w[..], ["ip", "host", n, ..] | ["ip", "host", "vrf", _, n, ..] if n.eq_ignore_ascii_case(name))
-        }) || !global
-            .iter()
+        })
+    }
+
+    /// Whether name lookup is off (`no ip domain lookup`, which classic IOS writes `no ip
+    /// domain-lookup`).
+    fn lookup_off(&self) -> bool {
+        (self.device.global.iter())
             .any(|e| e.text == "no ip domain lookup" || e.text == "no ip domain-lookup")
+    }
+
+    /// The first name server an `ip name-server` line names.
+    fn name_server(&self) -> Option<&str> {
+        self.device.global.iter().find_map(|e| {
+            let w: Vec<&str> = e.text.split_whitespace().collect();
+            match w[..] {
+                ["ip", "name-server", "vrf", _, a, ..] | ["ip", "name-server", a, ..] => Some(a),
+                _ => None,
+            }
+        })
+    }
+
+    /// Notes that the line being typed looked `name` up and found no address for it.
+    fn look_up(&self, name: &str) {
+        let mut names = self.looked_up.borrow_mut();
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            names.push(name.to_string());
+        }
+    }
+
+    /// What a classic switch prints as it looks a name up: the name server it asks, the broadcast
+    /// address when none is set, with name lookup on; the name alone with it off (the lab
+    /// WS-C2960X-24PS-L, 15.2(2)E5). With more than one name server set, the first stands
+    /// (inferred: the lab set one).
+    fn translating(&self, name: &str) -> String {
+        if self.lookup_off() {
+            return format!("Translating \"{name}\"");
+        }
+        let server = self.name_server().unwrap_or("255.255.255.255");
+        format!("Translating \"{name}\"...domain server ({server})")
+    }
+
+    /// The blank line a classic switch prints after looking up a name a line's command reads past
+    /// its parse (`ntp server`, `snmp-server host`), none for a name it already found no address
+    /// for: the lab WS-C2960X-24PS-L (15.2(2)E5) printed `%Illegal Hostname or IP/IPv6 address`
+    /// straight after `snmp-server host myhost.cisco.com public` once `?` had looked the name up.
+    fn after_lookup(&self, name: &str) -> Vec<String> {
+        if (self.unknown_hosts.iter()).any(|n| n.eq_ignore_ascii_case(name)) {
+            vec![]
+        } else {
+            vec![String::new()]
+        }
+    }
+
+    /// The lines a classic switch printed as it looked up the names the line just typed found no
+    /// address for, a name it already found none for printing none: the lab WS-C2960X-24PS-L
+    /// (15.2(2)E5) refused `access-list 2 deny labhost1` typed twice and `logging host labhost1`
+    /// after them, `Translating "labhost1"` before the first alone.
+    fn translated(&mut self) -> Vec<String> {
+        let names = std::mem::take(&mut *self.looked_up.borrow_mut());
+        let mut said = vec![];
+        for name in names {
+            if !(self.unknown_hosts.iter()).any(|n| n.eq_ignore_ascii_case(&name)) {
+                said.push(self.translating(&name));
+                self.unknown_hosts.push(name);
+            }
+        }
+        said
+    }
+
+    /// A classic switch's refusal of a configuration line naming a host it finds no address for
+    /// where the books' reading takes any word, as the lab WS-C2960X-24PS-L (15.2(2)E5) refused it:
+    /// a standard access list's source (`access-list 2 deny labhost1`) at the name, past the start
+    /// of `any` or `host` it begins (`hostlab1` under the `l`), and an SNMP host
+    /// (`snmp-server host labhost4 public`) at the word after it, the caret line after
+    /// `%Illegal Hostname or IP/IPv6 address` and a blank line. Words typed whole.
+    fn unresolved(&self, line: &str, prompt_len: usize) -> Option<(Vec<String>, Result)> {
+        if !self.device.stack.classic() || !cli::is_config(self.mode()) {
+            return None;
+        }
+        let toks = cli::tokens(line);
+        let word = |i: usize| toks.get(i).map(|t| t.text.to_lowercase());
+        let caret = |at: usize, past: usize| {
+            format!(
+                "{}^",
+                " ".repeat(prompt_len + line[..at].chars().count() + past)
+            )
+        };
+        let invalid = "% Invalid input detected at '^' marker.".to_string();
+        let name = |i: usize| {
+            toks.get(i)
+                .filter(|t| !cli::ipv4(&t.text) && !t.text.contains(':'))
+        };
+        if word(0)? == "access-list"
+            && word(1)?
+                .parse::<u32>()
+                .is_ok_and(|n| (1..=99).contains(&n) || (1300..=1999).contains(&n))
+            && ["deny", "permit"]
+                .iter()
+                .any(|a| a.starts_with(&word(2).unwrap_or_default()))
+            && let Some(t) = name(3)
+        {
+            let typed = t.text.to_lowercase();
+            if ["any", "host"].iter().any(|k| k.starts_with(&typed)) || self.resolves(&t.text) {
+                return None;
+            }
+            let past = ["any", "host"]
+                .iter()
+                .map(|k| {
+                    typed
+                        .chars()
+                        .zip(k.chars())
+                        .take_while(|(a, b)| a == b)
+                        .count()
+                })
+                .max()
+                .unwrap_or(0);
+            return Some((
+                vec![caret(t.at, past), invalid, String::new()],
+                Result::Error,
+            ));
+        }
+        if word(0)? == "snmp-server"
+            && word(1)? == "host"
+            && let Some(t) = name(2)
+            && let Some(next) = toks.get(3)
+            && !self.resolves(&t.text)
+        {
+            let said = format!("%Illegal Hostname or IP/IPv6 address{}", caret(next.at, 0));
+            let mut out = self.after_lookup(&t.text);
+            out.extend([said, invalid, String::new()]);
+            return Some((out, Result::Error));
+        }
+        None
+    }
+
+    /// What IOS answers a word at an EXEC prompt it knows no command for, a host to connect to
+    /// that no `ip host` line names: classic IOS looks it up and finds no address (the lab
+    /// WS-C2960X-24PS-L, 15.2(2)E5, `labhost11` at `#`, with name lookup on and off and with a
+    /// name server set, and `shutdown` and `end` at `>`); IOS XE says so on one line (the lab
+    /// C9300-24T and C9200L-48T-4G, 17.6.4: `xyzzy` and `end` at `#`, at `>` inferred). A word
+    /// that could be an address is not one.
+    fn computer_name(&self, line: &str, o: &Outcome) -> Option<(Vec<String>, Result)> {
+        let word = line.trim();
+        if !matches!(self.mode(), "exec" | "privileged")
+            || !matches!(o, Outcome::Invalid(_))
+            || cli::tokens(word).len() != 1
+            || !word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            || word.chars().all(|c| c.is_ascii_digit() || c == '.')
+            || self.ip_host(word)
+        {
+            return None;
+        }
+        let unknown = "% Unknown command or computer name, or unable to find computer address";
+        if !self.device.stack.classic() {
+            return Some((
+                vec![format!("% Bad IP address or host name{unknown}")],
+                Result::Error,
+            ));
+        }
+        self.look_up(word);
+        Some((vec![unknown.to_string()], Result::Error))
+    }
+
+    /// What a classic switch answers `ping`, `traceroute` or `telnet` to a name it finds no address
+    /// for (`resolves`), as the lab WS-C2960X-24PS-L (15.2(2)E5) answered them, at `#` and through
+    /// `do`. A dotted number that is no address is no name to look up: the same switch answered
+    /// `ping 999.1.1.1` at once, with no Translating line.
+    fn unreachable(&self, p: &Parse) -> Option<Vec<String>> {
+        let canonical = p.canonical();
+        let [command, name] = canonical.split_whitespace().collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        if !self.device.stack.classic() || cli::ipv4(name) || name.contains(':') {
+            return None;
+        }
+        let said = match command {
+            "ping" => vec![
+                "% Unrecognized host or address, or protocol not running.",
+                "",
+            ],
+            "traceroute" => vec!["% Unrecognized host or address.", ""],
+            "telnet" => {
+                vec!["% Unknown command or computer name, or unable to find computer address"]
+            }
+            _ => return None,
+        };
+        let dotted = name.chars().all(|c| c.is_ascii_digit() || c == '.');
+        if dotted && command != "ping" {
+            return None;
+        }
+        (dotted || !self.resolves(name)).then(|| said.into_iter().map(str::to_string).collect())
     }
 
     /// Whether this session's release is `release` or a later one.
@@ -6405,6 +6875,19 @@ impl<'a> Session<'a> {
                     .is_some_and(|l| l.lines.contains(&crate::device::layout_key(&p.canonical())))
         };
         let whole = self.whole(&top.mode, p);
+        // classic IOS writes a `service timestamps` line as `stamps` has it, keeping its `no` form
+        if top.blocks.is_empty()
+            && self.device.stack.classic()
+            && let Some(lines) = crate::device::stamps(p)
+        {
+            for text in lines {
+                if let Outcome::Ok(q) = self.engine.parse("config", &text) {
+                    let whole = self.whole(&top.mode, &q);
+                    self.device.apply_as(&q, None, true, whole);
+                }
+            }
+            return;
+        }
         // `root primary` and `root secondary` store the priority each VLAN takes against the root
         // the switch knows now (the lab C9300, 17.6.4), VLANs taking the same one on one line
         if top.blocks.is_empty()
@@ -7559,6 +8042,35 @@ fn mixed_placeholder(row: &str) -> bool {
         || ["A.B.C.D", "X:X:X:X::X", "H.H.H", "Hex-", "Group_"]
             .iter()
             .any(|p| row.starts_with(p))
+}
+
+/// Lists whose `?` row says nothing of how many values they take, as the lab switches took them:
+/// book, mode, the line's start and the most. The lab WS-C2960X-24PS-L (15.2(2)E5) offered `<cr>`
+/// alone after eight `match ip dscp` values in either kind of class map.
+const LIST_LIMITS: &[(&str, &str, &str, usize)] = &[("c2960x", "config-cmap", "match ip dscp ", 8)];
+
+/// How many values of a list a `?` row takes, as its words say (`Enter up to 4 precedence values
+/// separated by white-spaces`, `DSCP values separated by spaces (up to 8 values total)`, `8 cos
+/// values separated by spaces`: the lab WS-C2960X-24PS-L, 15.2(2)E5, refused the next under its
+/// first character), else `LIST_LIMITS` for `line` in `mode` on `book`.
+fn list_limit(book: Option<&str>, mode: &str, line: &str, row: &str, what: &str) -> Option<usize> {
+    let words: Vec<&str> = what.split_whitespace().collect();
+    let said = words
+        .windows(3)
+        .find(|w| w[0].trim_start_matches('(').eq_ignore_ascii_case("up") && w[1] == "to")
+        .and_then(|w| w[2].parse().ok())
+        .or_else(|| match words[..] {
+            [n, _, "values", ..] => n.parse().ok(),
+            _ => None,
+        });
+    if said.is_some() || !row.starts_with('<') {
+        return said;
+    }
+    let bare = line.trim_start().to_lowercase();
+    LIST_LIMITS
+        .iter()
+        .find(|(b, m, start, _)| Some(*b) == book && *m == mode && bare.starts_with(start))
+        .map(|&(.., most)| most)
 }
 
 /// Whether a `?` row stands for a host, a name or an address: `Hostname`, `Hostname or A.B.C.D`.
@@ -16297,6 +16809,60 @@ mod tests {
     }
 
     #[test]
+    fn a_2960_x_list_takes_as_many_values_as_its_row_says_and_refuses_the_next() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5: the most each list took, and the caret under the
+        // value past it
+        let r = crate::release::Release::parse("15.2(2)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        // the line with the most values, then one more value: refused under it
+        let cases = [
+            (
+                "class-map match-all L1",
+                "match ip precedence 0 1 2 3",
+                "match ip precedence 0 1 2 3 4",
+                " 4 ",
+            ),
+            (
+                "class-map L2",
+                "match ip precedence 5 6 7 1",
+                "match ip precedence 5 6 7 1 2",
+                " 2 ",
+            ),
+            (
+                "class-map match-any L3",
+                "match ip dscp 10 11 12 13 14 15 16 17",
+                "match ip dscp 10 11 12 13 14 15 16 17 18",
+                " 18 ",
+            ),
+            (
+                "",
+                "mls qos map dscp-cos 10 11 12 13 14 15 16 17 to 1",
+                "mls qos map dscp-cos 10 11 12 13 14 15 16 17 18 to 1",
+                " 18 ",
+            ),
+        ];
+        for (map, most, past, value) in cases {
+            if !map.is_empty() {
+                s.type_line(map);
+            }
+            let prompt = s.prompt();
+            let (out, r) = s.type_line(most);
+            assert_eq!(r, Result::Ok, "{most}: {out:?}");
+            let (out, r) = s.type_line(past);
+            assert_eq!(r, Result::Error, "{past}: {out:?}");
+            let at = format!("{past} ").find(value).unwrap() + 1;
+            assert_eq!(out[0].find('^'), Some(prompt.len() + at), "{past}: {out:?}");
+            if !map.is_empty() {
+                s.type_line("exit");
+            }
+        }
+    }
+
+    #[test]
     fn a_2960_x_asks_before_aaa_goes_back_off_and_its_querier_says_what_vlans_lack() {
         // the lab WS-C2960X-24PS-L, 15.2(7)E0a
         let r = crate::release::Release::parse("15.2(7)E").unwrap();
@@ -16326,5 +16892,445 @@ mod tests {
         assert_eq!(s.type_line(""), (vec![], Result::Ok));
         assert!(!s.running_has("aaa new-model"));
         assert_eq!(s.prompt(), "Switch(config)#");
+    }
+
+    /// A 2960-X at 15.2(2)E, at the privileged prompt.
+    fn lab_2960x_e5() -> Engine {
+        let r = crate::release::Release::parse("15.2(2)E").unwrap();
+        Engine::new(crate::grammars::grammar("c2960x", r).unwrap())
+    }
+
+    #[test]
+    fn a_2960_x_stores_the_sdm_template_for_its_next_reload_and_says_so_where_another_is_in_effect()
+    {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5, under lanbase-default
+        let e = lab_2960x_e5();
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        let stored = vec![
+            "Changes to the running SDM preferences have been stored, but cannot take effect "
+                .to_string(),
+            "until the next reload.".into(),
+            "Use 'show sdm prefer' to see what SDM preference is currently active.".into(),
+        ];
+        // each time it is typed
+        for _ in 0..2 {
+            assert_eq!(
+                s.type_line("sdm prefer lanbase-routing"),
+                (stored.clone(), Result::Ok)
+            );
+        }
+        s.type_line("end");
+        let current: Vec<&str> = vec![
+            " The current template is \"lanbase-default\" template.",
+            " The selected template optimizes the resources in",
+            " the switch to support this level of features for",
+            " 0 routed interfaces and 1024 VLANs. ",
+            "",
+            "  number of unicast mac addresses:                  16K",
+            "  number of IPv4 IGMP groups + multicast routes:    1K",
+            "  number of IPv4 unicast routes:                    3K",
+            "    number of directly-connected IPv4 hosts:        2K",
+            "    number of indirect IPv4 routes:                 1K",
+            "  number of IPv6 multicast groups:                  1K",
+            "  number of IPv6 unicast routes:                    3K",
+            "    number of directly-connected IPv6 addresses:    2K",
+            "    number of indirect IPv6 unicast routes:         1K",
+            "  number of IPv4 policy based routing aces:         0",
+            "  number of IPv4/MAC qos aces:                      0.5K",
+            "  number of IPv4/MAC security aces:                 0.625k",
+            "  number of IPv6 policy based routing aces:         0",
+            "  number of IPv6 qos aces:                          0.5K",
+            "  number of IPv6 security aces:                     0.625k",
+            " ",
+            " On next reload, template will be \"lanbase-routing\" template.",
+            " ",
+        ];
+        assert_eq!(s.type_line("show sdm prefer").0, current);
+        // a template named prints no next one
+        let named: Vec<&str> = vec![
+            " \"default\" template:",
+            " The selected template optimizes the resources in",
+            " the switch to support this level of features for",
+            " 0 routed interfaces and 255 VLANs. ",
+            "",
+            "  number of unicast mac addresses:                  8K",
+            "  number of IPv4 IGMP groups + multicast routes:    0.375k",
+            "  number of IPv4 unicast routes:                    0.375k",
+            "    number of directly-connected IPv4 hosts:        0.375k",
+            "    number of indirect IPv4 routes:                 64",
+            "  number of IPv6 multicast groups:                  0.25K",
+            "  number of IPv6 unicast routes:                    0.25K",
+            "    number of directly-connected IPv6 addresses:    0.25K",
+            "    number of indirect IPv6 unicast routes:         32",
+            "  number of IPv4 policy based routing aces:         0",
+            "  number of IPv4/MAC qos aces:                      0.375k",
+            "  number of IPv4/MAC security aces:                 0.375k",
+            "  number of IPv6 policy based routing aces:         0",
+            "  number of IPv6 qos aces:                          60",
+            "  number of IPv6 security aces:                     0.125k",
+            " ",
+        ];
+        assert_eq!(s.type_line("show sdm prefer default").0, named);
+        // the template in effect stores nothing, and `no` and `default` choose it
+        s.type_line("configure terminal");
+        for l in [
+            "sdm prefer lanbase-default",
+            "no sdm prefer",
+            "default sdm prefer",
+            "no sdm prefer lanbase-routing",
+        ] {
+            assert_eq!(s.type_line(l), (vec![], Result::Ok), "{l}");
+        }
+        assert_eq!(s.type_line("sdm prefer default").0, stored);
+        assert_eq!(
+            s.type_line("sdm prefer lanbase-default"),
+            (vec![], Result::Ok)
+        );
+        s.type_line("end");
+        let out = s.type_line("show sdm prefer").0;
+        assert_eq!(out[..out.len() - 1], current[..current.len() - 3]);
+        assert_eq!(out.last().map(String::as_str), Some(" "));
+        assert!(
+            !show::running_config(&s.device)
+                .iter()
+                .any(|l| l.contains("sdm"))
+        );
+    }
+
+    #[test]
+    fn a_2960_x_at_15_2_7_sizes_lanbase_default_for_more_mac_addresses_and_policy_routing() {
+        // the lab WS-C2960X-24PS-L, 15.2(7)E0a, under lanbase-default with lanbase-routing stored
+        let r = crate::release::Release::parse("15.2(7)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        assert_eq!(s.type_line("sdm prefer lanbase-routing").0.len(), 3);
+        s.type_line("end");
+        let current: Vec<&str> = vec![
+            " The current template is \"lanbase-default\" template.",
+            " The selected template optimizes the resources in",
+            " the switch to support this level of features for",
+            " 0 routed interfaces and 1024 VLANs. ",
+            "",
+            "  number of unicast mac addresses:                  32K",
+            "  number of IPv4 IGMP groups + multicast routes:    1K",
+            "  number of IPv4 unicast routes:                    3K",
+            "    number of directly-connected IPv4 hosts:        2K",
+            "    number of indirect IPv4 routes:                 1K",
+            "  number of IPv6 multicast groups:                  1K",
+            "  number of IPv6 unicast routes:                    3K",
+            "    number of directly-connected IPv6 addresses:    2K",
+            "    number of indirect IPv6 unicast routes:         1K",
+            "  number of IPv4 policy based routing aces:         0.5K",
+            "  number of IPv4/MAC qos aces:                      0.5K",
+            "  number of IPv4/MAC security aces:                 0.625k",
+            "  number of IPv6 policy based routing aces:         0",
+            "  number of IPv6 qos aces:                          0.5K",
+            "  number of IPv6 security aces:                     0.625k",
+            " ",
+            " On next reload, template will be \"lanbase-routing\" template.",
+            " ",
+        ];
+        assert_eq!(s.type_line("show sdm prefer").0, current);
+        let named: Vec<&str> = vec![
+            " \"lanbase-routing\" template:",
+            " The selected template optimizes the resources in",
+            " the switch to support this level of features for",
+            " 0 routed interfaces and 255 VLANs. ",
+            "",
+            "  number of unicast mac addresses:                  4K",
+            "  number of IPv4 IGMP groups + multicast routes:    0.375k",
+            "  number of IPv4 unicast routes:                    0.875k",
+            "    number of directly-connected IPv4 hosts:        0.875k",
+            "    number of indirect IPv4 routes:                 80",
+            "  number of IPv6 multicast groups:                  0.25K",
+            "  number of IPv6 unicast routes:                    0.875k",
+            "    number of directly-connected IPv6 addresses:    0.75K",
+            "    number of indirect IPv6 unicast routes:         32",
+            "  number of IPv4 policy based routing aces:         0",
+            "  number of IPv4/MAC qos aces:                      0.375k",
+            "  number of IPv4/MAC security aces:                 0.375k",
+            "  number of IPv6 policy based routing aces:         0",
+            "  number of IPv6 qos aces:                          0.125k",
+            "  number of IPv6 security aces:                     0.25K",
+            " ",
+        ];
+        assert_eq!(s.type_line("show sdm prefer lanbase-routing").0, named);
+    }
+
+    #[test]
+    fn a_classic_switch_writes_a_stamp_left_out_as_uptime_and_keeps_the_no_form_of_each_kind() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5, from `service timestamps debug datetime msec` and
+        // `service timestamps log datetime msec`
+        let e = lab_2960x_e5();
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let stamps = |lines: &[&str]| {
+            let mut s = Session::new(&e, Device::new(stack.clone()));
+            s.type_line("enable");
+            s.type_line("configure terminal");
+            s.type_line("service timestamps debug datetime msec");
+            s.type_line("service timestamps log datetime msec");
+            for l in lines {
+                assert_eq!(s.type_line(l), (vec![], Result::Ok), "{l}");
+            }
+            show::running_config(&s.device)
+                .into_iter()
+                .filter(|l| l.contains("timestamps"))
+                .collect::<Vec<_>>()
+        };
+        let both_off = [
+            "no service timestamps debug uptime",
+            "no service timestamps log uptime",
+        ];
+        assert_eq!(stamps(&["no service timestamps"]), both_off);
+        assert_eq!(stamps(&["default service timestamps"]), both_off);
+        for l in [
+            "no service timestamps log",
+            "default service timestamps log",
+        ] {
+            assert_eq!(
+                stamps(&[l]),
+                [
+                    "service timestamps debug datetime msec",
+                    "no service timestamps log uptime"
+                ],
+                "{l}"
+            );
+        }
+        assert_eq!(
+            stamps(&["no service timestamps", "service timestamps"]),
+            [
+                "service timestamps debug uptime",
+                "no service timestamps log uptime"
+            ]
+        );
+        assert_eq!(
+            stamps(&["no service timestamps", "service timestamps log"]),
+            [
+                "no service timestamps debug uptime",
+                "service timestamps log uptime"
+            ]
+        );
+        assert_eq!(
+            stamps(&["service timestamps debug datetime"]),
+            [
+                "service timestamps debug datetime",
+                "service timestamps log datetime msec"
+            ]
+        );
+        assert_eq!(
+            stamps(&["service timestamps log datetime localtime show-timezone year"]),
+            [
+                "service timestamps debug datetime msec",
+                "service timestamps log datetime localtime show-timezone year"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_2960_x_takes_a_default_line_its_crawl_asked_no_further_of_as_the_line_it_undoes() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5: each taken without a word
+        let e = lab_2960x_e5();
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        for l in [
+            "default service call-home",
+            "default service password-encryption",
+            "default logging buffered",
+            "default ip domain-lookup",
+            "default errdisable recovery cause bpduguard",
+            "default snmp-server location",
+            "default mac address-table aging-time",
+        ] {
+            assert_eq!(s.type_line(l), (vec![], Result::Ok), "{l}");
+        }
+    }
+
+    #[test]
+    fn a_2960_x_looks_a_name_up_once_and_refuses_it_where_no_address_answers() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5, name lookup on and no name server set
+        let e = lab_2960x_e5();
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        let looked = |n: &str| format!("Translating \"{n}\"...domain server (255.255.255.255)");
+        let refused = |col: usize| {
+            vec![
+                format!("{}^", " ".repeat(col)),
+                "% Invalid input detected at '^' marker.".to_string(),
+                String::new(),
+            ]
+        };
+        let after = |first: String, rest: Vec<String>| [vec![first], rest].concat();
+        // at the name, past the start of `host` it begins, the name looked up once
+        assert_eq!(
+            s.type_line("access-list 2 deny labhost1").0,
+            after(looked("labhost1"), refused(34))
+        );
+        assert_eq!(s.type_line("access-list 2 deny labhost1").0, refused(34));
+        assert_eq!(s.type_line("logging host labhost1").0, refused(28));
+        assert_eq!(
+            s.type_line("access-list 2 deny hostlab1").0,
+            after(looked("hostlab1"), refused(38))
+        );
+        assert_eq!(
+            s.type_line("tacacs-server host labhost5").0,
+            after(looked("labhost5"), refused(34))
+        );
+        // `ntp server` keeps the name; an SNMP host is refused at the word after it
+        assert_eq!(
+            s.type_line("ntp server labhost3"),
+            (vec![looked("labhost3"), String::new()], Result::Ok)
+        );
+        let mut snmp = refused(41);
+        snmp[0] = format!("%Illegal Hostname or IP/IPv6 address{}", snmp[0]);
+        assert_eq!(
+            s.type_line("snmp-server host labhost4 public").0,
+            [vec![looked("labhost4"), String::new()], snmp.clone()].concat()
+        );
+        // a name looked up before: no blank line (`snmp-server host myhost.cisco.com public`)
+        assert_eq!(s.type_line("snmp-server host labhost4 public").0, snmp);
+        assert_eq!(
+            s.type_line("do ping labhost8").0,
+            [
+                looked("labhost8"),
+                "% Unrecognized host or address, or protocol not running.".into(),
+                String::new()
+            ]
+        );
+        // `do` hands EXEC no host to connect to
+        assert_eq!(s.type_line("do labhost11").0, refused(19));
+        // a name an `ip host` line names is no lookup
+        s.type_line("ip host labhost6 192.0.2.66");
+        for l in [
+            "access-list 3 deny labhost6",
+            "logging host labhost6",
+            "ntp server labhost6",
+        ] {
+            assert_eq!(s.type_line(l), (vec![], Result::Ok), "{l}");
+        }
+        s.type_line("ip access-list standard DNSACL");
+        assert_eq!(
+            s.type_line("deny labhost20").0,
+            after(looked("labhost20"), refused(29))
+        );
+        assert_eq!(
+            s.type_line("permit hostlab22").0,
+            after(looked("hostlab22"), refused(35))
+        );
+        s.type_line("end");
+        // EXEC, after `clear host *` forgot the names
+        assert_eq!(s.type_line("clear host *"), (vec![], Result::Ok));
+        let unknown = "% Unknown command or computer name, or unable to find computer address";
+        for (line, name, said) in [
+            (
+                "ping labhost8",
+                "labhost8",
+                &[
+                    "% Unrecognized host or address, or protocol not running.",
+                    "",
+                ][..],
+            ),
+            (
+                "traceroute labhost9",
+                "labhost9",
+                &["% Unrecognized host or address.", ""],
+            ),
+            ("telnet labhost10", "labhost10", &[unknown]),
+            ("labhost11", "labhost11", &[unknown]),
+        ] {
+            let mut want = vec![looked(name)];
+            want.extend(said.iter().map(|l| l.to_string()));
+            assert_eq!(s.type_line(line).0, want, "{line}");
+        }
+        assert_eq!(s.type_line("labhost11").0, [unknown]);
+        assert_eq!(
+            s.type_line("ping 999.1.1.1").0,
+            [
+                "% Unrecognized host or address, or protocol not running.",
+                ""
+            ]
+        );
+    }
+
+    #[test]
+    fn a_2960_x_with_name_lookup_off_reads_its_own_hosts_and_with_a_name_server_asks_it() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5
+        let e = lab_2960x_e5();
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack.clone()));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        assert_eq!(s.type_line("no ip domain lookup"), (vec![], Result::Ok));
+        assert!(s.running_has("no ip domain-lookup"));
+        assert_eq!(
+            s.type_line("logging host labhost2").0,
+            [
+                "Translating \"labhost2\"".to_string(),
+                format!("{}^", " ".repeat(28)),
+                "% Invalid input detected at '^' marker.".into(),
+                String::new()
+            ]
+        );
+        s.type_line("end");
+        assert_eq!(
+            s.type_line("labhost11").0,
+            [
+                "Translating \"labhost11\"",
+                "% Unknown command or computer name, or unable to find computer address"
+            ]
+        );
+        // a name server may answer a name, where vswitch cannot tell; a word EXEC knows no command
+        // for is no host it answers
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        s.type_line("ip name-server 192.0.2.53");
+        assert_eq!(
+            s.type_line("access-list 2 deny labhost1"),
+            (vec![], Result::Ok)
+        );
+        s.type_line("end");
+        assert_eq!(
+            s.type_line("labhost11").0,
+            [
+                "Translating \"labhost11\"...domain server (192.0.2.53)",
+                "% Unknown command or computer name, or unable to find computer address"
+            ]
+        );
+    }
+
+    #[test]
+    fn ios_xe_says_on_one_line_that_a_word_exec_knows_no_command_for_names_no_host() {
+        // the lab C9300-24T (17.6.4): `xyzzy` at `#`
+        let r = crate::release::Release::parse("17.6").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c9300", r).unwrap());
+        let stack = crate::platform::parse_stack("C9300-24T").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        assert_eq!(
+            s.type_line("xyzzy"),
+            (
+                vec![
+                    "% Bad IP address or host name% Unknown command or computer name, or unable \
+                     to find computer address"
+                        .to_string()
+                ],
+                Result::Error
+            )
+        );
+        // a line of more words is refused at its caret
+        assert_eq!(
+            s.type_line("xyzzy now").0[1],
+            "% Invalid input detected at '^' marker."
+        );
     }
 }

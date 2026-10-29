@@ -747,24 +747,35 @@ pub(crate) fn entered_modes(text: &str) -> BTreeSet<(String, String)> {
 
 /// The (mode, context, `context::key`) of each configuration line a log typed that the switch took
 /// without a word, or asked first whether to convert the 802.1X configuration to new-style (the
-/// lab C9200L-48T-4G took the line on `yes`): a configuration prompt after it. A `?` probe, Ctrl-Z
-/// and a line whose context is unknown are not read.
+/// lab C9200L-48T-4G took the line on `yes`): a configuration prompt after it, in the same mode and
+/// context or one the line entered under it. A line the switch took by leaving the mode is the
+/// mode it left for's: the lab WS-C2960X-24PS-L (15.2(7)E0a) took `interface Po11` typed at
+/// (config-if-range)# in global configuration, which entered config-if. A `?` probe, Ctrl-Z and a
+/// line whose context is unknown are not read.
 pub(crate) fn taken_lines(text: &str) -> BTreeSet<(String, String, String)> {
     let Some((_, exchanges)) = crate::capture::exchanges(text) else {
         return BTreeSet::new();
     };
     let complete = exchanges.len().saturating_sub(1);
-    let next_config: Vec<bool> = exchanges
+    let after: Vec<(String, Option<String>)> = exchanges
         .iter()
         .skip(1)
-        .map(|e| crate::cli::is_config(&e.mode))
+        .map(|e| (e.mode.clone(), e.context.clone()))
         .collect();
+    let stays = |e: &crate::capture::Exchange, (mode, context): &(String, Option<String>)| {
+        let (Some(here), Some(there)) = (&e.context, context) else {
+            return false;
+        };
+        crate::cli::is_config(mode)
+            && (*mode == e.mode && here == there
+                || there != here && (here.is_empty() || there.starts_with(&format!("{here} > "))))
+    };
     exchanges
         .into_iter()
         .take(complete)
-        .zip(next_config)
+        .zip(after)
         .filter(|(e, next)| {
-            *next
+            stays(e, next)
                 && crate::cli::is_config(&e.mode)
                 && !e.command.trim().is_empty()
                 && !e.command.ends_with('?')
@@ -2609,6 +2620,43 @@ mod tests {
                 ("bogus ".to_string(), vec![UNRECOGNIZED.to_string()]),
             ]
         );
+    }
+
+    #[test]
+    fn a_line_the_switch_took_by_leaving_its_mode_is_not_taken_there() {
+        // the lab WS-C2960X-24PS-L (15.2(7)E0a): `interface Po11` at (config-if-range)# went to
+        // global configuration, which entered config-if
+        let log = [
+            "Switch#configure terminal",
+            "Enter configuration commands, one per line.  End with CNTL/Z.",
+            "Switch(config)#interface range Po11",
+            "Switch(config-if-range)#description LAB",
+            "Switch(config-if-range)#interface Po11",
+            "Switch(config-if)#exit",
+            "Switch(config)#end",
+            "Switch#",
+        ]
+        .join("\n");
+        let taken: Vec<(String, String)> = taken_lines(&log)
+            .into_iter()
+            .map(|(m, _, k)| (m, k))
+            .collect();
+        let key = crate::context::key;
+        assert!(
+            taken.contains(&("config".into(), key("interface range Po11"))),
+            "{taken:?}"
+        );
+        assert!(
+            taken.contains(&("config-if-range".into(), key("description LAB"))),
+            "{taken:?}"
+        );
+        assert!(
+            !taken
+                .iter()
+                .any(|(m, k)| m == "config-if-range" && *k == key("interface Po11")),
+            "{taken:?}"
+        );
+        assert!(!taken.iter().any(|(m, _)| m == "config-if"), "{taken:?}");
     }
 
     #[test]

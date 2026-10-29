@@ -560,6 +560,35 @@ fn keywords(p: &Parse) -> Vec<String> {
         .collect()
 }
 
+/// The lines classic IOS writes for a `service timestamps` line where it writes it otherwise than
+/// typed: a kind given no stamp stamps `uptime`, the line alone the debug kind, and a `no` or
+/// `default` line keeps `no service timestamps <kind> uptime` for its kind, or for both. The lab
+/// WS-C2960X-24PS-L (15.2(2)E5) wrote `no service timestamps debug uptime` and `no service
+/// timestamps log uptime` for `no service timestamps` and `default service timestamps`, `no
+/// service timestamps log uptime` for `no service timestamps log` and `default service timestamps
+/// log`, `service timestamps debug uptime` for `service timestamps` and `service timestamps log
+/// uptime` for `service timestamps log`; a `no` line naming a stamp reads as its kind's (inferred).
+pub fn stamps(p: &Parse) -> Option<Vec<String>> {
+    let words = keywords(p);
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let ["service", "timestamps", ref rest @ ..] = words[..] else {
+        return None;
+    };
+    let kinds = match (rest, p.negated) {
+        ([], true) => vec!["debug", "log"],
+        ([], false) => vec!["debug"],
+        ([kind], _) | ([kind, ..], true) if matches!(*kind, "debug" | "log") => vec![*kind],
+        _ => return None,
+    };
+    let no = if p.negated { "no " } else { "" };
+    Some(
+        kinds
+            .iter()
+            .map(|k| format!("{no}service timestamps {k} uptime"))
+            .collect(),
+    )
+}
+
 /// The command a line's keywords name, the value they choose left out (`CHOICES`).
 fn command(words: &[String]) -> String {
     for (stem, values) in CHOICES {
