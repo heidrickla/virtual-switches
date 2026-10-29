@@ -8324,7 +8324,7 @@ mod tests {
         // the lab WS-C2960X-24PS-L, with AAA off, took these on an access port (15.2(2)E5 and
         // 15.2(7)E0a) and on a trunk (15.2(7)E0a), and refused them on a port left to negotiate
         // (15.2(7)E0a), the state its crawl ran in
-        for release in ["15.2(2)E"] {
+        for release in ["15.2(2)E", "15.2(7)E"] {
             let r = crate::release::Release::parse(release).unwrap();
             let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
             let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();

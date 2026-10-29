@@ -148,8 +148,9 @@ A crawl is a transcript of `?` probes typed in each mode of a lab switch. `vswit
 | C9200 17.15 | C9200L-48T-4G, 17.15.6 | `network-advantage`, `network-essentials` |
 | C2960 15.0(2)SE | C2960G, 15.0(2)SE11 | `lanbase` |
 | C2960-X 15.2(2)E | WS-C2960X-24PS-L, 15.2(2)E5 | `lanbase` |
+| C2960-X 15.2(7)E | WS-C2960X-24PS-L, 15.2(7)E0a | `lanbase` |
 
-The C9300 17.6 crawl at each Catalyst 9000 level, the C2960-X 15.2(2)E crawl and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 and 17.15 crawls answer for their own images at both levels, the licence gate included. The C2960-X 15.2(2)E crawl answers for its own image at `lanbase`.
+The C9300 17.6 crawl at each Catalyst 9000 level, the C2960-X 15.2(2)E crawl and the C2960G 15.0(2)SE crawl at `lanbase` serve as donors. The C9200 17.6 and 17.15 crawls answer for their own images at both levels, the licence gate included. The C2960-X 15.2(2)E and 15.2(7)E crawls answer for their own images at `lanbase`, the 15.2(7)E crawl ahead of the 15.2(2)E donor.
 
 ### Crawl folders
 
