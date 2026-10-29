@@ -376,6 +376,7 @@ A sweep is a transcript of lines typed on Enter at the privileged prompt of a la
 | C9300 17.6 | C9300-24T, 17.6.4 | `network-advantage`, `network-essentials` |
 | C9200 17.6 | C9200L-48T-4G, 17.6.4 | `network-advantage`, `network-essentials` |
 | C9200 17.15 | C9200L-48T-4G, 17.15.6 | `network-advantage`, `network-essentials` |
+| C2960-X 15.2(2)E | WS-C2960X-24PS-L, 15.2(2)E5 | `lanbase` |
 
 ### Sweep folders
 

@@ -34,8 +34,9 @@ pub struct Hazard {
     pub effect: &'static str,
 }
 
-/// Each crashed a lab switch over SSH or its console: IOSd segfaulted (`linux_iosd_image has failed
-/// (rc 139)`) and the switch reloaded with `Critical software exception`.
+/// Each crashed a lab switch over SSH or its console: on IOS XE, IOSd segfaulted (`linux_iosd_image
+/// has failed (rc 139)`) and the switch reloaded with `Critical software exception`; on classic IOS,
+/// the image took an exception, wrote a crashinfo file and reloaded.
 pub const KNOWN: &[Hazard] = &[
     // a C9300-24T with a C9300-NM-4G, each typed alone on one SSH session; no published Cisco bug
     // names either
@@ -101,6 +102,23 @@ pub const KNOWN: &[Hazard] = &[
         subtree: false,
         shorter: &[],
         effect: "IOSd segfault and reload",
+    },
+    // a WS-C2960X-24PS-L at lanbase, over SSH: in a show sweep, then typed alone. A second after
+    // `Completed: 0  %` the image takes `Data TLB Miss Exception (0x1100)` reading 0x61626364 at
+    // the same PC both times, in the next process to run (`ARP Background`, then `HQM Stack
+    // Process`), writes flash:crashinfo_ext and reloads; `show memory debug leaks` and
+    // `... incremental leaks lowmem` answered
+    Hazard {
+        families: &[Family::C2960X],
+        release: "15.2(2)E5",
+        date: "2026-10-28",
+        command: "show memory debug leaks lowmem",
+        port: None,
+        config: false,
+        level: None,
+        subtree: false,
+        shorter: &[],
+        effect: "Data TLB Miss Exception and reload",
     },
 ];
 
@@ -366,6 +384,45 @@ mod tests {
         assert_eq!(
             h.described("17.15"),
             "'show ipv6 pim gir' crashed a Catalyst 9300 at IOS XE 17.6.4 (IOSd segfault and reload), measured 2026-10-17"
+        );
+    }
+
+    #[test]
+    fn the_2960_x_leak_detector_s_low_memory_mode_is_a_hazard() {
+        let x = Some(Family::C2960X);
+        for line in [
+            "show memory debug leaks lowmem",
+            "sh mem deb lea low",
+            "show memory debug leaks lowmem | include x",
+        ] {
+            for mode in ["exec", "privileged"] {
+                assert!(typed(x, Some("lanbase"), mode, line).is_some(), "{line}");
+            }
+            assert!(typed(C9300, None, "privileged", line).is_none(), "{line}");
+            assert!(
+                typed(Some(Family::C2960), None, "privileged", line).is_none(),
+                "{line}"
+            );
+        }
+        assert!(typed(x, None, "config-if", "do show memory debug leaks lowmem").is_some());
+        // the forms the switch answered
+        for line in [
+            "show memory debug leaks",
+            "show memory debug leaks chunks",
+            "show memory debug leaks summary",
+            "show memory debug incremental leaks lowmem",
+            "show memory debug leaks lowmemx",
+        ] {
+            assert!(typed(x, None, "privileged", line).is_none(), "{line}");
+        }
+        let h = typed(x, None, "privileged", "show memory debug leaks lowmem").unwrap();
+        assert_eq!(
+            h.warning("15.2(2)E"),
+            "% vswitch: this command crashes the switch (Data TLB Miss Exception and reload on a Catalyst 2960-X at IOS 15.2(2)E5)"
+        );
+        assert_eq!(
+            h.warning("15.2(7)E"),
+            "% vswitch: this command crashed a Catalyst 2960-X at IOS 15.2(2)E5 (Data TLB Miss Exception and reload)"
         );
     }
 

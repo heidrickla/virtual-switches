@@ -812,6 +812,7 @@ A line a lab switch crashed on prints a warning when Enter is pressed on it, as 
 | `show interfaces GigabitEthernet0/0 transceiver max-power` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
 | `show interfaces GigabitEthernet0/0 transceiver max-power violation` | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
 | `cts environment-data enable`, a configuration line, at network-essentials | Catalyst 9200L, 9200, 9200 B | IOS XE 17.15.6 | IOSd segfault and reload |
+| `show memory debug leaks lowmem` | Catalyst 2960-X | IOS 15.2(2)E5 | Data TLB Miss Exception and reload |
 
 | Switch | Warning |
 |---|---|
@@ -828,5 +829,7 @@ These answered normally on the C9300-24T: `show ip pim gir`, `show ip igmp gir`,
 Each `transceiver max-power` line crashed a C9200L-48T-4G at network-advantage on 2026-10-21, typed in a show sweep over SSH, and was the last command of its crashinfo file. IOSd segfaulted (`linux_iosd_image has failed (rc 139)`) and the switch reloaded with `Critical software exception`, answering SSH again about 5 minutes later. The same forms with no interface or on the sweep's other interfaces (GigabitEthernet1/x, Port-channel1, Vlan10) did not crash it. At 17.6.4 the Tunnel0 forms closed the session without a reload. On 2026-10-22, one line per boot on the console, `show interfaces Tunnel1 transceiver max-power` crashed it at network-advantage, and the Tunnel0 and GigabitEthernet0/0 forms without `violation` at network-essentials. Each tunnel crash logged `%SFF8472-3-INTERNAL_ERROR: Tu<n>: ether sub-block missing` first.
 
 `cts environment-data enable` crashed the same switch at network-essentials on 2026-10-22: in global configuration during the book examples over SSH (`SSH Process`), and from the examples base alone on the console (`Exec`). At network-advantage the line was taken and held in the running configuration.
+
+`show memory debug leaks lowmem` crashed a WS-C2960X-24PS-L at lanbase on 2026-10-28 over SSH, in a show sweep and again typed alone. It printed `This may take some time...`, `Type escape sequence to abort.` and `Completed: 0  %`, and a second later the image took `Data TLB Miss Exception (0x1100)`, reading address 0x61626364 at the same PC both times, in another process each time (`ARP Background`, then `HQM Stack Process`). It wrote `flash:crashinfo_ext/crashinfo_ext_<n>` and reloaded, and `show version` then read `Last reload reason: power-on`. `show memory debug leaks`, its `chunks`, `largest` and `summary` forms and `show memory debug incremental leaks lowmem` did not crash it.
 
 `run` prints the warning in the session; `probe` refuses the line, and `explain` names it ([commands.md](commands.md)).
