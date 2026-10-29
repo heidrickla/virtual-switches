@@ -1337,6 +1337,8 @@ impl<'a> Session<'a> {
         let taken = self.accepted.len();
         let pending = self.extended_pending();
         self.looked_up.borrow_mut().clear();
+        let spelled = self.hyphened(line);
+        let line = spelled.as_deref().unwrap_or(line);
         let mut out = self.typed(line);
         // `ntp server` keeps a name it finds no address for (the lab WS-C2960X-24PS-L, 15.2(2)E5:
         // `ntp server labhost3`)
@@ -1411,6 +1413,44 @@ impl<'a> Session<'a> {
             out.push(w);
         }
         (out, r)
+    }
+
+    /// The line classic IOS takes a configuration line as where it writes its words with a hyphen:
+    /// `ip domain lookup`, `ip domain name` and `ip domain list`, and their `no` forms (the lab
+    /// WS-C2960X-24PS-L, 15.2(2)E5, printed `no ip domain-lookup` after `no ip domain lookup`,
+    /// `ip domain-name lab.test` after `ip domain name lab.test` and `ip domain-list a.test` after
+    /// `ip domain list a.test`). Read in the mode typed in, else in global configuration.
+    fn hyphened(&self, line: &str) -> Option<String> {
+        let mode = self.mode();
+        if !self.device.stack.classic()
+            || !cli::is_config(mode)
+            || !line.to_lowercase().contains("dom")
+        {
+            return None;
+        }
+        let top = self.frames.len() - 1;
+        let global = self.frames.iter().rposition(|f| f.mode == "config");
+        let read = |l: &str| {
+            [Some(top), global].into_iter().flatten().find_map(|i| {
+                match self.read_at(i, &self.frames[i].mode, l) {
+                    Outcome::Ok(p) => Some(p),
+                    _ => None,
+                }
+            })
+        };
+        let c = read(line.trim())?.canonical();
+        let (no, body) = c
+            .strip_prefix("no ")
+            .map_or(("", c.as_str()), |b| ("no ", b));
+        // where the hyphened line reads, or a capture held it
+        ["lookup", "name", "list"]
+            .iter()
+            .find_map(|w| {
+                let rest = body.strip_prefix("ip domain ")?.strip_prefix(w)?;
+                (rest.is_empty() || rest.starts_with(' '))
+                    .then(|| format!("{no}ip domain-{w}{rest}"))
+            })
+            .filter(|h| self.engine.held.has("", h) || read(h).is_some())
     }
 
     fn typed(&mut self, line: &str) -> (Vec<String>, Result) {
@@ -4281,20 +4321,6 @@ impl<'a> Session<'a> {
     }
 
     fn run(&mut self, mode: &str, line: &str, p: &Parse) -> (Vec<String>, Result) {
-        // classic IOS writes `ip domain lookup` as `ip domain-lookup` (the lab WS-C2960X-24PS-L,
-        // 15.2(2)E5, printed `no ip domain-lookup` after `no ip domain lookup`)
-        if self.device.stack.classic() && cli::is_config(mode) {
-            let spelled = match p.canonical().as_str() {
-                "no ip domain lookup" => Some("no ip domain-lookup"),
-                "ip domain lookup" => Some("ip domain-lookup"),
-                _ => None,
-            };
-            if let Some(spelled) = spelled
-                && let Outcome::Ok(q) = self.engine.parse("config", spelled)
-            {
-                return self.run(mode, spelled, &q);
-            }
-        }
         if cli::is_config(mode)
             && let Some(said) = self.sdm_prefer(p)
         {
@@ -5327,8 +5353,9 @@ impl<'a> Session<'a> {
             return Some((o, false));
         }
         // `do` runs an exec line from any mode and `end` leaves any, and no submode's answer
-        // need list them
+        // need list them; a `no` line naming a global line held takes it back (`undoes_held`)
         if ["do", "end"].contains(&first.as_str())
+            || self.undoes_held(mode, line)
             || crate::context::unjudged(mode, line, configured)
             || self.unjudged_on_this_port(mode, line)
             || level
@@ -5703,7 +5730,8 @@ impl<'a> Session<'a> {
     /// `crawl_reading`, setting `full` to the byte of a value one past the most its list takes,
     /// where reading stops there. A `no` or `default` line the crawl asked no further of reads as
     /// the line it undoes: the lab WS-C2960X-24PS-L (15.2(2)E5) took `no ip domain lookup`, where
-    /// its crawl asked `no ip ?` and `ip domain lookup ?` and nothing under `no ip domain`.
+    /// its crawl asked `no ip ?` and `ip domain lookup ?` and nothing under `no ip domain`. So does
+    /// a `no` line naming a global line held (`undoes_held`).
     fn crawl_reading_at(
         &self,
         level: &str,
@@ -5713,9 +5741,10 @@ impl<'a> Session<'a> {
         whole: bool,
         full: &std::cell::Cell<Option<usize>>,
     ) -> Option<Parse> {
-        let unasked = std::cell::Cell::new(false);
-        let read = self.crawl_reading_words(level, mode, context, line, whole, full, &unasked);
-        if read.is_some() || !unasked.get() {
+        let marks = Marks::default();
+        let read = self.crawl_reading_words((level, mode, context), line, whole, &marks);
+        full.set(marks.full.get().or(full.get()));
+        if read.is_some() || !(marks.unasked.get() || self.undoes_held(mode, line)) {
             return read;
         }
         let toks = cli::tokens(line);
@@ -5723,18 +5752,10 @@ impl<'a> Session<'a> {
         if !["no", "default"].contains(&first.text.to_lowercase().as_str()) {
             return None;
         }
-        let past = std::cell::Cell::new(None);
-        let unasked = std::cell::Cell::new(false);
-        let read = self.crawl_reading_words(
-            level,
-            mode,
-            context,
-            &line[rest.at..],
-            whole,
-            &past,
-            &unasked,
-        );
-        full.set(past.get().map(|at| at + rest.at).or(full.get()));
+        let marks = Marks::default();
+        let read =
+            self.crawl_reading_words((level, mode, context), &line[rest.at..], whole, &marks);
+        full.set(marks.full.get().map(|at| at + rest.at).or(full.get()));
         let mut p = read?;
         p.negated = true;
         for it in &mut p.items {
@@ -5745,19 +5766,28 @@ impl<'a> Session<'a> {
         Some(p)
     }
 
-    /// `crawl_reading_at` word by word, setting `unasked` where the crawl holds no answer at a
-    /// point the line reaches.
-    #[allow(clippy::too_many_arguments)]
+    /// Whether a classic switch's global configuration line is `no` and a line the running
+    /// configuration holds, word for word, which IOS takes back whatever its `no` form's answers
+    /// offer: the lab WS-C2960X-24PS-L (15.2(2)E5) took `no ip domain multicast mc.test` after
+    /// `ip domain multicast mc.test`, where `no ip domain multicast ?` offers `<cr>` alone.
+    fn undoes_held(&self, mode: &str, line: &str) -> bool {
+        let toks = cli::tokens(line);
+        mode == "config"
+            && self.device.stack.classic()
+            && matches!((toks.first(), toks.get(1)), (Some(no), Some(rest))
+                if no.text.eq_ignore_ascii_case("no")
+                    && self.running_has(line[rest.at..].trim_end()))
+    }
+
+    /// `crawl_reading_at` word by word at a level, mode and context, setting `marks`.
     fn crawl_reading_words(
         &self,
-        level: &str,
-        mode: &str,
-        context: &str,
+        (level, mode, context): (&str, &str, &str),
         line: &str,
         whole: bool,
-        full: &std::cell::Cell<Option<usize>>,
-        unasked: &std::cell::Cell<bool>,
+        marks: &Marks,
     ) -> Option<Parse> {
+        let (full, unasked) = (&marks.full, &marks.unasked);
         let held = &self.engine.held;
         let configured = |l: &str| self.running_has(l);
         let answer = |typed: &str| {
@@ -5962,11 +5992,17 @@ impl<'a> Session<'a> {
                 tok: k,
                 typed: !matches!(r, "WORD" | "Hostname"),
             });
-            typed = after(&typed, &t.text, (r, what)).or_else(|| {
+            // a value past which the crawl asked nothing: `no ip domain-list a.test`, where the
+            // lab WS-C2960X-24PS-L's (15.2(2)E5) probes asked `no ip domain-list ?` alone
+            let Some(next) = after(&typed, &t.text, (r, what)).or_else(|| {
                 looped(&seen, &typed)
                     .iter()
                     .find_map(|p| after(p, &t.text, (r, what)))
-            })?;
+            }) else {
+                unasked.set(true);
+                return None;
+            };
+            typed = next;
             k += 1;
         }
         let Some(end) = answer(&typed) else {
@@ -7609,6 +7645,15 @@ const BGP_POLICY: &[&str] = &[
     "unsuppress-map",
     "weight",
 ];
+
+/// What reading a line against a crawl found besides its parse: the byte of a value one past the
+/// most its list takes, where reading stopped there, and whether the crawl holds no answer at a
+/// point the line reaches.
+#[derive(Default)]
+struct Marks {
+    full: std::cell::Cell<Option<usize>>,
+    unasked: std::cell::Cell<bool>,
+}
 
 /// A SPAN session's lines in the running configuration (`monitor session <n> ...`).
 #[derive(Default)]
@@ -17259,6 +17304,60 @@ mod tests {
                 ""
             ]
         );
+    }
+
+    #[test]
+    fn a_classic_switch_writes_its_domain_name_and_list_with_a_hyphen_and_no_takes_each_back() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5 (domain-order, domain-forms3); the order it printed
+        // them in (round-robin, multicast, lists, lookup, name) is left to the order tables
+        let e = lab_2960x_e5();
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        let domain = |s: &Session| {
+            let mut lines: Vec<String> = show::running_config(&s.device)
+                .into_iter()
+                .filter(|l| l.contains("domain") || l.starts_with("ip name-server"))
+                .collect();
+            lines.sort();
+            lines
+        };
+        for l in [
+            "ip domain name lab.example",
+            "ip name-server 192.0.2.53",
+            "ip domain list lab.example",
+            "ip domain list b.test",
+            "no ip domain lookup",
+            "ip domain round-robin",
+            "ip domain multicast mc.test",
+        ] {
+            assert_eq!(s.type_line(l), (vec![], Result::Ok), "{l}");
+        }
+        assert_eq!(
+            domain(&s),
+            [
+                "ip domain multicast mc.test",
+                "ip domain round-robin",
+                "ip domain-list b.test",
+                "ip domain-list lab.example",
+                "ip domain-name lab.example",
+                "ip name-server 192.0.2.53",
+                "no ip domain-lookup",
+            ]
+        );
+        // `no ip domain multicast ?` offers `<cr>` alone, and the switch took the line whole
+        for l in [
+            "no ip domain name",
+            "no ip domain list b.test",
+            "no ip domain list lab.example",
+            "no ip domain round-robin",
+            "no ip domain multicast mc.test",
+            "ip domain lookup",
+        ] {
+            assert_eq!(s.type_line(l), (vec![], Result::Ok), "{l}");
+        }
+        assert_eq!(domain(&s), ["ip name-server 192.0.2.53"]);
     }
 
     #[test]

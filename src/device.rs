@@ -1224,14 +1224,17 @@ fn put(lines: &mut Vec<Entry>, e: Entry) {
 }
 
 /// Applies a line keyed `k` to a block's or a section's lines: it replaces the entry of the same key,
-/// or is added; a `no` removes what it negates (`negates`), or where IOS keeps the `no` form
-/// (`keeps_no`) stands in that entry's place.
+/// or is added; a `no` removes what it negates (`negates`) and a line taken as a capture held it
+/// (keyed by its text) that it names whole (the lab WS-C2960X-24PS-L, 15.2(2)E5: `no ip domain
+/// list a.test` after `ip domain list a.test`), or where IOS keeps the `no` form (`keeps_no`)
+/// stands in that entry's place.
 pub fn apply_to(lines: &mut Vec<Entry>, p: &Parse, k: String, keeps_no: bool, whole: bool) {
     if p.negated && !keeps_no {
         let set = p.canonical();
         let set = set.strip_prefix("no ").unwrap_or(&set);
         let valued = VALUED_NO.contains(&k.as_str()) && set != k;
-        lines.retain(|e| !negates(&k, &e.key, whole) || (valued && e.text != set));
+        lines
+            .retain(|e| (!negates(&k, &e.key, whole) && e.key != set) || (valued && e.text != set));
         return;
     }
     let text = p.canonical();
