@@ -70,6 +70,13 @@ pub type CrawlAnswer = (String, Vec<String>);
 /// (`context::of` the submodes entered), where it asked in several.
 pub type Crawl = BTreeMap<(String, String), Vec<CrawlAnswer>>;
 
+/// A crawl's answer for a key under `context`, else under a context IOS reads alike
+/// (`context::alike`).
+fn in_context<'v>(answers: &'v [CrawlAnswer], context: &str) -> Option<&'v Vec<String>> {
+    let under = |c: &str| answers.iter().find(|(x, _)| x == c).map(|(_, a)| a);
+    under(context).or_else(|| crate::context::alike(context).find_map(under))
+}
+
 /// Which answers gave a `?` answer (`Held::answered`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
@@ -746,7 +753,7 @@ impl Held {
         crawl
             .range((mode.to_string(), prefix.clone())..)
             .take_while(|((m, k), _)| m == mode && k.starts_with(&prefix))
-            .filter(|(_, v)| v.iter().any(|(c, _)| c == context))
+            .filter(|(_, v)| in_context(v, context).is_some())
             .find_map(|((_, k), _)| {
                 let w = k[prefix.len()..].strip_suffix(' ')?;
                 (!w.is_empty() && !w.contains(' ') && fits(w)).then(|| w.to_string())
@@ -809,7 +816,7 @@ impl Held {
             .take_while(|((m, k), _)| m == mode && k.starts_with(&prefix))
             .filter_map(|((_, k), answers)| {
                 let w = k.strip_prefix(&prefix)?.strip_suffix(' ')?;
-                let (_, a) = answers.iter().find(|(c, _)| c == context)?;
+                let a = in_context(answers, context)?;
                 (!w.contains(' ')
                     && w != typed
                     && value_of_row(row, what, w)
@@ -972,7 +979,7 @@ impl<'a> Answers<'a> {
         match self.crawl.and_then(|c| c.get(&crawled)) {
             None => help,
             Some(answers) => {
-                let (_, a) = answers.iter().find(|(c, _)| Some(c.as_str()) == context)?;
+                let a = in_context(answers, context?)?;
                 (!crate::context::stale(mode, &crawled.1, configured)).then_some(a)
             }
         }
@@ -1075,10 +1082,7 @@ fn numbers_as_crawled(
     }
     let prefix = format!("{} ", words[..first].join(" "));
     fn answered<'c>(c: &'c Crawl, mode: &str, context: &str, k: &str) -> Option<&'c Vec<String>> {
-        c.get(&(mode.to_string(), k.to_string()))?
-            .iter()
-            .find(|(c, _)| c == context)
-            .map(|(_, a)| a)
+        in_context(c.get(&(mode.to_string(), k.to_string()))?, context)
     }
     let held = |c, k: &str| answered(c, mode, context, k);
     let in_one_range = |answer: &Vec<String>, a: &str, b: &str| {
@@ -1621,6 +1625,40 @@ mod tests {
         );
         // a mode and a line neither held
         assert_eq!(ask("config", Some(""), "ip "), None);
+    }
+
+    #[test]
+    fn a_class_map_of_any_kind_reads_the_answers_a_crawl_gave_under_another_kind() {
+        let mut h = Held::default();
+        let key = |m: &str, k: &str| (m.to_string(), k.to_string());
+        own(&mut h).insert(
+            key("config-cmap", "match ip dscp "),
+            vec![("class-map match-any «word»".into(), answer("dscp"))],
+        );
+        own(&mut h).insert(
+            key("config-cmap", "match cos "),
+            vec![
+                ("class-map match-any «word»".into(), answer("any")),
+                ("class-map «word»".into(), answer("plain")),
+            ],
+        );
+        let ask = |c: &str, t: &str| h.help_for(L, "config-cmap", Some(c), t, |_| false).cloned();
+        // the lab WS-C2960X-24PS-L (15.2(2)E5) took the same lines under each kind
+        for c in [
+            "class-map match-any «word»",
+            "class-map match-all «word»",
+            "class-map «word»",
+        ] {
+            assert_eq!(ask(c, "match ip dscp "), Some(answer("dscp")), "{c}");
+        }
+        // a context's own answer before another kind's
+        assert_eq!(ask("class-map «word»", "match cos "), Some(answer("plain")));
+        assert_eq!(
+            ask("class-map match-all «word»", "match cos "),
+            Some(answer("any"))
+        );
+        // no other context reads them
+        assert_eq!(ask("policy-map «word»", "match ip dscp "), None);
     }
 
     #[test]

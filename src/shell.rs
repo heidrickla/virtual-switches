@@ -5178,18 +5178,9 @@ impl<'a> Session<'a> {
                     .iter()
                     .any(|e| e.text.trim() == "no switchport")
             });
-        // the crawled ports had no PoE (the lab C9300-24T's `power ?` lists only
-        // efficient-ethernet), so a PoE port's `power` lines are left to the books
+        // a PoE port's `power` lines are left to the books where the crawled port had no PoE
         let first = line.split_whitespace().next().unwrap_or("").to_lowercase();
-        if first.len() >= 2
-            && "power".starts_with(&first)
-            && frame.blocks.iter().any(|&b| {
-                let header = &self.device.blocks[b].header;
-                header
-                    .strip_prefix("interface ")
-                    .is_some_and(|n| self.device.stack.poe(n).is_some())
-            })
-        {
+        if self.unpowered_crawl(i, mode, &first) || self.entered_by_crawl(i, mode, line) {
             return None;
         }
         let level = self.level();
@@ -5441,20 +5432,13 @@ impl<'a> Session<'a> {
                     .any(|e| e.text.trim() == "no switchport")
             });
         let first = line.split_whitespace().next().unwrap_or("").to_lowercase();
-        let power = first.len() >= 2
-            && "power".starts_with(&first)
-            && frame.blocks.iter().any(|&b| {
-                self.device.blocks[b]
-                    .header
-                    .strip_prefix("interface ")
-                    .is_some_and(|n| self.device.stack.poe(n).is_some())
-            });
+        let power = self.unpowered_crawl(i, mode, &first);
         let configured = |l: &str| self.running_has(l);
         let context = self.context_at(i)?;
         // a line the image's own switch took without a word here stands, though the crawl does
         // not judge it or ran out before its end (`summary-metric 10.1.1.0/24 community 0` under a
         // classic EIGRP process, the lab C9200L-48T-4G, 17.6.4 and 17.15.6)
-        let took = held.took(&level, mode, &context, line);
+        let took = held.took(&level, mode, &context, line) || self.entered_by_crawl(i, mode, line);
         if routed
             || power
             || ((crate::context::unjudged(mode, line, configured)
@@ -5486,6 +5470,67 @@ impl<'a> Session<'a> {
                         .collect(),
                 }
             })
+        })
+    }
+
+    /// Whether the image's own crawl entered a submode with `line` but for its object's name, from
+    /// the current mode (`crawled_enters`), frame `i` being the innermost: the switch took that
+    /// line, though `?` leaves out a word of it. The lab WS-C2960X-24PS-L (15.2(2)E5) entered
+    /// config-dhcp-guard on `ipv6 dhcp guard policy TESTDG`, where its `ipv6 ?` offers no `dhcp`.
+    /// A line whose context holds a family or a number in place of its words (an interface) is
+    /// not one: `interface ethernet 0/1` is no port of the crawl's. Nor is a line whose answer
+    /// turns on a state (`context::unjudged`, with that state or without it): the lab C9300-24T's
+    /// crawl entered config-radius-server on `radius server` after `aaa new-model` was typed by
+    /// hand, and without it the switch refuses the line.
+    fn entered_by_crawl(&self, i: usize, mode: &str, line: &str) -> bool {
+        if crate::context::unjudged(mode, line, |_| true) {
+            return false;
+        }
+        let words: Vec<String> = line.split_whitespace().map(str::to_lowercase).collect();
+        let segment = crate::context::segment(line.trim());
+        let parts: Vec<&str> = segment.split(' ').collect();
+        let named = parts.len() == words.len()
+            && parts.last() == Some(&"«word»")
+            && parts
+                .iter()
+                .zip(&words)
+                .all(|(p, w)| *p == "«word»" || p.starts_with(w.as_str()));
+        named && i + 1 == self.frames.len() && self.crawled_enters(mode, line).is_some()
+    }
+
+    /// Whether a line whose first word is `first` is a `power` line on a PoE port of frame `i`
+    /// where the image's own crawl asked on a port without PoE: its `power ?` there offers no
+    /// `inline` (the lab C9300-24T's lists only efficient-ethernet). The lab WS-C2960X-24PS-L
+    /// (15.2(2)E5) crawled a PoE port and refused `power inline port priority high` at
+    /// `priority`, which its `power inline port ?` leaves out.
+    fn unpowered_crawl(&self, i: usize, mode: &str, first: &str) -> bool {
+        let Some(frame) = self.frames.get(i) else {
+            return false;
+        };
+        let poe = first.len() >= 2
+            && "power".starts_with(first)
+            && frame.blocks.iter().any(|&b| {
+                self.device.blocks[b]
+                    .header
+                    .strip_prefix("interface ")
+                    .is_some_and(|n| self.device.stack.poe(n).is_some())
+            });
+        let configured = |l: &str| self.running_has(l);
+        poe && !self.context_at(i).is_some_and(|context| {
+            self.engine
+                .held
+                .help_for(
+                    self.level().as_deref(),
+                    mode,
+                    Some(&context),
+                    "power ",
+                    configured,
+                )
+                .is_some_and(|a| {
+                    crate::live::answer_rows(a)
+                        .iter()
+                        .any(|(w, _)| *w == "inline")
+                })
         })
     }
 
@@ -5521,13 +5566,27 @@ impl<'a> Session<'a> {
             })?;
             Some(format!("{typed}{other} "))
         };
+        // where the crawl holds no answer after a word, the line reads on from the latest earlier
+        // point answered as the last one is, as IOS loops back through a list: the lab
+        // WS-C2960X-24PS-L (15.2(2)E5) took `match ip dscp 10 11 12` and `monitor session 2 filter
+        // vlan 1 - 5 , 9`, where its crawl asked `?` after two values and after `1 -` and `1 ,`
+        let looped = |seen: &[String], typed: &str| -> Vec<String> {
+            let here = answer(typed);
+            seen.iter()
+                .rev()
+                .filter(|p| p.as_str() != typed && here.is_some() && answer(p) == here)
+                .cloned()
+                .collect()
+        };
         let toks = cli::tokens(line);
         let mut items = vec![];
         let mut negated = false;
         let mut typed = String::new();
+        let mut seen: Vec<String> = vec![];
         let mut k = 0;
         while k < toks.len() {
             let t = &toks[k];
+            seen.push(typed.clone());
             let rows = crate::live::answer_rows(answer(&typed)?);
             let keywords: Vec<&str> = rows
                 .iter()
@@ -5604,7 +5663,15 @@ impl<'a> Session<'a> {
                         exact: w.eq_ignore_ascii_case(&t.text),
                     });
                 }
-                typed = format!("{typed}{w} ");
+                let next = format!("{typed}{w} ");
+                typed = match answer(&next) {
+                    Some(_) => next,
+                    None => looped(&seen, &typed)
+                        .iter()
+                        .map(|p| format!("{p}{w} "))
+                        .find(|n| answer(n).is_some())
+                        .unwrap_or(next),
+                };
                 k += 1;
                 continue;
             }
@@ -5638,7 +5705,11 @@ impl<'a> Session<'a> {
                 tok: k,
                 typed: !matches!(r, "WORD" | "Hostname"),
             });
-            typed = after(&typed, &t.text, (r, what))?;
+            typed = after(&typed, &t.text, (r, what)).or_else(|| {
+                looped(&seen, &typed)
+                    .iter()
+                    .find_map(|p| after(p, &t.text, (r, what)))
+            })?;
             k += 1;
         }
         let ends = crate::live::answer_rows(answer(&typed)?)
@@ -16178,6 +16249,51 @@ mod tests {
             assert_eq!(out, ["IP routing not enabled"], "{line}");
             assert_eq!(s.mode(), "config");
         }
+    }
+
+    #[test]
+    fn a_2960_x_reads_its_crawl_past_a_list_s_second_value_and_under_any_kind_of_class_map() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5: its book examples, taken or refused at the caret
+        let r = crate::release::Release::parse("15.2(2)E").unwrap();
+        let e = Engine::new(crate::grammars::grammar("c2960x", r).unwrap());
+        let stack = crate::platform::parse_stack("WS-C2960X-24PS-L").unwrap();
+        let mut s = Session::new(&e, Device::new(stack));
+        s.type_line("enable");
+        s.type_line("configure terminal");
+        let took = |s: &mut Session, line: &str| {
+            let (out, r) = s.type_line(line);
+            assert_eq!(r, Result::Ok, "{line}: {out:?}");
+        };
+        for (map, line) in [
+            ("class-map class2", "match ip dscp 10 11 12"),
+            ("class-map class3", "match ip precedence 5 6 7"),
+            ("class-map match-all class4", "match ip dscp 10 11 12"),
+            ("class-map match-any TEST", "match ip dscp 10 11 12"),
+        ] {
+            took(&mut s, map);
+            assert_eq!(s.mode(), "config-cmap");
+            took(&mut s, line);
+            s.type_line("exit");
+        }
+        took(&mut s, "mls qos map dscp-cos 20 21 22 23 24 to 1");
+        took(&mut s, "monitor session 2 filter vlan 1 - 5 , 9");
+        // a policy named in lowercase enters its mode as the crawl's did
+        took(&mut s, "ipv6 snooping policy policy1");
+        assert_eq!(s.mode(), "config-ipv6-snooping");
+        took(&mut s, "device-role node");
+        s.type_line("exit");
+        // `ipv6 ?` leaves out `dhcp`, and the crawl entered the guard's mode with it
+        took(&mut s, "ipv6 dhcp guard policy policy1");
+        assert_eq!(s.mode(), "config-dhcp-guard");
+        s.type_line("exit");
+        // which is no port of the crawl's
+        let (_, r) = s.type_line("interface ethernet 0/1");
+        assert_eq!((r, s.mode()), (Result::Error, "config"));
+        // the crawled port had PoE: its `power inline port ?` offers no `priority`
+        took(&mut s, "interface GigabitEthernet1/0/2");
+        let (out, r) = s.type_line("power inline port priority high");
+        assert_eq!(r, Result::Error, "{out:?}");
+        assert_eq!(out[0].find('^'), Some(36), "{out:?}");
     }
 
     #[test]

@@ -39,6 +39,7 @@ const NAMED: &[&[&str]] = &[
     &["ip", "dhcp", "class"],
     &["ipv6", "dhcp", "pool"],
     &["ipv6", "dhcp", "guard", "policy"],
+    &["ipv6", "snooping", "policy"],
     &["ipv6", "nd", "inspection", "policy"],
     &["ipv6", "nd", "raguard", "policy"],
     &["ipv6", "source-guard", "policy"],
@@ -780,6 +781,20 @@ pub fn segment(line: &str) -> String {
             generic_segment(&words.iter().map(String::as_str).collect::<Vec<_>>())
         }
     }
+}
+
+/// The contexts whose answers stand for `context`'s where a crawl asked `?` under none of its own:
+/// a match-all, a match-any and a plain (match-all) class map take one command set. The lab
+/// WS-C2960X-24PS-L (15.2(2)E5) took `match ip dscp 10 11 12` under `class-map class2` and under
+/// `class-map match-any TEST`, and its crawl asked under a match-any map alone.
+pub fn alike(context: &str) -> impl Iterator<Item = &'static str> + '_ {
+    const MAPS: &[&str] = &[
+        "class-map match-any «word»",
+        "class-map match-all «word»",
+        "class-map «word»",
+    ];
+    let one = MAPS.contains(&context);
+    MAPS.iter().copied().filter(move |m| one && *m != context)
 }
 
 /// The context of the submodes entered from global configuration, outermost first: one chain, empty
