@@ -431,7 +431,7 @@ Classic IOS is a 2960-X at 15.2(7)E0a for the 15.2 rules, the 2960 family for th
 
 ## Factory default
 
-A C9300 at IOS XE 17.6 started by `vswitch shell` or `vswitch run` boots its factory default, printed whole as the lab C9300-24T at 17.6.4 printed it after `write erase`, vlan.dat deleted and a reload, at network-essentials and at network-advantage. Other platforms and releases start blank.
+A C9300 at IOS XE 17.6 started by `vswitch shell` or `vswitch run` boots its factory default, printed whole as the lab C9300-24T at 17.6.4 printed it after `write erase`, vlan.dat deleted and a reload, at network-essentials and at network-advantage. A 2960-X at 15.2(2)E boots its own, below. Other platforms and releases start blank, the 2960-X at 15.2(7)E among them.
 
 - Lines: `service timestamps`, the call-home comment and `service call-home`, `platform punt-keepalive disable-kernel-core`, `hostname Switch`, `vrf definition Mgmt-vrf`, `no aaa new-model`, `switch 1 provision <model>`, `login on-success log`, both trustpoints and their certificate chains, the licence line, `diagnostic bootup level minimal`, rapid-pvst with extend system-id, `memory free low-watermark processor 131696`, `redundancy` with `mode sso`, `transceiver type all` with `monitoring`, 22 control-plane class maps and the `system-cpp-policy` policy map, GigabitEthernet0/0 in Mgmt-vrf, every port, Vlan1 with `no ip address` and `shutdown`, `ip forward-protocol nd`, the three `ip http` lines, `control-plane` with its service policy, the line blocks and the call-home block.
 - The `!` runs follow the level booted: after `switch 1 provision` 8 at network-essentials and 12 at network-advantage, before the trustpoints 6 and 9, before the licence line 1 and 2, before the first port 11 and 12 (the second a `! `), after `ip http secure-server` 4 and 6.
@@ -444,6 +444,14 @@ A C9300 at IOS XE 17.6 started by `vswitch shell` or `vswitch run` boots its fac
 - VTP version 1, mode Server, no domain, revision 0, 5 VLANs.
 - A `license boot level` typed in configuration mode prints `% use 'write' command to make license boot config take effect on next boot` and leaves the configuration's line, the level booted. A configuration loaded states the level the switch booted at.
 - Each certificate prints as the NVRAM file IOS keeps it in: `certificate ca 01 nvram:CiscoLicensi#1CA.cer`. The name is the subject's common name without spaces cut to 12 characters, then `#` and its place, `CA` for a CA's.
+
+A 2960-X at 15.2(2)E boots the factory default the lab WS-C2960X-24PS-L printed at 15.2(2)E5 after `erase startup-config` and a reload with no cable, so autoinstall found no DHCP server:
+
+- Lines: `no service pad`, both `service timestamps` lines, `no service password-encryption`, `hostname Switch`, `boot-start-marker` and `boot-end-marker`, `no aaa new-model`, `switch 1 provision <model>`, `spanning-tree mode pvst` with `spanning-tree extend system-id`, `vlan internal allocation policy ascending`, FastEthernet0, every port and Vlan1 with nothing under them, `ip http server` and `ip http secure-server`, then `line con 0` and `line vty 5 15` with nothing under them. No `line vty 0 4` prints.
+- The `!` runs: 10 after `switch 1 provision`, 4 before `vlan internal allocation policy`, 11 before FastEthernet0, 5 before `line con 0`.
+- The last-change line names the boot, and `show startup-config` prints `startup-config is not present`.
+- Method is `unset` on every interface, Vlan1 `up` and `down`.
+- The switch's header read 1524 bytes, one more than vswitch counts for the same lines. The capture tool trims trailing spaces, so where that byte sits is not known.
 
 | Platform | NVRAM |
 |---|---|

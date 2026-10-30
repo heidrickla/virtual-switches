@@ -76,11 +76,11 @@ Removes passwords and secrets from configuration files and session logs, in plac
 
 ### shell
 
-A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default at network-advantage with dna-advantage ([output.md](output.md#factory-default)), its boot the computer's clock, which `show version` counts its uptime from; other platforms and releases start blank. The keys are in [terminal.md](terminal.md). A line known to crash the switch's model prints a warning after its answer, here, in the switch list's console and in `lab --shell` ([output.md](output.md#commands-known-to-crash-a-switch)).
+A console from `Switch>` on a switch kept nowhere. A C9300 at IOS XE 17.6 boots its factory default at network-advantage with dna-advantage, and a 2960-X at 15.2(2)E its own ([output.md](output.md#factory-default)), its boot the computer's clock, which `show version` counts its uptime from; other platforms and releases start blank. The keys are in [terminal.md](terminal.md). A line known to crash the switch's model prints a warning after its answer, here, in the switch list's console and in `lab --shell` ([output.md](output.md#commands-known-to-crash-a-switch)).
 
 ### run
 
-Types each line of a script at its prompt and prints the session, each line after its prompt. The switch starts as `shell` starts it, a C9300 at 17.6 from its factory default. Lines starting with `!` are skipped in configuration modes, and a banner's text is typed as written. A line ending in `?` prints the help for what precedes it and is not entered. `--quiet` prints only the count. The count `<n> line(s) refused` goes to stderr, and exit is 1 when it is above 0. A line known to crash the switch's model prints its warning in the session, after the line's answer ([output.md](output.md#commands-known-to-crash-a-switch)); with `--quiet`, `<n> line(s) known to crash this model` goes to stderr before the refused count when n is above 0. The warnings do not change the exit code. A byte order mark at the start of the file is dropped.
+Types each line of a script at its prompt and prints the session, each line after its prompt. The switch starts as `shell` starts it, a C9300 at 17.6 or a 2960-X at 15.2(2)E from its factory default. Lines starting with `!` are skipped in configuration modes, and a banner's text is typed as written. A line ending in `?` prints the help for what precedes it and is not entered. `--quiet` prints only the count. The count `<n> line(s) refused` goes to stderr, and exit is 1 when it is above 0. A line known to crash the switch's model prints its warning in the session, after the line's answer ([output.md](output.md#commands-known-to-crash-a-switch)); with `--quiet`, `<n> line(s) known to crash this model` goes to stderr before the refused count when n is above 0. The warnings do not change the exit code. A byte order mark at the start of the file is dropped.
 
 ## Designs
 
@@ -222,7 +222,7 @@ Types a script on a private lab switch and compares each line's answer, and what
 
 ### lab
 
-Builds each switch from its files, brings each cable up from both ends and checks it. The output is each switch with its lines typed, each link, each finding and `note:` line, and the counts. `--shell` opens that switch's console with its links up, after the report; a name not in the file is refused. Exit is 1 on a finding.
+Builds each switch from its files, brings each cable up from both ends and checks it. The output is each switch with its lines typed, each link, each finding and `note:` line, and the counts. A switch whose files hold no line boots its factory default where vswitch models one ([output.md](output.md#factory-default)), its console at `Switch>`. `--shell` opens that switch's console with its links up, after the report; a name not in the file is refused. Exit is 1 on a finding.
 
 In the console, `show spanning-tree` and its forms read the whole lab: the other switches as they came up and the switch's own configuration as it stands, so a priority, cost, mode, MST region, guard or `shutdown` typed there shows at once. Trunking, bundling and a link down at startup stay as the lab brought them up. A `[[device]]` entry gives the BPDUs a device the lab does not model sends ([checks.md](checks.md#lab-files)); the forms are in [output.md](output.md#show-spanning-tree).
 

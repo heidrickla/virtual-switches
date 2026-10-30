@@ -166,6 +166,12 @@ pub const RULES: &[Rule] = &[
         evidence: "the lab C9300-24T (17.6.4) after `write erase`, vlan.dat deleted and a reload, at network-essentials and at network-advantage, 2026-10-16",
     },
     Rule {
+        output: "show running-config, show startup-config",
+        rule: "a 2960-X at 15.2(2)E boots its factory default with no startup configuration, printed whole: `no service pad`, the timestamps, `no service password-encryption`, `hostname Switch`, the boot markers, `no aaa new-model`, `switch 1 provision`, `spanning-tree mode pvst` and `extend system-id`, `vlan internal allocation policy ascending`, FastEthernet0, every port and Vlan1 with nothing under them, `ip http server` and `ip http secure-server`, `line con 0` and `line vty 5 15` with nothing under them and no `line vty 0 4`, `!` runs of 10, 4, 11 and 5; so does a lab switch whose files hold no line; `show startup-config` prints `startup-config is not present`",
+        source: Source::Live,
+        evidence: "the lab WS-C2960X-24PS-L (15.2(2)E5) after `erase startup-config` and a reload with no cable, 2026-10-29: its running configuration compared whole",
+    },
+    Rule {
         output: "show running-config",
         rule: "the self-signed certificate (820 bytes, SHA-1, valid 3652 days from boot) and the licensing root's (805 bytes, SHA-256, its names and dates) in their measured DER layout, hex lines of 32 bytes in groups of four; the trustpoint number, keys, key identifiers and signatures are stand-ins derived from the base MAC address",
         source: Source::Live,
@@ -173,9 +179,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         output: "show running-config",
-        rule: "the certificate's validity starts two seconds before the last-change line; the factory default of other platforms and releases: a switch with no configuration starts blank; a stack's `switch <n> provision` per member; another model's low watermark; the license message on IOS XE releases other than 17.6",
+        rule: "the certificate's validity starts two seconds before the last-change line; the factory default of other platforms and releases (the 2960-X at 15.2(7)E among them): a switch with no configuration starts blank; a stack's `switch <n> provision` per member, on a 2960-X FlexStack too; the 2960-X default's size, one byte under the 1524 its header read, which a capture that trims trailing spaces cannot place; another model's low watermark; the license message on IOS XE releases other than 17.6",
         source: Source::Inferred,
-        evidence: "only the lab C9300 at 17.6.4 was booted from the factory default, alone; its two boots put two and three seconds between the certificate and the last change",
+        evidence: "only the lab C9300 at 17.6.4 and the lab 2960-X at 15.2(2)E5 were booted from the factory default, each alone; the C9300's two boots put two and three seconds between the certificate and the last change",
     },
     Rule {
         output: "show running-config",

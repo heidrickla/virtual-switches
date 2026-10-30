@@ -5716,6 +5716,64 @@ mod tests {
     }
 
     #[test]
+    fn a_2960x_at_15_2_2_boots_the_factory_default_the_lab_switch_printed() {
+        // the lab WS-C2960X-24PS-L, 15.2(2)E5, uncabled with no startup configuration, 2026-10-29
+        let e = engine("c2960x", "15.2(2)E");
+        let mut s = shell::Session::new(
+            &e,
+            device::Device::new(platform::parse_stack("WS-C2960X-24PS-L").unwrap()),
+        );
+        // 2026-10-29 23:12:17 UTC, the capture's last change
+        s.clock = Some(1_793_315_537);
+        s.factory_default();
+        assert_eq!(s.prompt(), "Switch>");
+        let head = "!\n! Last configuration change at 23:12:17 UTC Thu Oct 29 2026\n!\nversion 15.2\n\
+            no service pad\nservice timestamps debug datetime msec\nservice timestamps log datetime msec\n\
+            no service password-encryption\n!\nhostname Switch\n!\nboot-start-marker\nboot-end-marker\n\
+            !\n!\nno aaa new-model\nswitch 1 provision ws-c2960x-24ps-l\n!\n!\n!\n!\n!\n!\n!\n!\n!\n!\n\
+            spanning-tree mode pvst\nspanning-tree extend system-id\n!\n!\n!\n!\n\
+            vlan internal allocation policy ascending\n!\n!\n!\n!\n!\n!\n!\n!\n!\n!\n!\n\
+            interface FastEthernet0\n!";
+        let tail = "interface Vlan1\n!\nip http server\nip http secure-server\n!\n!\n!\n!\n!\n\
+            line con 0\nline vty 5 15\n!\nend";
+        let mut want: Vec<String> = head.lines().map(String::from).collect();
+        for p in 1..=28 {
+            want.extend([format!("interface GigabitEthernet1/0/{p}"), "!".into()]);
+        }
+        want.extend(tail.lines().map(String::from));
+        let run = running_config(&s.device);
+        // the switch's header read 1524 bytes, one more than these lines count: swcon trims each
+        // line's trailing spaces, so the capture cannot say where the byte was, and the size stays
+        // the formula every other classic capture holds to
+        assert_eq!(run[3..run.len() - 1], want[..]);
+        s.type_line("enable");
+        assert_eq!(
+            s.type_line("show startup-config").0,
+            ["startup-config is not present"]
+        );
+        // no address line under Vlan1 or a port: every one reads unset
+        let brief = ip_interface_brief(&s.device);
+        for (n, state) in [
+            ("Vlan1", "up                    down"),
+            ("FastEthernet0", "down                  down"),
+            ("GigabitEthernet1/0/1", "down                  down"),
+        ] {
+            assert!(
+                row(&brief, n).starts_with(&format!("{n:<23}unassigned      YES unset  {state}")),
+                "{n}: {brief:?}"
+            );
+        }
+        // the 15.2(7)E train's default is not captured: it starts blank
+        let e = engine("c2960x", "15.2(7)E");
+        let mut s = shell::Session::new(
+            &e,
+            device::Device::new(platform::parse_stack("WS-C2960X-24PS-L").unwrap()),
+        );
+        s.factory_default();
+        assert!(!s.device.factory && s.device.global.is_empty());
+    }
+
+    #[test]
     fn at_17_6_vlan_filter_follows_the_access_maps_and_the_vtp_domain_precedes_the_mode() {
         let lines = [
             "vtp mode transparent",

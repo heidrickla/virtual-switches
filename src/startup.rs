@@ -22,11 +22,15 @@ pub const FACTORY_LEVEL: &str = "network-advantage addon dna-advantage";
 /// The configuration a switch boots with no startup configuration, as the C9300 at 17.6 prints it
 /// (the lab C9300-24T, 17.6.4, after `write erase` and a reload, at two licence levels): every line
 /// and every `!` between them, the self-signed certificate made at `at` (seconds since 1970 UTC) for
-/// the switch's own identity. None elsewhere: no capture holds another platform's or release's default.
+/// the switch's own identity; and as the 2960-X at 15.2(2)E prints it (`c2960x_factory`). None
+/// elsewhere: no capture holds another platform's or release's default.
 pub fn factory(d: &crate::device::Device, level: &str, at: u64) -> Option<Vec<String>> {
     let book = crate::grammars::book(d.stack.family());
-    let train = crate::release::Release::parse(&d.release)?.config_version();
-    if book != "c9300" || train != "17.6" {
+    let release = crate::release::Release::parse(&d.release)?;
+    if book == "c2960x" && Some(release) == crate::release::Release::parse("15.2(2)E") {
+        return Some(c2960x_factory(d));
+    }
+    if book != "c9300" || release.config_version() != "17.6" {
         return None;
     }
     // the `!` runs that differ between the two levels measured: network-essentials, network-advantage
@@ -185,6 +189,59 @@ pub fn factory(d: &crate::device::Device, level: &str, at: u64) -> Option<Vec<St
         "end",
     ]);
     Some(out)
+}
+
+/// The configuration a 2960-X at 15.2(2)E boots with no startup configuration, as the lab
+/// WS-C2960X-24PS-L printed it (15.2(2)E5, 2026-10-29, uncabled, so autoinstall found no DHCP
+/// server and changed nothing): every line and every `!` between them, the ports and Vlan1 with
+/// nothing under them, and `line con 0` and `line vty 5 15` with no `line vty 0 4`.
+fn c2960x_factory(d: &crate::device::Device) -> Vec<String> {
+    let lines = |l: &[&str]| l.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+    let bangs = |k: usize| vec!["!".to_string(); k];
+    let mut out = lines(&[
+        "!",
+        "version 15.2",
+        "no service pad",
+        "service timestamps debug datetime msec",
+        "service timestamps log datetime msec",
+        "no service password-encryption",
+        "!",
+        "hostname Switch",
+        "!",
+        "boot-start-marker",
+        "boot-end-marker",
+        "!",
+        "!",
+        "no aaa new-model",
+    ]);
+    for m in &d.stack.members {
+        // one line per member (inferred for a stack: the lab switch stood alone)
+        out.push(format!(
+            "switch {} provision {}",
+            m.number,
+            m.model.to_ascii_lowercase()
+        ));
+    }
+    out.extend(bangs(10));
+    out.extend(lines(&[
+        "spanning-tree mode pvst",
+        "spanning-tree extend system-id",
+    ]));
+    out.extend(bangs(4));
+    out.push("vlan internal allocation policy ascending".into());
+    out.extend(bangs(11));
+    for p in d.stack.physical() {
+        out.extend([format!("interface {p}"), "!".into()]);
+    }
+    out.extend(lines(&[
+        "interface Vlan1",
+        "!",
+        "ip http server",
+        "ip http secure-server",
+    ]));
+    out.extend(bangs(5));
+    out.extend(lines(&["line con 0", "line vty 5 15", "!", "end"]));
+    out
 }
 
 /// The control-plane class maps IOS XE 17.6 makes, in its order, with their descriptions as it

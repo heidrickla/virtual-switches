@@ -357,15 +357,20 @@ pub fn engine(
     Ok(e)
 }
 
-/// Types a switch's files into one session, then gives it the VLANs its database already holds.
+/// Types a switch's files into one session, then gives it the VLANs its database already holds. A
+/// switch whose files hold no line boots its factory default where vswitch models one, at `>`.
 pub fn build(sw: &Switch) -> Built<'_> {
     let mut device = Device::new(sw.stack.clone());
     device.mac = sw.mac;
     device.transceivers = sw.transceivers.clone();
     let mut s = shell::Session::new(&sw.engine, device);
+    if sw.files.iter().all(|(_, text)| text.trim().is_empty()) {
+        s.factory_default();
+    }
+    let booted = s.device.factory;
     let mut typed = 0;
     let mut refused = Vec::new();
-    for (file, text) in &sw.files {
+    for (file, text) in sw.files.iter().filter(|_| !booted) {
         for t in check::type_into(&mut s, text) {
             typed += 1;
             if t.error.is_some() {
@@ -376,7 +381,9 @@ pub fn build(sw: &Switch) -> Built<'_> {
     for id in &sw.existing {
         s.device.block(&format!("vlan {id}"));
     }
-    s.type_line("end");
+    if !booted {
+        s.type_line("end");
+    }
     Built {
         name: sw.name.clone(),
         session: s,
@@ -1234,6 +1241,51 @@ mod tests {
             let e = write(&body).err().unwrap();
             assert!(e.contains(why), "{e}");
         }
+    }
+
+    #[test]
+    fn a_lab_switch_with_no_lines_boots_its_factory_default_where_one_is_modelled() {
+        let t = crate::library::tests::TempDir::new("lab-factory");
+        let empty = t.0.join("empty.cfg");
+        std::fs::write(&empty, "\n").unwrap();
+        let p = t.0.join("lab.toml");
+        let file = empty.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            &p,
+            format!(
+                "[[switch]]\nname = \"x\"\nfiles = [\"{file}\"]\nstack = \"WS-C2960X-24PS-L\"\nrelease = \"15.2(2)E\"\n\
+                 [[switch]]\nname = \"c\"\nfiles = []\nstack = \"C9300-24T\"\n"
+            ),
+        )
+        .unwrap();
+        let (s, _) = prepare(&p).unwrap();
+        let mut x = build(&s[0]);
+        assert_eq!((x.typed, x.session.prompt()), (0, "Switch>".to_string()));
+        let run = crate::show::running_config(&x.session.device);
+        assert!(run.contains(&"switch 1 provision ws-c2960x-24ps-l".to_string()));
+        assert!(run.contains(&"line vty 5 15".to_string()));
+        // booted again from its default, it starts over: one boot's lines, the clock's change
+        let at = x.session.device.last_change.unwrap() + 60;
+        x.session.clock = Some(at);
+        x.session.factory_default();
+        let again = crate::show::running_config(&x.session.device);
+        let skip = |r: &[String]| {
+            r.iter()
+                .filter(|l| !l.starts_with("! Last configuration change"))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(skip(&again), skip(&run));
+        assert_eq!(x.session.device.last_change, Some(at));
+        x.session.type_line("enable");
+        assert_eq!(
+            x.session.type_line("show startup-config").0,
+            ["startup-config is not present"]
+        );
+        // a C9300 at 17.15 has no default modelled: it starts blank, as before
+        let c = build(&s[1]);
+        assert!(!c.session.device.factory && c.session.device.global.is_empty());
+        assert_eq!(c.session.prompt(), "Switch>");
     }
 
     #[test]

@@ -285,12 +285,24 @@ impl<'a> Session<'a> {
     }
 
     /// `factory_default` at a licence level (`network-essentials addon dna-essentials`): the switch
-    /// boots now on its clock, which is the configuration's last change.
+    /// boots now on its clock, which is the configuration's last change. A switch booted from its
+    /// factory default before (a lab switch whose files hold no line) starts over from its
+    /// hardware, its cables and transceivers kept.
     pub fn factory_default_at(&mut self, level: &str) {
         let at = self.now();
         let Some(lines) = crate::startup::factory(&self.device, level, at) else {
             return;
         };
+        if self.device.factory {
+            let d = &mut self.device;
+            let mut fresh = Device::new(d.stack.clone());
+            fresh.mac = d.mac;
+            fresh.release = std::mem::take(&mut d.release);
+            fresh.held_after = std::mem::take(&mut d.held_after);
+            fresh.transceivers = std::mem::take(&mut d.transceivers);
+            fresh.links = std::mem::take(&mut d.links);
+            self.device = fresh;
+        }
         crate::check::type_into(self, &lines.join("\n"));
         self.frames = vec![Frame::top("exec")];
         self.replayed = false;
